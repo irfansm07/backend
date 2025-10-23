@@ -188,16 +188,17 @@ app.use((err, req, res, next) => {
 
 // ==================== START SERVER ====================
 
-server.listen(PORT, () => {
+server.listen(PORT, "0.0.0.0", () => {
   console.log('\n' + '='.repeat(60));
   console.log('🚀 VibeXpert Server Started Successfully!');
   console.log('='.repeat(60));
   console.log(`📍 Port: ${PORT}`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'production'}`);
   console.log(`🌐 CORS: ${process.env.FRONTEND_URL || 'https://www.vibexpert.online'}`);
   console.log(`💾 Database: Connected to Supabase`);
   console.log(`🔌 WebSocket: Active`);
   console.log('='.repeat(60));
-  console.log(`\n✅ API ready at http://localhost:${PORT}`);
-  console.log(`📚 Health check: http://localhost:${PORT}/api/health\n`);
+  console.log(`\n✅ API ready at https://vibexpert-backend-main.onrender.com`);
+  console.log(`📚 Health check: https://vibexpert-backend-main.onrender.com/api/health\n`);
 });
+
