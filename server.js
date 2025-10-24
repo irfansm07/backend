@@ -1,6 +1,4 @@
-// server.js
 require('dotenv').config();
-
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
@@ -12,37 +10,24 @@ const { v4: uuidv4 } = require('uuid');
 const http = require('http');
 const { Server } = require('socket.io');
 
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://www.vibexpert.online';
-const BACKEND_PUBLIC_URL = process.env.BACKEND_PUBLIC_URL || 'https://vibexpert-backend-main.onrender.com';
-
 const app = express();
 const server = http.createServer(app);
-
 const io = new Server(server, {
   cors: {
-    origin: [FRONTEND_URL, `${FRONTEND_URL.replace('http:', 'https:')}`],
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    credentials: true
+    origin: 'http://www.vibexpert.online',  // Frontend URL allowed
+    methods: ['GET', 'POST']
   }
 });
 
-// CORS middleware for standard HTTP requests
 app.use(cors({
-  origin: [FRONTEND_URL, `${FRONTEND_URL.replace('http:', 'https:')}`],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  credentials: true
+  origin: 'http://www.vibexpert.online',
+  methods: ['GET', 'POST', 'OPTIONS']
 }));
 app.use(express.json());
 
-// Environment / Supabase config
+// Environment / config
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
-
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  console.error('❌ Missing SUPABASE_URL or SUPABASE_KEY in environment. Exiting.');
-  process.exit(1);
-}
-
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const JWT_SECRET = process.env.JWT_SECRET || 'change_this';
@@ -51,21 +36,18 @@ const BREVO_FROM_EMAIL = process.env.BREVO_FROM_EMAIL;
 const BREVO_FROM_NAME = process.env.BREVO_FROM_NAME || 'CampusApp';
 const STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'public';
 
-// File upload middleware
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 } // 10MB
-});
+// File upload middleware (single definition)
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
-// Helper: signing JWT token
+// Helper: JWT signing
 function signToken(user) {
   return jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
 }
 
-// Helper: send email (Brevo)
+// Helper: send email via Brevo
 async function sendEmail({ to, subject, html, text }) {
   if (!BREVO_KEY || !BREVO_FROM_EMAIL) {
-    console.warn('⚠️ Brevo not configured (BREVO_API_KEY or BREVO_FROM_EMAIL missing). Skipping email send.');
+    console.warn('Brevo API key or from email not configured. Skipping email send.');
     return null;
   }
 
@@ -82,37 +64,31 @@ async function sendEmail({ to, subject, html, text }) {
     const res = await axios.post(url, payload, {
       headers: { 'api-key': BREVO_KEY, 'Content-Type': 'application/json' }
     });
-    console.log('📧 Email sent to', to, 'status', res.status);
+    console.log('📧 Email sent:', to, 'status:', res.status);
     return res.data;
   } catch (err) {
     console.error('❌ Error sending email:', err.response?.data || err.message);
-    // bubble up so callers can decide how to handle (most flows log and continue)
     throw err;
   }
 }
 
 // Auth middleware
 async function authMiddleware(req, res, next) {
+  const auth = req.headers.authorization;
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' });
+  const token = auth.split(' ')[1];
   try {
-    const auth = req.headers.authorization;
-    if (!auth) return res.status(401).json({ error: 'Unauthorized' });
-    const token = auth.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET);
-    const { data: user, error } = await supabase.from('users').select('*').eq('id', decoded.id).single();
-    if (error || !user) return res.status(401).json({ error: 'User not found' });
-    req.user = user;
+    const { data: users, error } = await supabase.from('users').select('*').eq('id', decoded.id).single();
+    if (error || !users) return res.status(401).json({ error: 'User not found' });
+    req.user = users;
     next();
   } catch (err) {
     return res.status(401).json({ error: 'Invalid token' });
   }
 }
 
-// ----------------- ROUTES -----------------
-
-// Root
-app.get('/', (req, res) => {
-  res.json({ message: '🎓 VibeXpert Backend is running successfully!' });
-});
+// --- ROUTES ---
 
 // Register
 app.post('/api/register', async (req, res) => {
@@ -120,7 +96,6 @@ app.post('/api/register', async (req, res) => {
     const { username, email, password } = req.body;
     if (!username || !email || !password) return res.status(400).json({ error: 'Missing fields' });
 
-    // check exist
     const { data: existing, error: existErr } = await supabase.from('users').select('id').eq('email', email).maybeSingle();
     if (existErr) throw existErr;
     if (existing) return res.status(400).json({ error: 'Email already registered' });
@@ -131,14 +106,12 @@ app.post('/api/register', async (req, res) => {
     }).select().single();
     if (error) throw error;
 
-    // send greeting email (not fatal if it fails)
     const subject = 'Welcome to Campus Vibe 🎉';
     const html = `<p>Hey ${username},</p><p>Congratulations — your account was created! Welcome to the community.</p>`;
     try {
       await sendEmail({ to: email, subject, html });
     } catch (mailErr) {
-      console.error('Warning: welcome email failed to send:', mailErr.response?.data || mailErr.message || mailErr);
-      // don't fail registration because of mail issues
+      console.error('Warning: welcome email failed to send:', mailErr.message || mailErr);
     }
 
     const token = signToken(data);
@@ -173,8 +146,8 @@ app.post('/api/forgot-password', async (req, res) => {
     const { data: user, error: userErr } = await supabase.from('users').select('*').eq('email', email).single();
     if (userErr || !user) return res.status(400).json({ error: 'Email not found' });
 
-    const code = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit
-    const expires = new Date(Date.now() + 1000 * 60 * 15); // 15 minutes
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expires = new Date(Date.now() + 1000 * 60 * 15);
 
     await supabase.from('codes').insert({
       user_id: user.id,
@@ -183,11 +156,11 @@ app.post('/api/forgot-password', async (req, res) => {
 
     const subject = 'Your password reset code';
     const html = `<p>Your password reset code is <b>${code}</b>. It expires in 15 minutes.</p>`;
+
     try {
       await sendEmail({ to: email, subject, html });
     } catch (mailErr) {
-      console.error('Forgot-password email failed:', mailErr.response?.data || mailErr.message || mailErr);
-      // continue — respond ok to client so they can proceed to the verification step
+      console.error('Forgot-password email failed:', mailErr.message || mailErr);
     }
 
     res.json({ ok: true });
@@ -230,7 +203,7 @@ app.post('/api/verify-reset-code', async (req, res) => {
   }
 });
 
-// Select college (sends confirmation code)
+// select college - sends confirmation code to user's email
 app.post('/api/select-college', authMiddleware, async (req, res) => {
   try {
     const { college } = req.body;
@@ -239,7 +212,7 @@ app.post('/api/select-college', authMiddleware, async (req, res) => {
     if (req.user.community_joined) return res.status(400).json({ error: 'Already joined a community' });
 
     const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const expires = new Date(Date.now() + 1000 * 60 * 30); // 30 mins
+    const expires = new Date(Date.now() + 1000 * 60 * 30);
 
     await supabase.from('codes').insert({
       user_id: req.user.id,
@@ -251,10 +224,11 @@ app.post('/api/select-college', authMiddleware, async (req, res) => {
 
     const subject = `Confirm joining ${college}`;
     const html = `<p>To confirm joining <b>${college}</b>, enter this code on the website: <b>${code}</b>. Expires in 30 minutes.</p>`;
+
     try {
       await sendEmail({ to: req.user.email, subject, html });
     } catch (mailErr) {
-      console.error('Select-college email failed:', mailErr.response?.data || mailErr.message || mailErr);
+      console.error('Select-college email failed:', mailErr.message || mailErr);
     }
 
     res.json({ ok: true });
@@ -264,7 +238,7 @@ app.post('/api/select-college', authMiddleware, async (req, res) => {
   }
 });
 
-// Verify college code
+// verify college code
 app.post('/api/verify-college-code', authMiddleware, async (req, res) => {
   try {
     const { code } = req.body;
@@ -294,7 +268,7 @@ app.post('/api/verify-college-code', authMiddleware, async (req, res) => {
   }
 });
 
-// Get community chat messages (paginated)
+// get community chat messages (paginated)
 app.get('/api/community/chat', authMiddleware, async (req, res) => {
   try {
     if (!req.user.community_joined) return res.status(403).json({ error: 'Not part of a community' });
@@ -306,7 +280,7 @@ app.get('/api/community/chat', authMiddleware, async (req, res) => {
   }
 });
 
-// Post community message (text/image)
+// post community message (text/image)
 app.post('/api/community/message', authMiddleware, upload.single('image'), async (req, res) => {
   try {
     if (!req.user.community_joined) return res.status(403).json({ error: 'Not part of a community' });
@@ -314,11 +288,11 @@ app.post('/api/community/message', authMiddleware, upload.single('image'), async
     let imageUrl = null;
     if (req.file) {
       const filename = `chat/${req.user.id}/${Date.now()}_${uuidv4()}`;
-      const { data: upData, error: upErr } = await supabase.storage.from(STORAGE_BUCKET).upload(filename, req.file.buffer, {
+      const { data, error } = await supabase.storage.from(STORAGE_BUCKET).upload(filename, req.file.buffer, {
         contentType: req.file.mimetype,
         upsert: false
       });
-      if (upErr) throw upErr;
+      if (error) throw error;
       const publicUrl = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(filename).data.publicUrl;
       imageUrl = publicUrl;
     }
@@ -330,8 +304,6 @@ app.post('/api/community/message', authMiddleware, upload.single('image'), async
       image_url: imageUrl
     };
     const { data } = await supabase.from('messages').insert(insert).select().single();
-
-    // Broadcast
     io.emit('new_message', data);
     res.json({ message: data });
   } catch (err) {
@@ -340,7 +312,7 @@ app.post('/api/community/message', authMiddleware, upload.single('image'), async
   }
 });
 
-// Upload post
+// upload post
 app.post('/api/post/upload', authMiddleware, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'Image required' });
@@ -348,11 +320,11 @@ app.post('/api/post/upload', authMiddleware, upload.single('image'), async (req,
     if (!['profile','community'].includes(postedTo)) return res.status(400).json({ error: 'Invalid postedTo' });
 
     const filename = `posts/${req.user.id}/${Date.now()}_${uuidv4()}`;
-    const { data: upData, error: upErr } = await supabase.storage.from(STORAGE_BUCKET).upload(filename, req.file.buffer, {
+    const { data, error } = await supabase.storage.from(STORAGE_BUCKET).upload(filename, req.file.buffer, {
       contentType: req.file.mimetype,
       upsert: false
     });
-    if (upErr) throw upErr;
+    if (error) throw error;
     const publicUrl = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(filename).data.publicUrl;
 
     const { data: post } = await supabase.from('posts').insert({
@@ -369,7 +341,7 @@ app.post('/api/post/upload', authMiddleware, upload.single('image'), async (req,
   }
 });
 
-// Get user profile
+// get user profile
 app.get('/api/user/:id', authMiddleware, async (req, res) => {
   try {
     const userId = req.params.id;
@@ -382,7 +354,7 @@ app.get('/api/user/:id', authMiddleware, async (req, res) => {
   }
 });
 
-// Like a user profile
+// like a user profile
 app.post('/api/user/:id/like', authMiddleware, async (req, res) => {
   try {
     const targetId = req.params.id;
@@ -398,7 +370,7 @@ app.post('/api/user/:id/like', authMiddleware, async (req, res) => {
   }
 });
 
-// Delete account
+// delete account
 app.delete('/api/user/delete', authMiddleware, async (req, res) => {
   try {
     await supabase.from('users').delete().eq('id', req.user.id);
@@ -409,7 +381,7 @@ app.delete('/api/user/delete', authMiddleware, async (req, res) => {
   }
 });
 
-// ----------------- SOCKET.IO -----------------
+// --- SOCKET.IO realtime messages and reactions ---
 io.on('connection', (socket) => {
   console.log('socket connected', socket.id);
 
@@ -449,14 +421,12 @@ io.on('connection', (socket) => {
   });
 });
 
-// ----------------- START SERVER -----------------
+// Start server
 const PORT = process.env.PORT || 4000;
-server.listen(PORT, '0.0.0.0', () => {
-  console.log('==============================================');
-  console.log('🚀 VibeXpert Server Started Successfully!');
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'production'}`);
-  console.log(`🔗 Backend: ${BACKEND_PUBLIC_URL}`);
-  console.log(`🌐 Frontend allowed origin: ${FRONTEND_URL}`);
-  console.log(`📌 Listening on port: ${PORT}`);
-  console.log('==============================================');
+server.listen(PORT, "0.0.0.0", () => {
+  console.log("==============================================");
+  console.log(`🚀 VibeXpert Server Started Successfully!`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || "production"}`);
+  console.log(`🔗 API ready at: ${process.env.BASE_URL || `http://localhost:${PORT}`}`);
+  console.log("==============================================");
 });
