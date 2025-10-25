@@ -22,10 +22,29 @@ const io = socketIO(server, {
   }
 });
 
-// Middleware
+// Middleware - Enhanced CORS
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  'https://www.vibexpert.online',
+  'http://www.vibexpert.online',
+  'https://irfansm07.github.io' // Add your GitHub Pages URL if different
+];
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://www.vibexpert.online',
-  credentials: true
+  origin: function(origin, callback) {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.some(allowed => origin.startsWith(allowed))) {
+      callback(null, true);
+    } else {
+      console.log('❌ CORS blocked origin:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -44,6 +63,18 @@ const transporter = nodemailer.createTransport({
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS
+  },
+  tls: {
+    rejectUnauthorized: false
+  }
+});
+
+// Verify SMTP connection on startup
+transporter.verify(function (error, success) {
+  if (error) {
+    console.error('❌ SMTP Configuration Error:', error);
+  } else {
+    console.log('✅ SMTP Server is ready to send emails');
   }
 });
 
@@ -58,15 +89,18 @@ const generateCode = () => Math.floor(100000 + Math.random() * 900000).toString(
 
 const sendEmail = async (to, subject, html) => {
   try {
-    await transporter.sendMail({
+    console.log(`📧 Attempting to send email to: ${to}`);
+    const info = await transporter.sendMail({
       from: `${process.env.BREVO_FROM_NAME} <${process.env.BREVO_FROM_EMAIL}>`,
       to,
       subject,
       html
     });
+    console.log(`✅ Email sent successfully: ${info.messageId}`);
     return true;
   } catch (error) {
-    console.error('Email error:', error);
+    console.error('❌ Email sending failed:', error.message);
+    console.error('Full error:', error);
     return false;
   }
 };
@@ -236,11 +270,12 @@ app.post('/api/forgot-password', async (req, res) => {
     // Check if user exists
     const { data: user, error } = await supabase
       .from('users')
-      .select('id, username')
+      .select('id, username, email')
       .eq('email', email)
       .single();
 
     if (error || !user) {
+      console.log(`❌ User not found for email: ${email}`);
       return res.status(404).json({ error: 'Email not found' });
     }
 
@@ -248,16 +283,23 @@ app.post('/api/forgot-password', async (req, res) => {
     const code = generateCode();
     const expiresAt = new Date(Date.now() + parseInt(process.env.RESET_CODE_TTL_MIN) * 60 * 1000);
 
+    console.log(`🔑 Generated reset code for ${email}: ${code}`);
+
     // Store code
-    await supabase.from('codes').insert([{
+    const { error: codeError } = await supabase.from('codes').insert([{
       user_id: user.id,
       code,
       type: 'reset',
       expires_at: expiresAt.toISOString()
     }]);
 
+    if (codeError) {
+      console.error('❌ Error storing code:', codeError);
+      throw codeError;
+    }
+
     // Send email
-    await sendEmail(
+    const emailSent = await sendEmail(
       email,
       '🔐 Password Reset Code - VibeXpert',
       `
@@ -282,10 +324,24 @@ app.post('/api/forgot-password', async (req, res) => {
       `
     );
 
-    res.json({ message: 'Reset code sent to your email' });
+    if (!emailSent) {
+      console.error(`❌ Failed to send email to: ${email}`);
+      return res.status(500).json({ 
+        error: 'Failed to send email. Please check your email address and try again.' 
+      });
+    }
+
+    console.log(`✅ Reset email sent successfully to ${email}`);
+
+    res.json({ 
+      success: true,
+      message: 'Reset code sent to your email. Please check your inbox.',
+      // Only for development debugging:
+      ...(process.env.NODE_ENV === 'development' && { debugCode: code })
+    });
   } catch (error) {
-    console.error('Forgot password error:', error);
-    res.status(500).json({ error: 'Failed to send reset code' });
+    console.error('❌ Forgot password error:', error);
+    res.status(500).json({ error: 'Failed to process request. Please try again later.' });
   }
 });
 
