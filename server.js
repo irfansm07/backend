@@ -8,7 +8,7 @@ const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
 const http = require('http');
 const socketIO = require('socket.io');
-const axios = require('axios'); // For Brevo API alternative
+const axios = require('axios');
 
 // Initialize Express
 const app = express();
@@ -39,7 +39,7 @@ app.use(cors({
       callback(null, true);
     } else {
       console.log('❌ CORS blocked origin:', origin);
-      callback(null, true); // Allow anyway for now
+      callback(null, true);
     }
   },
   credentials: true,
@@ -56,9 +56,9 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Initialize Nodemailer with Brevo - FIXED CONFIGURATION
+// Initialize Nodemailer with Brevo
 const transporter = nodemailer.createTransport({
-  host: 'smtp-relay.sendinblue.com', // Use sendinblue, not brevo
+  host: 'smtp-relay.sendinblue.com',
   port: 587,
   secure: false,
   auth: {
@@ -68,7 +68,7 @@ const transporter = nodemailer.createTransport({
   tls: {
     rejectUnauthorized: false
   },
-  connectionTimeout: 10000, // 10 seconds
+  connectionTimeout: 10000,
   greetingTimeout: 10000
 });
 
@@ -91,7 +91,7 @@ const upload = multer({
 // Helper Functions
 const generateCode = () => Math.floor(100000 + Math.random() * 900000).toString();
 
-// IMPROVED: Send email with fallback to Brevo API
+// Send email with fallback to Brevo API
 const sendEmail = async (to, subject, html) => {
   try {
     console.log(`📧 Attempting to send email to: ${to}`);
@@ -135,7 +135,6 @@ const sendEmail = async (to, subject, html) => {
     }
   } catch (error) {
     console.error('❌ All email methods failed:', error.message);
-    // Don't throw error - allow registration to continue
     return false;
   }
 };
@@ -315,7 +314,6 @@ app.post('/api/forgot-password', async (req, res) => {
       .maybeSingle();
 
     if (error || !user) {
-      // Don't reveal if email exists for security
       return res.json({ 
         success: true,
         message: 'If this email exists, you will receive a reset code.' 
@@ -364,4 +362,156 @@ app.post('/api/forgot-password', async (req, res) => {
         </div>
       `
     ).then(sent => {
-      if(sent) console.log(`✅ Reset email
+      if(sent) console.log(`✅ Reset email sent to ${email}`);
+    }).catch(err => console.error('Email send failed:', err));
+
+    res.json({ 
+      success: true,
+      message: 'Reset code sent to your email' 
+    });
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ error: 'Failed to send reset code' });
+  }
+});
+
+// Verify Reset Code
+app.post('/api/verify-reset-code', async (req, res) => {
+  try {
+    const { email, code } = req.body;
+
+    if (!email || !code) {
+      return res.status(400).json({ error: 'Email and code required' });
+    }
+
+    // Get user
+    const { data: user } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', email)
+      .maybeSingle();
+
+    if (!user) {
+      return res.status(400).json({ error: 'Invalid email' });
+    }
+
+    // Verify code
+    const { data: codeData } = await supabase
+      .from('codes')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('code', code)
+      .eq('type', 'reset')
+      .gte('expires_at', new Date().toISOString())
+      .maybeSingle();
+
+    if (!codeData) {
+      return res.status(400).json({ error: 'Invalid or expired code' });
+    }
+
+    res.json({ success: true, message: 'Code verified' });
+  } catch (error) {
+    console.error('Verify code error:', error);
+    res.status(500).json({ error: 'Verification failed' });
+  }
+});
+
+// Reset Password
+app.post('/api/reset-password', async (req, res) => {
+  try {
+    const { email, code, newPassword } = req.body;
+
+    if (!email || !code || !newPassword) {
+      return res.status(400).json({ error: 'All fields required' });
+    }
+
+    // Get user
+    const { data: user } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', email)
+      .maybeSingle();
+
+    if (!user) {
+      return res.status(400).json({ error: 'Invalid email' });
+    }
+
+    // Verify code
+    const { data: codeData } = await supabase
+      .from('codes')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('code', code)
+      .eq('type', 'reset')
+      .gte('expires_at', new Date().toISOString())
+      .maybeSingle();
+
+    if (!codeData) {
+      return res.status(400).json({ error: 'Invalid or expired code' });
+    }
+
+    // Hash new password
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+
+    // Update password
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ password_hash: passwordHash })
+      .eq('id', user.id);
+
+    if (updateError) {
+      throw new Error('Failed to update password');
+    }
+
+    // Delete used code
+    await supabase
+      .from('codes')
+      .delete()
+      .eq('id', codeData.id);
+
+    res.json({ success: true, message: 'Password reset successful' });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ error: 'Password reset failed' });
+  }
+});
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    service: 'VibeXpert Backend'
+  });
+});
+
+// Root route
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'VibeXpert API is running',
+    version: '1.0.0'
+  });
+});
+
+// Socket.io connection handling
+io.on('connection', (socket) => {
+  console.log('User connected:', socket.id);
+
+  socket.on('disconnect', () => {
+    console.log('User disconnected:', socket.id);
+  });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Server error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// Start server
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📧 Email service: ${process.env.BREVO_FROM_EMAIL}`);
+  console.log(`🌐 Frontend URL: ${process.env.FRONTEND_URL}`);
+});
