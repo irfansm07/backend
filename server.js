@@ -1,5 +1,8 @@
 // VibeXpert Backend Server - Complete Production Version
 // Optimized for Render deployment with GitHub Pages frontend
+import { sendEmail } from "./utils/sendEmail.js";
+
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -1573,3 +1576,4 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('═'.repeat(70) + '\n');
   console.log('✅ Server is ready to accept connections!\n');
 });
+
