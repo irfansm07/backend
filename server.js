@@ -227,51 +227,43 @@ app.post('/api/register', async (req, res) => {
       email,
       '🎉 Welcome to VibeXpert!',
       `
-         <div style="font-family: 'Poppins', 'Helvetica Neue', Arial, sans-serif; background: linear-gradient(135deg, #4F46E5, #7C3AED, #6366F1); padding: 60px 0; color: #111827;">
-    <div style="max-width: 650px; background: #ffffff; border-radius: 24px; padding: 50px; margin: 0 auto; box-shadow: 0 10px 30px rgba(79,70,229,0.35); text-align: center;">
+        <div style="font-family: 'Poppins', Arial, sans-serif; background: linear-gradient(135deg, #4F46E5, #3B82F6, #7C3AED); padding: 60px 0; text-align: center;">
+    <div style="max-width: 640px; margin: 0 auto; background: #ffffff; border-radius: 20px; padding: 50px 40px; box-shadow: 0 10px 30px rgba(79,70,229,0.4);">
       
-      <!-- Header Icon -->
-      <div style="margin-bottom: 32px;">
-        <div style="background: linear-gradient(135deg, #818CF8, #A78BFA); width: 100px; height: 100px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 6px 20px rgba(99,102,241,0.5);">
-          <img src="https://img.icons8.com/emoji/96/party-popper.png" alt="🎉" style="width: 70px; height: 70px;">
-        </div>
-      </div>
-
-      <!-- Title -->
-      <h1 style="color: #4F46E5; font-size: 32px; font-weight: 800; margin-bottom: 12px;">
-        Welcome to <span style="color: #7C3AED;">VibeXpert</span>, ${username}! 🎊
-      </h1>
-      <p style="font-size: 18px; color: #4B5563; line-height: 1.6;">
-        You’ve just unlocked a community where college life meets connection, creativity, and pure energy. 🌟  
+      <!-- Header -->
+      <h1 style="font-size: 36px; color: #4F46E5; margin-bottom: 10px;">Welcome to <span style="color: #7C3AED;">VibeXpert</span>! 🎉</h1>
+      <p style="color: #374151; font-size: 18px; line-height: 1.6; margin-bottom: 30px;">
+        Hey <strong>${username}</strong>,<br>
+        Congratulations on joining <b>VibeXpert</b> — your all-in-one community to connect, collaborate, and create college vibes that last forever! 💫
       </p>
 
-      <!-- Divider -->
-      <hr style="border: none; height: 2px; width: 60px; background: linear-gradient(90deg, #4F46E5, #7C3AED); margin: 30px auto; border-radius: 2px;">
-
-      <!-- Steps -->
-      <div style="text-align: left; background: linear-gradient(135deg, #F9FAFB, #EEF2FF); border-radius: 16px; padding: 24px 28px; margin-top: 20px; box-shadow: inset 0 0 15px rgba(79,70,229,0.1);">
-        <h2 style="color: #4F46E5; font-size: 20px; margin-bottom: 12px;">Here’s how to get started:</h2>
-        <ol style="font-size: 16px; color: #374151; line-height: 1.9; margin-left: 20px;">
-          <li>✨ Log in to your new account</li>
+      <!-- Glowing Box -->
+      <div style="background: linear-gradient(135deg, #EEF2FF, #E0E7FF); padding: 25px; border-radius: 16px; box-shadow: inset 0 0 25px rgba(79,70,229,0.1); margin-bottom: 35px;">
+        <h2 style="color: #4F46E5; font-size: 20px; margin-bottom: 10px;">Here’s how to get started:</h2>
+        <ol style="color: #374151; font-size: 16px; text-align: left; display: inline-block; margin: 0; padding-left: 20px; line-height: 1.8;">
+          <li>💻 Log in to your new account</li>
           <li>🏫 Select your college</li>
-          <li>💬 Start connecting and vibing with your community</li>
+          <li>🚀 Start connecting and sharing with your community</li>
         </ol>
       </div>
 
-      <!-- CTA Button -->
-      <div style="text-align: center; margin-top: 40px;">
-        <a href="https://vibexpert.com/login"
-           style="display: inline-block; background: linear-gradient(90deg, #4F46E5, #8B5CF6); color: #fff; text-decoration: none; padding: 16px 40px; border-radius: 50px; font-size: 18px; font-weight: 600; letter-spacing: 0.5px; box-shadow: 0 6px 20px rgba(79,70,229,0.5); transition: all 0.3s ease;">
-          🚀 Jump In Now
-        </a>
-      </div>
+      <!-- CTA -->
+      <a href="https://vibexpert.com/login"
+        style="display: inline-block; background: linear-gradient(90deg, #4F46E5, #7C3AED); color: #fff; text-decoration: none; padding: 15px 40px; border-radius: 40px; font-size: 18px; font-weight: 600; letter-spacing: 0.4px; box-shadow: 0 8px 20px rgba(79,70,229,0.4); transition: all 0.3s;">
+        Join the Vibe 🚀
+      </a>
 
-      <!-- Footer Message -->
-      <div style="margin-top: 50px; text-align: center; font-size: 15px; color: #6B7280;">
-        <p>We’re thrilled to have you on board, ${username}! 💫<br>
-        Let’s make college life unforgettable — together.</p>
-        <p style="margin-top: 20px;">💜 The <strong>VibeXpert</strong> Team</p>
-      </div>
+      <!-- Divider -->
+      <hr style="border: none; height: 1px; background: linear-gradient(90deg, #4F46E5, #7C3AED, transparent); margin: 40px 0;">
+
+      <!-- Footer -->
+      <p style="color: #6B7280; font-size: 15px; margin-top: 20px;">
+        We’re so excited to have you, <strong>${username}</strong>! 💜<br>
+        Let’s make college life unforgettable — together.
+      </p>
+      <p style="color: #9CA3AF; font-size: 13px; margin-top: 20px;">
+        — The <strong>VibeXpert</strong> Team
+      </p>
     </div>
   </div>
       `
@@ -377,47 +369,45 @@ app.post('/api/forgot-password', async (req, res) => {
       email,
       '🔐 Password Reset Code - VibeXpert',
       `
-        <div style="font-family: 'Helvetica Neue', Arial, sans-serif; background: linear-gradient(135deg, #4F46E5, #6366F1); padding: 40px 0;">
-    <div style="max-width: 600px; background: #ffffff; border-radius: 16px; padding: 40px; margin: 0 auto; box-shadow: 0 8px 24px rgba(79,70,229,0.25);">
+          <div style="font-family: 'Poppins', Arial, sans-serif; background: linear-gradient(135deg, #4F46E5, #3B82F6, #7C3AED); padding: 60px 0; text-align: center;">
+    <div style="max-width: 640px; margin: 0 auto; background: #ffffff; border-radius: 20px; padding: 50px 40px; box-shadow: 0 10px 30px rgba(79,70,229,0.4);">
       
-      <div style="text-align: center; margin-bottom: 24px;">
-        <img src="https://img.icons8.com/fluency/96/lock--v1.png" alt="Lock Icon" style="width: 70px; height: 70px;">
-        <h1 style="color: #4F46E5; font-size: 26px; margin-top: 12px;">Password Reset Request</h1>
+      <!-- Header -->
+      <h1 style="font-size: 32px; color: #4F46E5; margin-bottom: 10px;">Password Reset Request 🔒</h1>
+      <p style="color: #374151; font-size: 17px; line-height: 1.6; margin-bottom: 30px;">
+        Hi <strong>${user.username}</strong>,<br>
+        We received a request to reset your password. Use the secure code below to complete the process.
+      </p>
+
+      <!-- Reset Code Box -->
+      <div style="background: linear-gradient(135deg, #EEF2FF, #E0E7FF); padding: 30px; border-radius: 16px; box-shadow: inset 0 0 20px rgba(79,70,229,0.1); margin: 30px 0;">
+        <h2 style="color: #1F2937; font-size: 36px; letter-spacing: 6px; margin: 0; font-weight: 700;">
+          ${code}
+        </h2>
       </div>
 
-      <p style="font-size: 16px; color: #374151; text-align: center;">
-        Hi <strong>${user.username}</strong>,
+      <!-- Expiry Info -->
+      <p style="color: #6B7280; font-size: 15px;">
+        ⏰ This code will expire in <strong>${process.env.RESET_CODE_TTL_MIN || 15} minutes</strong>.<br>
+        Please do not share it with anyone.
       </p>
 
-      <p style="font-size: 16px; color: #4B5563; line-height: 1.6; text-align: center;">
-        We received a request to reset your password for your VibeXpert account.<br>
-        Use the code below to proceed securely:
+      <!-- CTA -->
+      <a href="https://vibexpert.com/reset-password"
+        style="display: inline-block; background: linear-gradient(90deg, #4F46E5, #7C3AED); color: #fff; text-decoration: none; padding: 14px 36px; border-radius: 40px; font-size: 17px; font-weight: 600; letter-spacing: 0.4px; margin-top: 25px; box-shadow: 0 8px 20px rgba(79,70,229,0.4); transition: all 0.3s;">
+        Reset My Password 🔐
+      </a>
+
+      <!-- Divider -->
+      <hr style="border: none; height: 1px; background: linear-gradient(90deg, #4F46E5, #7C3AED, transparent); margin: 40px 0;">
+
+      <!-- Footer -->
+      <p style="color: #6B7280; font-size: 14px; margin-bottom: 6px;">
+        Didn’t request this? No worries — just ignore this email.
       </p>
-
-      <div style="background: linear-gradient(90deg, #EEF2FF, #E0E7FF); padding: 24px; border-radius: 12px; text-align: center; margin: 28px 0; border: 2px dashed #4F46E5;">
-        <h2 style="color: #111827; font-size: 36px; letter-spacing: 6px; margin: 0;">${code}</h2>
-      </div>
-
-      <p style="font-size: 15px; color: #6B7280; text-align: center;">
-        ⏰ This code expires in <strong>${process.env.RESET_CODE_TTL_MIN || 15} minutes</strong>.
+      <p style="color: #9CA3AF; font-size: 13px; margin-top: 20px;">
+        — The <strong>VibeXpert</strong> Team 💜
       </p>
-
-      <p style="font-size: 15px; color: #6B7280; text-align: center;">
-        If you didn’t request this password reset, you can safely ignore this email.
-      </p>
-
-      <div style="text-align: center; margin-top: 32px;">
-        <a href="https://vibexpert.com/reset-password"
-           style="display: inline-block; background: linear-gradient(90deg, #4F46E5, #8B5CF6); color: #fff; text-decoration: none; padding: 14px 28px; border-radius: 50px; font-size: 16px; font-weight: 600; box-shadow: 0 4px 12px rgba(79,70,229,0.4); transition: all 0.3s ease;">
-          🔄 Reset Password
-        </a>
-      </div>
-
-      <p style="text-align: center; color: #9CA3AF; font-size: 13px; margin-top: 36px;">
-        Stay secure,<br>
-        <strong>The VibeXpert Security Team</strong> 🔐
-      </p>
-
     </div>
   </div>
       `
@@ -987,5 +977,6 @@ server.listen(PORT, () => {
   console.log(`🌐 Frontend URL: ${process.env.FRONTEND_URL}`);
   console.log(`✨ Features: Auth, Posts, Media, Comments, Likes, Profile`);
 });
+
 
 
