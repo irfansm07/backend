@@ -381,7 +381,7 @@ app.post('/api/forgot-password', async (req, res) => {
 
       <!-- Reset Code Box -->
       <div style="background: linear-gradient(135deg, #EEF2FF, #E0E7FF); padding: 30px; border-radius: 16px; box-shadow: inset 0 0 20px rgba(79,70,229,0.1); margin: 30px 0;">
-        <h2 style="color: #1F2937; font-size: 36px; letter-spacing: 6px; margin: 0; font-weight: 700;">
+        <h2 style="color:#1E3A8A; font-size: 36px; letter-spacing: 6px; margin: 0; font-weight: 700;">
           ${code}
         </h2>
       </div>
@@ -977,6 +977,7 @@ server.listen(PORT, () => {
   console.log(`🌐 Frontend URL: ${process.env.FRONTEND_URL}`);
   console.log(`✨ Features: Auth, Posts, Media, Comments, Likes, Profile`);
 });
+
 
 
 
