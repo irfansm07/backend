@@ -343,22 +343,47 @@ app.post('/api/forgot-password', async (req, res) => {
       email,
       '🔐 Password Reset Code - VibeXpert',
       `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h1 style="color: #4F46E5;">Password Reset Request</h1>
-          <p style="font-size: 16px; color: #374151;">Hi ${user.username},</p>
-          <p style="font-size: 16px; color: #374151;">
-            You requested to reset your password. Use the code below:
-          </p>
-          <div style="background: #F3F4F6; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;">
-            <h2 style="color: #1F2937; font-size: 32px; letter-spacing: 4px; margin: 0;">${code}</h2>
-          </div>
-          <p style="font-size: 14px; color: #6B7280;">
-            This code expires in ${process.env.RESET_CODE_TTL_MIN || 15} minutes.
-          </p>
-          <p style="font-size: 14px; color: #6B7280;">
-            If you didn't request this, please ignore this email.
-          </p>
+        <div style="font-family: 'Poppins', 'Helvetica Neue', Arial, sans-serif; background: linear-gradient(135deg, #4338CA, #6D28D9, #7C3AED); padding: 60px 0; color: #111827;">
+    <div style="max-width: 600px; background: #ffffff; border-radius: 24px; padding: 40px; margin: 0 auto; box-shadow: 0 10px 30px rgba(79,70,229,0.4);">
+      
+      <div style="text-align: center; margin-bottom: 32px;">
+        <div style="background: linear-gradient(135deg, #6366F1, #8B5CF6); width: 90px; height: 90px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 4px 15px rgba(99,102,241,0.4);">
+          <img src="https://img.icons8.com/fluency/96/lock--v1.png" alt="Lock Icon" style="width: 60px; height: 60px;">
         </div>
+        <h1 style="color: #4F46E5; font-size: 28px; font-weight: 700; margin-top: 20px;">Reset Your Password</h1>
+        <p style="font-size: 16px; color: #4B5563; margin-top: 8px;">We’ve received a request to reset your password.</p>
+      </div>
+
+      <p style="font-size: 16px; color: #374151; text-align: center; line-height: 1.7;">
+        Hi <strong>${user.username}</strong>,<br>
+        Use the secure code below to reset your VibeXpert password.
+      </p>
+
+      <div style="margin: 36px auto; text-align: center; background: linear-gradient(135deg, #EEF2FF, #E0E7FF); border: 3px solid #6366F1; border-radius: 16px; padding: 24px; width: 80%; box-shadow: 0 4px 12px rgba(79,70,229,0.25);">
+        <h2 style="font-size: 42px; color: #1F2937; letter-spacing: 8px; margin: 0;">${code}</h2>
+        <p style="font-size: 14px; color: #6B7280; margin-top: 10px;">(Expires in ${process.env.RESET_CODE_TTL_MIN || 15} minutes)</p>
+      </div>
+
+      <div style="text-align: center; margin-top: 30px;">
+        <a href="https://vibexpert.com/reset-password"
+           style="display: inline-block; background: linear-gradient(90deg, #4F46E5, #7C3AED); color: #fff; text-decoration: none; padding: 16px 36px; border-radius: 50px; font-size: 17px; font-weight: 600; box-shadow: 0 4px 16px rgba(79,70,229,0.5); transition: transform 0.2s ease;">
+          🔄 Reset My Password
+        </a>
+      </div>
+
+      <p style="text-align: center; color: #6B7280; font-size: 15px; margin-top: 36px; line-height: 1.6;">
+        Didn’t request a password reset?<br>
+        No worries — just ignore this email. Your account remains safe.
+      </p>
+
+      <hr style="border: none; height: 1px; background: #E5E7EB; margin: 32px 0;">
+
+      <p style="text-align: center; color: #9CA3AF; font-size: 14px;">
+        💜 With care,<br>
+        <strong>The VibeXpert Security Team</strong>
+      </p>
+    </div>
+  </div>
       `
     ).then(sent => {
       if(sent) console.log(`✅ Reset email sent to ${email}`);
@@ -926,3 +951,4 @@ server.listen(PORT, () => {
   console.log(`🌐 Frontend URL: ${process.env.FRONTEND_URL}`);
   console.log(`✨ Features: Auth, Posts, Media, Comments, Likes, Profile`);
 });
+
