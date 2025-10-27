@@ -158,8 +158,8 @@ app.post('/api/register', async (req, res) => {
     </div>
   </div>
   `
-);
-      .catch(err => console.error('Email send failed:', err));
+    .catch(err => console.error('Email send failed:', err));
+
     
     res.status(201).json({ success: true, message: 'Account created successfully! Please log in.', userId: newUser.id });
   } catch (error) {
@@ -726,4 +726,5 @@ server.listen(PORT, () => {
   console.log(`🗄️  Database: Supabase`);
   console.log(`✅ All enhanced features enabled`);
 });
+
 
