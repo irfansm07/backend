@@ -118,7 +118,48 @@ app.post('/api/register', async (req, res) => {
     
     if (error) throw new Error('Failed to create account');
     
-    sendEmail(email, '🎉 Welcome to VibeXpert!', `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;"><h1 style="color: #4F46E5;">Welcome to VibeXpert, ${username}! 🎉</h1><p style="font-size: 16px; color: #374151;">Congratulations on creating your account!</p><p style="font-size: 16px; color: #374151;">Ready to vibe? Let's go! 🚀</p></div>`).catch(err => console.error('Email send failed:', err));
+
+  sendEmail(
+  email,
+  '🎉 Welcome to VibeXpert!',
+  `
+  <div style="background: #fff; font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 0 auto; border-radius: 12px; box-shadow: 0 5px 20px rgba(80, 80, 80, 0.07); padding: 36px 32px;">
+    <div style="text-align: center;">
+      <img src="https://cdn-icons-png.flaticon.com/512/547/547420.png" alt="VibeXpert logo" width="64" style="margin-bottom: 20px;"/>
+      <h1 style="color: #4F46E5; font-size: 2em; margin: 8px 0;">Welcome, ${username}! 🎉</h1>
+      <p style="color: #374151; font-size: 1.1em; margin: 20px 0 5px;">
+        You’re now part of a vibrant community where every vibe matters.<br>
+        Get ready to connect, create, and explore in a space built for passionate enthusiasts like you! 🎈
+      </p>
+      <p style="color: #4F46E5; font-weight: 500; font-size: 1em;">
+        At VibeXpert, your voice shapes our journey. Feel free to join discussions, share your expertise, and inspire others.
+      </p>
+      <p style="color: #16a34a; font-size: 1em;">
+        Your privacy and security are our top priorities—so you can vibe with confidence and peace of mind.
+      </p>
+      <p style="color: #374151; margin-top: 24px;">
+        Let’s build memories and make every moment count. Dive in, connect, and discover your next favorite experience!
+      </p>
+    </div>
+    <div style="text-align: center; margin-top: 24px;">
+      <a href="https://vibexpert.online/dashboard" style="background: #4F46E5; color: #fff; text-decoration: none; padding: 12px 34px; border-radius: 6px; font-size: 1em; display: inline-block; margin-top: 12px;">
+        🚀 Go To Dashboard
+      </a>
+    </div>
+    <div style="margin-top: 32px; text-align: center;">
+      <p style="color: #6b7280; font-size: 0.95em;">
+        Need help? <a href="https://vibexpert.online/help" style="color: #4F46E5; text-decoration: underline;">Check our Help Center 🫂</a>
+      </p>
+      <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 28px 0;" />
+      <p style="color: #9ca3af; font-size: 0.83em;">
+        You’re receiving this welcome email because you joined VibeXpert.<br/>
+        If you didn’t sign up, please ignore or contact support🔎.
+      </p>
+    </div>
+  </div>
+  `
+);
+      .catch(err => console.error('Email send failed:', err));
     
     res.status(201).json({ success: true, message: 'Account created successfully! Please log in.', userId: newUser.id });
   } catch (error) {
@@ -685,3 +726,4 @@ server.listen(PORT, () => {
   console.log(`🗄️  Database: Supabase`);
   console.log(`✅ All enhanced features enabled`);
 });
+
