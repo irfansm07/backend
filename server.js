@@ -119,40 +119,18 @@ app.post('/api/register', async (req, res) => {
     if (error) throw new Error('Failed to create account');
     
 
-  sendEmail(
+ sendEmail(
   email,
   '🎉 Welcome to VibeXpert!',
-  `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 28px; background: #ffffff; border-radius: 12px; box-shadow: 0 4px 24px rgba(76, 81, 255, 0.06);">
-    <div style="text-align: center;">
-      <img src="https://cdn-icons-png.flaticon.com/512/547/547420.png" alt="VibeXpert Community Logo" width="55" style="margin-bottom: 16px;"/>
-      <h1 style="color: #4F46E5; margin-bottom: 4px;">Welcome to VibeXpert, ${username}! 🎉</h1>
-      <p style="color: #374151; font-size: 18px; margin:16px 0;">
-        🎵 <strong>Congratulations!</strong> <br>
-        You’ve just joined a vibrant, welcoming community where every member helps shape the vibe.
-      </p>
-      <p style="color: #407A20; font-size: 16px; margin:12px 0;">
-        At VibeXpert, you’re not just a user—you’re a vibe creator. Whether you’re sharing knowledge, asking questions, or just browsing, <span style="color:#4F46E5;font-weight:600;">every interaction sparks something new</span>.
-      </p>
-      <p style="color: #16a34a; font-size: 16px;">
-        🔐 Your privacy and security are our top priorities. We use leading technologies and community guidelines to keep your journey safe and enjoyable.
-      </p>
-      <p style="font-size: 16px; color: #374151; margin:14px 0 20px;">
-        Ready to vibe with us? Explore trending topics, connect with peers, and leave your mark—because <span style="color:#4F46E5;">your vibe matters</span>.
-      </p>
-    </div>
-    <div style="text-align: center;">
-      <a href="https://vibexpert.online/dashboard"
-         style="background: #4F46E5; color: #fff; text-decoration: none; padding: 12px 36px; border-radius: 7px; font-size: 17px; display: inline-block; margin-top: 14px;">🚀 Start Vibing</a>
-    </div>
-    <div style="margin-top: 32px; text-align: center; color: #888;">
-      <p style="font-size: 15px;">
-        Need help? <a href="https://vibexpert.online/help" style="color: #4F46E5;">Check our Help Center</a>
-      </p>
-      <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
-      <p style="font-size: 13px; color: #bdbdbd;">You received this email because you joined VibeXpert.<br>If you didn’t sign up, please let us know.</p>
-    </div>
+  `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <h1 style="color: #4F46E5;">Welcome to VibeXpert, ${username}! 🎉</h1>
+    <p style="font-size: 18px; color: #374151;">Congratulations on creating your account!</p>
+    <p style="font-size: 16px; color: #374151;">we are thrilled that you entered more than 5k+ students beloved VIBEXPERT</p>
+    <p style="font-size: 16px; color: #374151;">connect.discover.vibe💙</p>
+    <p style="font-size: 16px; color: #374151;">Ready to vibe? Let's go! 🚀</p>
   </div>`
 ).catch(err => console.error('Email send failed:', err));
+
 
     
     res.status(201).json({ success: true, message: 'Account created successfully! Please log in.', userId: newUser.id });
@@ -720,6 +698,7 @@ server.listen(PORT, () => {
   console.log(`🗄️  Database: Supabase`);
   console.log(`✅ All enhanced features enabled`);
 });
+
 
 
 
