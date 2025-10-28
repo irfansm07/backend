@@ -8,6 +8,8 @@ const { createClient } = require('@supabase/supabase-js');
 const http = require('http');
 const socketIO = require('socket.io');
 const axios = require('axios');
+const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
@@ -27,13 +29,37 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
+
+// Available songs for posts
+const availableSongs = [
+  { id: 'song1', name: 'Chill Vibes', url: '/assets/songs/chill-vibes.mp3', duration: '0:30' },
+  { id: 'song2', name: 'Upbeat Energy', url: '/assets/songs/upbeat-energy.mp3', duration: '0:30' },
+  { id: 'song3', name: 'Study Focus', url: '/assets/songs/study-focus.mp3', duration: '0:30' },
+  { id: 'song4', name: 'Happy Moments', url: '/assets/songs/happy-moments.mp3', duration: '0:30' },
+  { id: 'song5', name: 'Romantic Mood', url: '/assets/songs/romantic-mood.mp3', duration: '0:30' }
+];
+
+// Available stickers for posts
+const availableStickers = [
+  { id: 'sticker1', name: 'Cool 😎', url: '/assets/stickers/cool.png', category: 'emotions' },
+  { id: 'sticker2', name: 'Laughing 😂', url: '/assets/stickers/laughing.png', category: 'emotions' },
+  { id: 'sticker3', name: 'Heart ❤️', url: '/assets/stickers/heart.png', category: 'love' },
+  { id: 'sticker4', name: 'Fire 🔥', url: '/assets/stickers/fire.png', category: 'trending' },
+  { id: 'sticker5', name: 'Star ⭐', url: '/assets/stickers/star.png', category: 'achievement' },
+  { id: 'sticker6', name: 'Party 🎉', url: '/assets/stickers/party.png', category: 'celebration' },
+  { id: 'sticker7', name: 'Music 🎵', url: '/assets/stickers/music.png', category: 'music' },
+  { id: 'sticker8', name: 'Game 🎮', url: '/assets/stickers/game.png', category: 'hobbies' },
+  { id: 'sticker9', name: 'Food 🍕', url: '/assets/stickers/food.png', category: 'food' },
+  { id: 'sticker10', name: 'Study 📚', url: '/assets/stickers/study.png', category: 'academic' }
+];
 
 const sendEmail = async (to, subject, html) => {
   try {
@@ -67,12 +93,12 @@ const sendEmail = async (to, subject, html) => {
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024, files: 5 },
+  limits: { fileSize: 20 * 1024 * 1024, files: 10 },
   fileFilter: (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png|gif|webp|mp4|mov|avi/;
+    const allowedTypes = /jpeg|jpg|png|gif|webp|mp4|mov|avi|mp3|wav/;
     const mimetype = allowedTypes.test(file.mimetype);
     if (mimetype) return cb(null, true);
-    cb(new Error('Only image and video files allowed'));
+    cb(new Error('Only image, video, and audio files allowed'));
   }
 });
 
@@ -92,6 +118,15 @@ const authenticateToken = async (req, res, next) => {
     return res.status(403).json({ error: 'Invalid or expired token' });
   }
 };
+
+// Get available songs and stickers
+app.get('/api/post-assets', (req, res) => {
+  res.json({
+    success: true,
+    songs: availableSongs,
+    stickers: availableStickers
+  });
+});
 
 app.post('/api/register', async (req, res) => {
   try {
@@ -118,20 +153,7 @@ app.post('/api/register', async (req, res) => {
     
     if (error) throw new Error('Failed to create account');
     
-
- sendEmail(
-  email,
-  '🎉 Welcome to VibeXpert!',
-  `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-    <h1 style="color: #4F46E5;">Welcome to VibeXpert, ${username}! 🎉</h1>
-    <p style="font-size: 18px; color: #374151;">Congratulations on creating your account!</p>
-    <p style="font-size: 16px; color: #374151;">we are thrilled that you entered more than 5k+ students beloved VIBEXPERT</p>
-    <p style="font-size: 16px; color: #374151;">connect.discover.vibe💙</p>
-    <p style="font-size: 16px; color: #374151;">Ready to vibe? Let's go! 🚀</p>
-  </div>`
-).catch(err => console.error('Email send failed:', err));
-
-
+    sendEmail(email, '🎉 Welcome to VibeXpert!', `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;"><h1 style="color: #4F46E5;">Welcome to VibeXpert, ${username}! 🎉</h1><p style="font-size: 16px; color: #374151;">Congratulations on creating your account!</p><p style="font-size: 16px; color: #374151;">Ready to vibe? Let's go! 🚀</p></div>`).catch(err => console.error('Email send failed:', err));
     
     res.status(201).json({ success: true, message: 'Account created successfully! Please log in.', userId: newUser.id });
   } catch (error) {
@@ -240,11 +262,14 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
   }
 });
 
-app.post('/api/posts', authenticateToken, upload.array('media', 5), async (req, res) => {
+app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req, res) => {
   try {
-    const { content, postTo = 'profile' } = req.body;
+    const { content, postTo = 'profile', selectedSong, stickers = '[]' } = req.body;
     const files = req.files;
-    if (!content && (!files || files.length === 0)) return res.status(400).json({ error: 'Post must have content or media' });
+    
+    if (!content && (!files || files.length === 0)) {
+      return res.status(400).json({ error: 'Post must have content or media' });
+    }
     
     if (!['profile', 'community'].includes(postTo)) {
       return res.status(400).json({ error: 'Invalid post destination' });
@@ -258,8 +283,16 @@ app.post('/api/posts', authenticateToken, upload.array('media', 5), async (req, 
         const { data: uploadData, error: uploadError } = await supabase.storage.from('posts-media').upload(fileName, file.buffer, { contentType: file.mimetype, cacheControl: '3600' });
         if (uploadError) throw new Error('Failed to upload media');
         const { data: urlData } = supabase.storage.from('posts-media').getPublicUrl(fileName);
-        mediaUrls.push({ url: urlData.publicUrl, type: file.mimetype.startsWith('image') ? 'image' : 'video' });
+        mediaUrls.push({ url: urlData.publicUrl, type: file.mimetype.startsWith('image') ? 'image' : file.mimetype.startsWith('video') ? 'video' : 'audio' });
       }
+    }
+    
+    // Parse stickers JSON
+    let parsedStickers = [];
+    try {
+      parsedStickers = JSON.parse(stickers);
+    } catch (e) {
+      console.warn('Invalid stickers format');
     }
     
     const { data: newPost, error: postError } = await supabase.from('posts').insert([{ 
@@ -267,7 +300,9 @@ app.post('/api/posts', authenticateToken, upload.array('media', 5), async (req, 
       content: content || '', 
       media: mediaUrls, 
       college: req.user.college, 
-      posted_to: postTo 
+      posted_to: postTo,
+      selected_song: selectedSong || null,
+      stickers: parsedStickers
     }]).select(`*, users (id, username, profile_pic, college, registration_number)`).single();
     
     if (postError) throw new Error('Failed to create post');
@@ -641,17 +676,17 @@ app.get('/api/badges', authenticateToken, async (req, res) => {
 });
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '3.0' });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '3.1' });
 });
 
 app.get('/', (req, res) => {
   res.json({ 
-    message: 'VibeXpert API v3.0 - Enhanced Features', 
+    message: 'VibeXpert API v3.1 - Enhanced Posts with Music & Stickers', 
     features: [
       'Auth', 
       'College Verification', 
-      'Posts with Destination', 
-      'Media Upload', 
+      'Posts with Music & Stickers', 
+      'Enhanced Media Upload', 
       'Community Chat with Reactions',
       'Message Edit/Delete',
       'Message Views',
@@ -675,30 +710,32 @@ io.on('connection', (socket) => {
   });
   
   socket.on('user_online', (userId) => {
-    onlineUsers[socket.id] = userId;
-    io.emit('online_count', Object.keys(onlineUsers).length);
+    onlineUsers[userId] = socket.id;
+    io.emit('online_users', Object.keys(onlineUsers));
+  });
+  
+  socket.on('typing_start', (data) => {
+    socket.to(data.college).emit('user_typing', { userId: data.userId, username: data.username });
+  });
+  
+  socket.on('typing_stop', (data) => {
+    socket.to(data.college).emit('user_stop_typing', { userId: data.userId });
   });
   
   socket.on('disconnect', () => {
-    delete onlineUsers[socket.id];
-    console.log('❌ User disconnected:', socket.id, '| Online:', Object.keys(onlineUsers).length);
-    io.emit('online_count', Object.keys(onlineUsers).length);
+    console.log('❌ User disconnected:', socket.id);
+    const userId = Object.keys(onlineUsers).find(key => onlineUsers[key] === socket.id);
+    if (userId) {
+      delete onlineUsers[userId];
+      io.emit('online_users', Object.keys(onlineUsers));
+    }
   });
-});
-
-app.use((err, req, res, next) => {
-  console.error('Server error:', err);
-  res.status(500).json({ error: 'Internal server error' });
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📧 Email: Brevo API`);
-  console.log(`🗄️  Database: Supabase`);
-  console.log(`✅ All enhanced features enabled`);
+  console.log(`🚀 VibeXpert Server v3.1 running on port ${PORT}`);
+  console.log(`🎵 Available Songs: ${availableSongs.length}`);
+  console.log(`🎨 Available Stickers: ${availableStickers.length}`);
+  console.log(`📱 Enhanced Posts with Music & Stickers`);
 });
-
-
-
-
