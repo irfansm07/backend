@@ -38,27 +38,75 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Available songs for posts
+// Enhanced available songs with actual working URLs
 const availableSongs = [
-  { id: 'song1', name: 'Chill Vibes', url: '/assets/songs/chill-vibes.mp3', duration: '0:30' },
-  { id: 'song2', name: 'Upbeat Energy', url: '/assets/songs/upbeat-energy.mp3', duration: '0:30' },
-  { id: 'song3', name: 'Study Focus', url: '/assets/songs/study-focus.mp3', duration: '0:30' },
-  { id: 'song4', name: 'Happy Moments', url: '/assets/songs/happy-moments.mp3', duration: '0:30' },
-  { id: 'song5', name: 'Romantic Mood', url: '/assets/songs/romantic-mood.mp3', duration: '0:30' }
+  { 
+    id: 'song1', 
+    name: 'Chill Vibes', 
+    artist: 'LoFi Beats',
+    duration: '2:30',
+    emoji: '🎧',
+    url: 'https://assets.mixkit.co/music/preview/mixkit-chill-vibes-239.mp3'
+  },
+  { 
+    id: 'song2', 
+    name: 'Upbeat Energy', 
+    artist: 'Electronic Pop',
+    duration: '3:15',
+    emoji: '⚡',
+    url: 'https://assets.mixkit.co/music/preview/mixkit-upbeat-energy-225.mp3'
+  },
+  { 
+    id: 'song3', 
+    name: 'Dreamy Piano', 
+    artist: 'Classical',
+    duration: '2:45',
+    emoji: '🎹',
+    url: 'https://assets.mixkit.co/music/preview/mixkit-dreamy-piano-1171.mp3'
+  },
+  { 
+    id: 'song4', 
+    name: 'Summer Vibes', 
+    artist: 'Tropical',
+    duration: '3:30',
+    emoji: '🏖️',
+    url: 'https://assets.mixkit.co/music/preview/mixkit-summer-vibes-129.mp3'
+  },
+  { 
+    id: 'song5', 
+    name: 'Happy Day', 
+    artist: 'Pop Rock',
+    duration: '2:50',
+    emoji: '😊',
+    url: 'https://assets.mixkit.co/music/preview/mixkit-happy-day-583.mp3'
+  },
+  { 
+    id: 'song6', 
+    name: 'Relaxing Guitar', 
+    artist: 'Acoustic',
+    duration: '3:10',
+    emoji: '🎸',
+    url: 'https://assets.mixkit.co/music/preview/mixkit-relaxing-guitar-243.mp3'
+  }
 ];
 
-// Available stickers for posts
+// Enhanced available stickers with emoji support
 const availableStickers = [
-  { id: 'sticker1', name: 'Cool 😎', url: '/assets/stickers/cool.png', category: 'emotions' },
-  { id: 'sticker2', name: 'Laughing 😂', url: '/assets/stickers/laughing.png', category: 'emotions' },
-  { id: 'sticker3', name: 'Heart ❤️', url: '/assets/stickers/heart.png', category: 'love' },
-  { id: 'sticker4', name: 'Fire 🔥', url: '/assets/stickers/fire.png', category: 'trending' },
-  { id: 'sticker5', name: 'Star ⭐', url: '/assets/stickers/star.png', category: 'achievement' },
-  { id: 'sticker6', name: 'Party 🎉', url: '/assets/stickers/party.png', category: 'celebration' },
-  { id: 'sticker7', name: 'Music 🎵', url: '/assets/stickers/music.png', category: 'music' },
-  { id: 'sticker8', name: 'Game 🎮', url: '/assets/stickers/game.png', category: 'hobbies' },
-  { id: 'sticker9', name: 'Food 🍕', url: '/assets/stickers/food.png', category: 'food' },
-  { id: 'sticker10', name: 'Study 📚', url: '/assets/stickers/study.png', category: 'academic' }
+  { id: 'sticker1', name: 'Happy 😊', emoji: '😊', category: 'emotions' },
+  { id: 'sticker2', name: 'Laughing 😂', emoji: '😂', category: 'emotions' },
+  { id: 'sticker3', name: 'Heart ❤️', emoji: '❤️', category: 'love' },
+  { id: 'sticker4', name: 'Fire 🔥', emoji: '🔥', category: 'trending' },
+  { id: 'sticker5', name: 'Star ⭐', emoji: '⭐', category: 'achievement' },
+  { id: 'sticker6', name: 'Party 🎉', emoji: '🎉', category: 'celebration' },
+  { id: 'sticker7', name: 'Music 🎵', emoji: '🎵', category: 'music' },
+  { id: 'sticker8', name: 'Game 🎮', emoji: '🎮', category: 'hobbies' },
+  { id: 'sticker9', name: 'Food 🍕', emoji: '🍕', category: 'food' },
+  { id: 'sticker10', name: 'Study 📚', emoji: '📚', category: 'academic' },
+  { id: 'sticker11', name: 'Cool 😎', emoji: '😎', category: 'emotions' },
+  { id: 'sticker12', name: 'Love 💕', emoji: '💕', category: 'love' },
+  { id: 'sticker13', name: 'Thumbs Up 👍', emoji: '👍', category: 'reactions' },
+  { id: 'sticker14', name: 'Clap 👏', emoji: '👏', category: 'reactions' },
+  { id: 'sticker15', name: 'Rocket 🚀', emoji: '🚀', category: 'excitement' }
 ];
 
 const sendEmail = async (to, subject, html) => {
@@ -119,11 +167,27 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// Get available songs and stickers
+// Get available songs and stickers - ENHANCED
 app.get('/api/post-assets', (req, res) => {
   res.json({
     success: true,
     songs: availableSongs,
+    stickers: availableStickers
+  });
+});
+
+// Get music library
+app.get('/api/music-library', (req, res) => {
+  res.json({
+    success: true,
+    music: availableSongs
+  });
+});
+
+// Get sticker library
+app.get('/api/sticker-library', (req, res) => {
+  res.json({
+    success: true,
     stickers: availableStickers
   });
 });
@@ -179,7 +243,8 @@ app.post('/api/login', async (req, res) => {
       communityJoined: user.community_joined, 
       profilePic: user.profile_pic,
       registrationNumber: user.registration_number,
-      badges: user.badges || []
+      badges: user.badges || [],
+      bio: user.bio || ''
     } });
   } catch (error) {
     console.error('Login error:', error);
@@ -262,17 +327,50 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
   }
 });
 
+// ENHANCED POST CREATION WITH MUSIC AND STICKERS
 app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req, res) => {
   try {
-    const { content, postTo = 'profile', selectedSong, stickers = '[]' } = req.body;
+    const { content, postTo = 'profile', music, stickers = '[]' } = req.body;
     const files = req.files;
     
-    if (!content && (!files || files.length === 0)) {
-      return res.status(400).json({ error: 'Post must have content or media' });
+    if (!content && (!files || files.length === 0) && !music && (!stickers || stickers === '[]')) {
+      return res.status(400).json({ error: 'Post must have content, media, music, or stickers' });
     }
     
     if (!['profile', 'community'].includes(postTo)) {
       return res.status(400).json({ error: 'Invalid post destination' });
+    }
+    
+    // Parse music data if provided
+    let parsedMusic = null;
+    if (music) {
+      try {
+        parsedMusic = JSON.parse(music);
+        // Validate music object
+        if (!parsedMusic.id || !parsedMusic.name || !parsedMusic.url) {
+          parsedMusic = null;
+        }
+      } catch (e) {
+        console.warn('Invalid music format:', e.message);
+        parsedMusic = null;
+      }
+    }
+    
+    // Parse stickers data if provided
+    let parsedStickers = [];
+    if (stickers) {
+      try {
+        parsedStickers = JSON.parse(stickers);
+        // Validate stickers array
+        if (!Array.isArray(parsedStickers)) {
+          parsedStickers = [];
+        }
+        // Limit to 5 stickers
+        parsedStickers = parsedStickers.slice(0, 5);
+      } catch (e) {
+        console.warn('Invalid stickers format:', e.message);
+        parsedStickers = [];
+      }
     }
     
     const mediaUrls = [];
@@ -283,16 +381,11 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
         const { data: uploadData, error: uploadError } = await supabase.storage.from('posts-media').upload(fileName, file.buffer, { contentType: file.mimetype, cacheControl: '3600' });
         if (uploadError) throw new Error('Failed to upload media');
         const { data: urlData } = supabase.storage.from('posts-media').getPublicUrl(fileName);
-        mediaUrls.push({ url: urlData.publicUrl, type: file.mimetype.startsWith('image') ? 'image' : file.mimetype.startsWith('video') ? 'video' : 'audio' });
+        mediaUrls.push({ 
+          url: urlData.publicUrl, 
+          type: file.mimetype.startsWith('image') ? 'image' : file.mimetype.startsWith('video') ? 'video' : 'audio' 
+        });
       }
-    }
-    
-    // Parse stickers JSON
-    let parsedStickers = [];
-    try {
-      parsedStickers = JSON.parse(stickers);
-    } catch (e) {
-      console.warn('Invalid stickers format');
     }
     
     const { data: newPost, error: postError } = await supabase.from('posts').insert([{ 
@@ -301,7 +394,7 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       media: mediaUrls, 
       college: req.user.college, 
       posted_to: postTo,
-      selected_song: selectedSong || null,
+      music: parsedMusic,
       stickers: parsedStickers
     }]).select(`*, users (id, username, profile_pic, college, registration_number)`).single();
     
@@ -311,16 +404,40 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
     const { data: userPosts } = await supabase.from('posts').select('id').eq('user_id', req.user.id);
     const postCount = userPosts?.length || 0;
     
+    let badgeUpdated = false;
+    
     if (postCount === 1 && !currentBadges.includes('🎨 First Post')) {
       currentBadges.push('🎨 First Post');
-      await supabase.from('users').update({ badges: currentBadges }).eq('id', req.user.id);
+      badgeUpdated = true;
     } else if (postCount === 10 && !currentBadges.includes('⭐ Content Creator')) {
       currentBadges.push('⭐ Content Creator');
+      badgeUpdated = true;
+    }
+    
+    // Check for music badge
+    if (parsedMusic && !currentBadges.includes('🎵 Music Lover')) {
+      currentBadges.push('🎵 Music Lover');
+      badgeUpdated = true;
+    }
+    
+    // Check for sticker badge
+    if (parsedStickers.length > 0 && !currentBadges.includes('🎨 Creative')) {
+      currentBadges.push('🎨 Creative');
+      badgeUpdated = true;
+    }
+    
+    if (badgeUpdated) {
       await supabase.from('users').update({ badges: currentBadges }).eq('id', req.user.id);
     }
     
     io.emit('new_post', newPost);
-    res.status(201).json({ success: true, post: newPost, message: 'Post created successfully!', badges: currentBadges });
+    res.status(201).json({ 
+      success: true, 
+      post: newPost, 
+      message: 'Post created successfully!', 
+      badges: currentBadges,
+      badgeUpdated: badgeUpdated 
+    });
   } catch (error) {
     console.error('Create post error:', error);
     res.status(500).json({ error: error.message || 'Failed to create post' });
@@ -342,7 +459,15 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
     
     const { data: posts, error } = await query.range(offset, offset + parseInt(limit) - 1);
     if (error) throw new Error('Failed to fetch posts');
-    res.json({ success: true, posts: posts || [] });
+    
+    // Ensure music and stickers are properly formatted
+    const formattedPosts = (posts || []).map(post => ({
+      ...post,
+      music: post.music || null,
+      stickers: post.stickers || []
+    }));
+    
+    res.json({ success: true, posts: formattedPosts });
   } catch (error) {
     console.error('Get posts error:', error);
     res.json({ success: true, posts: [] });
@@ -660,13 +785,15 @@ app.get('/api/badges', authenticateToken, async (req, res) => {
   try {
     res.json({ 
       success: true, 
-      badges: currentUser?.badges || [],
+      badges: req.user?.badges || [],
       availableBadges: [
         { emoji: '🎓', name: 'Community Member', description: 'Joined a college community' },
         { emoji: '🎨', name: 'First Post', description: 'Created your first post' },
         { emoji: '⭐', name: 'Content Creator', description: 'Posted 10 times' },
         { emoji: '💬', name: 'Chatty', description: 'Sent 50 messages' },
-        { emoji: '🔥', name: 'On Fire', description: '7 day streak' }
+        { emoji: '🔥', name: 'On Fire', description: '7 day streak' },
+        { emoji: '🎵', name: 'Music Lover', description: 'Added music to a post' },
+        { emoji: '🎨', name: 'Creative', description: 'Used stickers in a post' }
       ]
     });
   } catch (error) {
@@ -676,12 +803,12 @@ app.get('/api/badges', authenticateToken, async (req, res) => {
 });
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '3.1' });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '3.2' });
 });
 
 app.get('/', (req, res) => {
   res.json({ 
-    message: 'VibeXpert API v3.1 - Enhanced Posts with Music & Stickers', 
+    message: 'VibeXpert API v3.2 - Enhanced Posts with Music & Stickers', 
     features: [
       'Auth', 
       'College Verification', 
@@ -693,7 +820,9 @@ app.get('/', (req, res) => {
       'User Search',
       'Profile Management',
       'Feedback System',
-      'Badge System'
+      'Badge System',
+      'Music Library',
+      'Sticker Library'
     ] 
   });
 });
@@ -734,8 +863,9 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 VibeXpert Server v3.1 running on port ${PORT}`);
+  console.log(`🚀 VibeXpert Server v3.2 running on port ${PORT}`);
   console.log(`🎵 Available Songs: ${availableSongs.length}`);
   console.log(`🎨 Available Stickers: ${availableStickers.length}`);
   console.log(`📱 Enhanced Posts with Music & Stickers`);
+  console.log(`✨ Music & Sticker functionality fully enabled`);
 });
