@@ -109,6 +109,18 @@ const availableStickers = [
   { id: 'sticker15', name: 'Rocket 🚀', emoji: '🚀', category: 'excitement' }
 ];
 
+// Available image filters
+const availableFilters = [
+  { id: 'none', name: 'Original', emoji: '🔄' },
+  { id: 'grayscale', name: 'Grayscale', emoji: '⚫' },
+  { id: 'sepia', name: 'Sepia', emoji: '🟤' },
+  { id: 'brightness', name: 'Bright', emoji: '💡' },
+  { id: 'contrast', name: 'Contrast', emoji: '🎨' },
+  { id: 'saturate', name: 'Saturate', emoji: '🌈' },
+  { id: 'hue-rotate', name: 'Colorful', emoji: '🎭' },
+  { id: 'invert', name: 'Invert', emoji: '🔃' }
+];
+
 const sendEmail = async (to, subject, html) => {
   try {
     console.log(`📧 Sending email to: ${to}`);
@@ -167,12 +179,13 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// Get available songs and stickers - ENHANCED
+// Get available songs, stickers, and filters - ENHANCED
 app.get('/api/post-assets', (req, res) => {
   res.json({
     success: true,
     songs: availableSongs,
-    stickers: availableStickers
+    stickers: availableStickers,
+    filters: availableFilters
   });
 });
 
@@ -189,6 +202,14 @@ app.get('/api/sticker-library', (req, res) => {
   res.json({
     success: true,
     stickers: availableStickers
+  });
+});
+
+// Get available filters
+app.get('/api/filters', (req, res) => {
+  res.json({
+    success: true,
+    filters: availableFilters
   });
 });
 
@@ -327,17 +348,18 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
   }
 });
 
-// ENHANCED POST CREATION WITH MUSIC AND STICKERS
+// ENHANCED POST CREATION WITH MUSIC, STICKERS, AND FILTERS
 app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req, res) => {
   try {
-    const { content, postTo = 'profile', music, stickers = '[]' } = req.body;
+    const { content, postTo = 'profile', music, stickers = '[]', imageFilter = 'none' } = req.body;
     const files = req.files;
     
     if (!content && (!files || files.length === 0) && !music && (!stickers || stickers === '[]')) {
       return res.status(400).json({ error: 'Post must have content, media, music, or stickers' });
     }
     
-    if (!['profile', 'community'].includes(postTo)) {
+    // Enhanced post destination validation
+    if (!['profile', 'community', 'both'].includes(postTo)) {
       return res.status(400).json({ error: 'Invalid post destination' });
     }
     
@@ -373,6 +395,9 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       }
     }
     
+    // Validate image filter
+    const validFilter = availableFilters.find(f => f.id === imageFilter) ? imageFilter : 'none';
+    
     const mediaUrls = [];
     if (files && files.length > 0) {
       for (const file of files) {
@@ -383,20 +408,54 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
         const { data: urlData } = supabase.storage.from('posts-media').getPublicUrl(fileName);
         mediaUrls.push({ 
           url: urlData.publicUrl, 
-          type: file.mimetype.startsWith('image') ? 'image' : file.mimetype.startsWith('video') ? 'video' : 'audio' 
+          type: file.mimetype.startsWith('image') ? 'image' : file.mimetype.startsWith('video') ? 'video' : 'audio',
+          filter: file.mimetype.startsWith('image') ? validFilter : null
         });
       }
     }
     
-    const { data: newPost, error: postError } = await supabase.from('posts').insert([{ 
-      user_id: req.user.id, 
-      content: content || '', 
-      media: mediaUrls, 
-      college: req.user.college, 
-      posted_to: postTo,
-      music: parsedMusic,
-      stickers: parsedStickers
-    }]).select(`*, users (id, username, profile_pic, college, registration_number)`).single();
+    // Handle post destination logic
+    let postsToCreate = [];
+    
+    if (postTo === 'both') {
+      // Create two posts: one for profile and one for community
+      postsToCreate = [
+        { 
+          user_id: req.user.id, 
+          content: content || '', 
+          media: mediaUrls, 
+          college: req.user.college, 
+          posted_to: 'profile',
+          music: parsedMusic,
+          stickers: parsedStickers,
+          image_filter: validFilter
+        },
+        { 
+          user_id: req.user.id, 
+          content: content || '', 
+          media: mediaUrls, 
+          college: req.user.college, 
+          posted_to: 'community',
+          music: parsedMusic,
+          stickers: parsedStickers,
+          image_filter: validFilter
+        }
+      ];
+    } else {
+      // Create single post
+      postsToCreate = [{ 
+        user_id: req.user.id, 
+        content: content || '', 
+        media: mediaUrls, 
+        college: req.user.college, 
+        posted_to: postTo,
+        music: parsedMusic,
+        stickers: parsedStickers,
+        image_filter: validFilter
+      }];
+    }
+    
+    const { data: newPosts, error: postError } = await supabase.from('posts').insert(postsToCreate).select(`*, users (id, username, profile_pic, college, registration_number)`);
     
     if (postError) throw new Error('Failed to create post');
     
@@ -426,15 +485,29 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       badgeUpdated = true;
     }
     
+    // Check for filter badge
+    if (validFilter !== 'none' && !currentBadges.includes('🖼️ Photo Editor')) {
+      currentBadges.push('🖼️ Photo Editor');
+      badgeUpdated = true;
+    }
+    
     if (badgeUpdated) {
       await supabase.from('users').update({ badges: currentBadges }).eq('id', req.user.id);
     }
     
-    io.emit('new_post', newPost);
+    // Emit socket events for new posts
+    newPosts.forEach(post => {
+      if (post.posted_to === 'community') {
+        io.to(post.college).emit('new_post', post);
+      } else {
+        io.emit('new_profile_post', { userId: req.user.id, post });
+      }
+    });
+    
     res.status(201).json({ 
       success: true, 
-      post: newPost, 
-      message: 'Post created successfully!', 
+      posts: newPosts, 
+      message: postTo === 'both' ? 'Post created in both profile and community!' : `Post created in ${postTo}!`, 
       badges: currentBadges,
       badgeUpdated: badgeUpdated 
     });
@@ -444,9 +517,10 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
   }
 });
 
+// Enhanced get posts with filtering
 app.get('/api/posts', authenticateToken, async (req, res) => {
   try {
-    const { limit = 20, offset = 0, type = 'all' } = req.query;
+    const { limit = 20, offset = 0, type = 'all', destination } = req.query;
     let query = supabase.from('posts').select(`*, users (id, username, profile_pic, college, registration_number)`).order('created_at', { ascending: false });
     
     if (type === 'my') {
@@ -457,14 +531,20 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
       query = query.eq('user_id', req.user.id).eq('posted_to', 'profile');
     }
     
+    // Filter by destination if specified
+    if (destination && ['profile', 'community'].includes(destination)) {
+      query = query.eq('posted_to', destination);
+    }
+    
     const { data: posts, error } = await query.range(offset, offset + parseInt(limit) - 1);
     if (error) throw new Error('Failed to fetch posts');
     
-    // Ensure music and stickers are properly formatted
+    // Ensure music, stickers, and filters are properly formatted
     const formattedPosts = (posts || []).map(post => ({
       ...post,
       music: post.music || null,
-      stickers: post.stickers || []
+      stickers: post.stickers || [],
+      image_filter: post.image_filter || 'none'
     }));
     
     res.json({ success: true, posts: formattedPosts });
@@ -477,7 +557,7 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
 app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { data: post } = await supabase.from('posts').select('user_id, media').eq('id', id).single();
+    const { data: post } = await supabase.from('posts').select('user_id, media, posted_to, college').eq('id', id).single();
     if (!post) return res.status(404).json({ error: 'Post not found' });
     if (post.user_id !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
     if (post.media && post.media.length > 0) {
@@ -487,10 +567,63 @@ app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
       }
     }
     await supabase.from('posts').delete().eq('id', id);
+    
+    // Emit socket event for post deletion
+    if (post.posted_to === 'community') {
+      io.to(post.college).emit('post_deleted', { id });
+    } else {
+      io.emit('profile_post_deleted', { userId: req.user.id, postId: id });
+    }
+    
     res.json({ success: true, message: 'Post deleted successfully' });
   } catch (error) {
     console.error('Delete post error:', error);
     res.status(500).json({ error: 'Failed to delete post' });
+  }
+});
+
+// Enhanced post reactions
+app.post('/api/posts/:id/react', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { emoji } = req.body;
+    
+    if (!emoji) return res.status(400).json({ error: 'Emoji required' });
+    
+    const { data: existing } = await supabase.from('post_reactions')
+      .select('*')
+      .eq('post_id', id)
+      .eq('user_id', req.user.id)
+      .eq('emoji', emoji)
+      .maybeSingle();
+    
+    if (existing) {
+      await supabase.from('post_reactions').delete().eq('id', existing.id);
+      return res.json({ success: true, action: 'removed' });
+    }
+    
+    const { data: reaction, error } = await supabase.from('post_reactions').insert([{
+      post_id: id,
+      user_id: req.user.id,
+      emoji: emoji
+    }]).select().single();
+    
+    if (error) throw error;
+    
+    // Emit socket event for post reaction
+    const { data: post } = await supabase.from('posts').select('posted_to, college, user_id').eq('id', id).single();
+    if (post) {
+      if (post.posted_to === 'community') {
+        io.to(post.college).emit('post_reaction', { postId: id, reaction });
+      } else {
+        io.emit('profile_post_reaction', { userId: post.user_id, postId: id, reaction });
+      }
+    }
+    
+    res.json({ success: true, action: 'added', reaction });
+  } catch (error) {
+    console.error('React to post error:', error);
+    res.status(500).json({ error: 'Failed to react' });
   }
 });
 
@@ -576,12 +709,12 @@ app.patch('/api/community/messages/:id', authenticateToken, async (req, res) => 
 app.delete('/api/community/messages/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { data: message } = await supabase.from('messages').select('sender_id').eq('id', id).single();
+    const { data: message } = await supabase.from('messages').select('sender_id, college').eq('id', id).single();
     if (!message) return res.status(404).json({ error: 'Message not found' });
     if (message.sender_id !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
     
     await supabase.from('messages').delete().eq('id', id);
-    io.to(req.user.college).emit('message_deleted', { id });
+    io.to(message.college).emit('message_deleted', { id });
     res.json({ success: true, message: 'Message deleted' });
   } catch (error) {
     console.error('Delete message error:', error);
@@ -793,7 +926,8 @@ app.get('/api/badges', authenticateToken, async (req, res) => {
         { emoji: '💬', name: 'Chatty', description: 'Sent 50 messages' },
         { emoji: '🔥', name: 'On Fire', description: '7 day streak' },
         { emoji: '🎵', name: 'Music Lover', description: 'Added music to a post' },
-        { emoji: '🎨', name: 'Creative', description: 'Used stickers in a post' }
+        { emoji: '🎨', name: 'Creative', description: 'Used stickers in a post' },
+        { emoji: '🖼️', name: 'Photo Editor', description: 'Applied filters to photos' }
       ]
     });
   } catch (error) {
@@ -802,17 +936,46 @@ app.get('/api/badges', authenticateToken, async (req, res) => {
   }
 });
 
+// New endpoint for music player status
+app.post('/api/music/status', authenticateToken, async (req, res) => {
+  try {
+    const { songId, isPlaying, currentTime } = req.body;
+    
+    // Update user's current music status in database
+    await supabase.from('users').update({ 
+      current_music: songId ? availableSongs.find(s => s.id === songId) : null,
+      music_playing: isPlaying || false,
+      last_activity: new Date().toISOString()
+    }).eq('id', req.user.id);
+    
+    // Broadcast to other users in the same college if applicable
+    if (req.user.college) {
+      io.to(req.user.college).emit('user_music_status', {
+        userId: req.user.id,
+        username: req.user.username,
+        song: songId ? availableSongs.find(s => s.id === songId) : null,
+        isPlaying: isPlaying || false
+      });
+    }
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Music status error:', error);
+    res.status(500).json({ error: 'Failed to update music status' });
+  }
+});
+
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '3.2' });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '3.3' });
 });
 
 app.get('/', (req, res) => {
   res.json({ 
-    message: 'VibeXpert API v3.2 - Enhanced Posts with Music & Stickers', 
+    message: 'VibeXpert API v3.3 - Enhanced Posts with Music, Stickers & Filters', 
     features: [
       'Auth', 
       'College Verification', 
-      'Posts with Music & Stickers', 
+      'Posts with Music & Stickers & Filters', 
       'Enhanced Media Upload', 
       'Community Chat with Reactions',
       'Message Edit/Delete',
@@ -822,7 +985,10 @@ app.get('/', (req, res) => {
       'Feedback System',
       'Badge System',
       'Music Library',
-      'Sticker Library'
+      'Sticker Library',
+      'Image Filters',
+      'Post Reactions',
+      'Music Player Integration'
     ] 
   });
 });
@@ -851,6 +1017,22 @@ io.on('connection', (socket) => {
     socket.to(data.college).emit('user_stop_typing', { userId: data.userId });
   });
   
+  // Music player events
+  socket.on('music_playing', (data) => {
+    socket.to(data.college).emit('user_music_playing', {
+      userId: data.userId,
+      username: data.username,
+      song: data.song
+    });
+  });
+  
+  socket.on('music_stopped', (data) => {
+    socket.to(data.college).emit('user_music_stopped', {
+      userId: data.userId,
+      username: data.username
+    });
+  });
+  
   socket.on('disconnect', () => {
     console.log('❌ User disconnected:', socket.id);
     const userId = Object.keys(onlineUsers).find(key => onlineUsers[key] === socket.id);
@@ -863,9 +1045,10 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 VibeXpert Server v3.2 running on port ${PORT}`);
+  console.log(`🚀 VibeXpert Server v3.3 running on port ${PORT}`);
   console.log(`🎵 Available Songs: ${availableSongs.length}`);
   console.log(`🎨 Available Stickers: ${availableStickers.length}`);
-  console.log(`📱 Enhanced Posts with Music & Stickers`);
-  console.log(`✨ Music & Sticker functionality fully enabled`);
+  console.log(`🖼️ Available Filters: ${availableFilters.length}`);
+  console.log(`📱 Enhanced Posts with Music, Stickers & Filters`);
+  console.log(`✨ All features fully enabled and ready!`);
 });
