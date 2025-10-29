@@ -34,44 +34,83 @@ const io = socketIO(server, {
 });
 
 // PostgreSQL connection pool for Supabase
-const getDatabaseConfig = () => {
-  if (process.env.DATABASE_URL) {
-    return {
-      connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false }
-    };
-  }
-  
-  if (process.env.SUPABASE_DB_HOST) {
-    return {
-      host: process.env.SUPABASE_DB_HOST,
-      port: process.env.SUPABASE_DB_PORT || 5432,
-      database: process.env.SUPABASE_DB_NAME || 'postgres',
-      user: process.env.SUPABASE_DB_USER,
-      password: process.env.SUPABASE_DB_PASSWORD,
-      ssl: { rejectUnauthorized: false }
-    };
-  }
-  
-  return {
-    host: 'localhost',
-    port: 5432,
-    database: 'vibexpert',
-    user: 'postgres',
-    password: 'password'
-  };
-};
-
-const pool = new Pool(getDatabaseConfig());
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
 
 // Test database connection on startup
-pool.query('SELECT NOW()', (err, res) => {
-  if (err) {
-    console.error('❌ Database connection failed:', err.message);
-  } else {
-    console.log('✅ Database connected successfully');
-  }
+pool.on('connect', () => {
+  console.log('✅ Database connected successfully');
 });
+
+pool.on('error', (err) => {
+  console.error('❌ Database connection error:', err);
+});
+
+// Initialize database tables
+const initializeDatabase = async () => {
+  try {
+    // Create users table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        username VARCHAR(100) NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        registration_number VARCHAR(100) UNIQUE NOT NULL,
+        college VARCHAR(255),
+        profile_pic TEXT,
+        bio TEXT,
+        badges JSONB DEFAULT '[]',
+        community_joined JSONB DEFAULT '[]',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create posts table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS posts (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID REFERENCES users(id),
+        content TEXT,
+        media JSONB,
+        post_to VARCHAR(50) DEFAULT 'general',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create feedback table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS feedback (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID REFERENCES users(id),
+        subject VARCHAR(255),
+        message TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create password reset codes table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS codes (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID REFERENCES users(id),
+        code VARCHAR(10) NOT NULL,
+        type VARCHAR(50) NOT NULL,
+        expires_at TIMESTAMP NOT NULL,
+        used BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    console.log('✅ Database tables initialized successfully');
+  } catch (error) {
+    console.error('❌ Database initialization error:', error);
+  }
+};
 
 // Enhanced email service
 const sendEmail = async (to, subject, html) => {
@@ -137,20 +176,24 @@ const authenticateToken = async (req, res, next) => {
       return res.status(401).json({ error: 'Access token required' });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret-key');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret-key-change-in-production');
+    
+    // Debug log
+    console.log('Decoded token:', decoded);
+    
     const { rows: users } = await pool.query(
       'SELECT * FROM users WHERE id = $1',
       [decoded.userId]
     );
     
     if (users.length === 0) {
-      return res.status(403).json({ error: 'Invalid token' });
+      return res.status(403).json({ error: 'Invalid token - user not found' });
     }
     
     req.user = users[0];
     next();
   } catch (error) {
-    console.error('Auth error:', error);
+    console.error('Auth error:', error.message);
     return res.status(403).json({ error: 'Invalid or expired token' });
   }
 };
@@ -257,6 +300,8 @@ app.post('/api/register', async (req, res) => {
   try {
     const { username, email, password, registrationNumber } = req.body;
     
+    console.log('Registration attempt:', { username, email, registrationNumber });
+    
     if (!username || !email || !password || !registrationNumber) {
       return res.status(400).json({ error: 'All fields are required' });
     }
@@ -287,9 +332,12 @@ app.post('/api/register', async (req, res) => {
     const userId = uuidv4();
     
     await pool.query(
-      'INSERT INTO users (id, username, email, password_hash, registration_number, badges) VALUES ($1, $2, $3, $4, $5, $6)',
-      [userId, username, email, passwordHash, registrationNumber, JSON.stringify([])]
+      `INSERT INTO users (id, username, email, password_hash, registration_number, badges, bio) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [userId, username, email, passwordHash, registrationNumber, JSON.stringify([]), '']
     );
+
+    console.log('User created successfully:', userId);
 
     // Send welcome email
     await sendEmail(
@@ -314,10 +362,12 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// Login endpoint
+// Login endpoint - FIXED
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
+    
+    console.log('Login attempt for email:', email);
     
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
@@ -329,20 +379,31 @@ app.post('/api/login', async (req, res) => {
     );
 
     if (users.length === 0) {
+      console.log('No user found with email:', email);
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
     const user = users[0];
+    console.log('User found:', user.id, user.username);
+    
     const validPassword = await bcrypt.compare(password, user.password_hash);
     if (!validPassword) {
+      console.log('Invalid password for user:', user.id);
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
+    const tokenPayload = { 
+      userId: user.id, 
+      email: user.email 
+    };
+    
     const token = jwt.sign(
-      { userId: user.id, email: user.email }, 
-      process.env.JWT_SECRET || 'fallback-secret-key', 
+      tokenPayload, 
+      process.env.JWT_SECRET || 'fallback-secret-key-change-in-production', 
       { expiresIn: '30d' }
     );
+
+    console.log('Login successful for user:', user.id);
 
     res.json({ 
       success: true, 
@@ -355,7 +416,7 @@ app.post('/api/login', async (req, res) => {
         community_joined: user.community_joined, 
         profile_pic: user.profile_pic,
         registration_number: user.registration_number,
-        badges: user.badges ? JSON.parse(user.badges) : [],
+        badges: user.badges || [],
         bio: user.bio || ''
       } 
     });
@@ -485,6 +546,28 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
   }
 });
 
+// Get user profile
+app.get('/api/profile', authenticateToken, async (req, res) => {
+  try {
+    res.json({
+      success: true,
+      user: {
+        id: req.user.id,
+        username: req.user.username,
+        email: req.user.email,
+        college: req.user.college,
+        profile_pic: req.user.profile_pic,
+        registration_number: req.user.registration_number,
+        badges: req.user.badges || [],
+        bio: req.user.bio || ''
+      }
+    });
+  } catch (error) {
+    console.error('Profile error:', error);
+    res.status(500).json({ error: 'Failed to get profile' });
+  }
+});
+
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({ 
@@ -530,10 +613,15 @@ app.use('*', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 VibeXpert PostgreSQL server running on port ${PORT}`);
-  console.log(`📧 Email service: ${process.env.BREVO_API_KEY ? 'Enabled' : 'Development mode'}`);
-  console.log(`🗄️  Database URL: ${process.env.DATABASE_URL ? 'Set' : 'Not set'}`);
-  console.log(`🔐 JWT secret: ${process.env.JWT_SECRET ? 'Set' : 'Using fallback'}`);
-  console.log(`🌐 CORS: Enabled for all origins`);
+
+// Initialize database and start server
+initializeDatabase().then(() => {
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 VibeXpert PostgreSQL server running on port ${PORT}`);
+    console.log(`📧 Email service: ${process.env.BREVO_API_KEY ? 'Enabled' : 'Development mode'}`);
+    console.log(`🗄️  Database URL: ${process.env.DATABASE_URL ? 'Set' : 'Not set'}`);
+    console.log(`🔐 JWT secret: ${process.env.JWT_SECRET ? 'Set' : 'Using fallback'}`);
+    console.log(`🌐 CORS: Enabled for all origins`);
+    console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
+  });
 });
