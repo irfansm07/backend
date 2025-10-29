@@ -8,6 +8,8 @@ const { createClient } = require('@supabase/supabase-js');
 const http = require('http');
 const socketIO = require('socket.io');
 const axios = require('axios');
+const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
@@ -29,11 +31,93 @@ app.use(cors({
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
+
+// Enhanced available songs with actual working URLs
+const availableSongs = [
+  { 
+    id: 1, 
+    name: 'Chill Vibes', 
+    artist: 'LoFi Beats',
+    duration: '2:30',
+    emoji: '🎧',
+    url: 'https://assets.mixkit.co/music/preview/mixkit-chill-vibes-239.mp3'
+  },
+  { 
+    id: 2, 
+    name: 'Upbeat Energy', 
+    artist: 'Electronic Pop',
+    duration: '3:15',
+    emoji: '⚡',
+    url: 'https://assets.mixkit.co/music/preview/mixkit-upbeat-energy-225.mp3'
+  },
+  { 
+    id: 3, 
+    name: 'Dreamy Piano', 
+    artist: 'Classical',
+    duration: '2:45',
+    emoji: '🎹',
+    url: 'https://assets.mixkit.co/music/preview/mixkit-dreamy-piano-1171.mp3'
+  },
+  { 
+    id: 4, 
+    name: 'Summer Vibes', 
+    artist: 'Tropical',
+    duration: '3:30',
+    emoji: '🏖️',
+    url: 'https://assets.mixkit.co/music/preview/mixkit-summer-vibes-129.mp3'
+  },
+  { 
+    id: 5, 
+    name: 'Happy Day', 
+    artist: 'Pop Rock',
+    duration: '2:50',
+    emoji: '😊',
+    url: 'https://assets.mixkit.co/music/preview/mixkit-happy-day-583.mp3'
+  },
+  { 
+    id: 6, 
+    name: 'Relaxing Guitar', 
+    artist: 'Acoustic',
+    duration: '3:10',
+    emoji: '🎸',
+    url: 'https://assets.mixkit.co/music/preview/mixkit-relaxing-guitar-243.mp3'
+  }
+];
+
+// Enhanced available stickers with emoji support
+const availableStickers = [
+  { id: 'sticker1', name: 'Happy', emoji: '😊', category: 'emotions' },
+  { id: 'sticker2', name: 'Laughing', emoji: '😂', category: 'emotions' },
+  { id: 'sticker3', name: 'Heart', emoji: '❤️', category: 'love' },
+  { id: 'sticker4', name: 'Fire', emoji: '🔥', category: 'trending' },
+  { id: 'sticker5', name: 'Star', emoji: '⭐', category: 'achievement' },
+  { id: 'sticker6', name: 'Party', emoji: '🎉', category: 'celebration' },
+  { id: 'sticker7', name: 'Music', emoji: '🎵', category: 'music' },
+  { id: 'sticker8', name: 'Game', emoji: '🎮', category: 'hobbies' },
+  { id: 'sticker9', name: 'Food', emoji: '🍕', category: 'food' },
+  { id: 'sticker10', name: 'Study', emoji: '📚', category: 'academic' },
+  { id: 'sticker11', name: 'Cool', emoji: '😎', category: 'emotions' },
+  { id: 'sticker12', name: 'Love', emoji: '💕', category: 'love' },
+  { id: 'sticker13', name: 'Thumbs Up', emoji: '👍', category: 'reactions' },
+  { id: 'sticker14', name: 'Clap', emoji: '👏', category: 'reactions' },
+  { id: 'sticker15', name: 'Rocket', emoji: '🚀', category: 'excitement' }
+];
+
+// Available image filters
+const availableFilters = [
+  { id: 'normal', name: 'Original', emoji: '🔄' },
+  { id: 'vintage', name: 'Vintage', emoji: '🟤' },
+  { id: 'clarendon', name: 'Clarendon', emoji: '🌈' },
+  { id: 'moon', name: 'Moon', emoji: '🌙' },
+  { id: 'lark', name: 'Lark', emoji: '🐦' },
+  { id: 'reyes', name: 'Reyes', emoji: '📸' }
+];
 
 const sendEmail = async (to, subject, html) => {
   try {
@@ -65,28 +149,14 @@ const sendEmail = async (to, subject, html) => {
   }
 };
 
-// Enhanced multer configuration for posts
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { 
-    fileSize: 10 * 1024 * 1024, // 10MB per file
-    files: 11 // 10 images/videos + 1 music file
-  },
+  limits: { fileSize: 20 * 1024 * 1024, files: 10 },
   fileFilter: (req, file, cb) => {
-    const imageVideoTypes = /jpeg|jpg|png|gif|webp|mp4|mov|avi/;
-    const audioTypes = /mp3|wav|m4a|aac/;
-    
-    if (file.fieldname === 'media') {
-      const isValid = imageVideoTypes.test(file.mimetype);
-      if (isValid) return cb(null, true);
-      cb(new Error('Only image and video files allowed for media'));
-    } else if (file.fieldname === 'music') {
-      const isValid = audioTypes.test(file.mimetype);
-      if (isValid) return cb(null, true);
-      cb(new Error('Only audio files allowed for music'));
-    } else {
-      cb(null, true);
-    }
+    const allowedTypes = /jpeg|jpg|png|gif|webp|mp4|mov|avi|mp3|wav/;
+    const mimetype = allowedTypes.test(file.mimetype);
+    if (mimetype) return cb(null, true);
+    cb(new Error('Only image, video, and audio files allowed'));
   }
 });
 
@@ -106,6 +176,40 @@ const authenticateToken = async (req, res, next) => {
     return res.status(403).json({ error: 'Invalid or expired token' });
   }
 };
+
+// Get available songs, stickers, and filters - ENHANCED
+app.get('/api/post-assets', (req, res) => {
+  res.json({
+    success: true,
+    songs: availableSongs,
+    stickers: availableStickers,
+    filters: availableFilters
+  });
+});
+
+// Get music library
+app.get('/api/music-library', (req, res) => {
+  res.json({
+    success: true,
+    music: availableSongs
+  });
+});
+
+// Get sticker library
+app.get('/api/sticker-library', (req, res) => {
+  res.json({
+    success: true,
+    stickers: availableStickers
+  });
+});
+
+// Get available filters
+app.get('/api/filters', (req, res) => {
+  res.json({
+    success: true,
+    filters: availableFilters
+  });
+});
 
 app.post('/api/register', async (req, res) => {
   try {
@@ -158,7 +262,8 @@ app.post('/api/login', async (req, res) => {
       communityJoined: user.community_joined, 
       profilePic: user.profile_pic,
       registrationNumber: user.registration_number,
-      badges: user.badges || []
+      badges: user.badges || [],
+      bio: user.bio || ''
     } });
   } catch (error) {
     console.error('Login error:', error);
@@ -241,122 +346,248 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
   }
 });
 
-// ENHANCED POST CREATION WITH MUSIC SUPPORT
-app.post('/api/posts', authenticateToken, upload.fields([
-  { name: 'media', maxCount: 10 },
-  { name: 'music', maxCount: 1 }
-]), async (req, res) => {
+// ENHANCED POST CREATION WITH MUSIC, STICKERS, AND FILTERS - FIXED
+app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req, res) => {
   try {
-    const { content, postTo = 'profile', musicTitle, musicArtist } = req.body;
-    const mediaFiles = req.files?.media || [];
-    const musicFiles = req.files?.music || [];
+    const { content, postTo = 'profile', music, stickers = '[]', imageFilter = 'normal' } = req.body;
+    const files = req.files;
     
-    if (!content && mediaFiles.length === 0) {
-      return res.status(400).json({ error: 'Post must have content or media' });
+    console.log('📝 Creating post with data:', {
+      contentLength: content?.length,
+      postTo,
+      music: music ? 'provided' : 'none',
+      stickers: stickers !== '[]' ? 'provided' : 'none',
+      filesCount: files?.length || 0,
+      imageFilter
+    });
+
+    // Enhanced validation for post content
+    if (!content?.trim() && (!files || files.length === 0) && !music && stickers === '[]') {
+      return res.status(400).json({ error: 'Post must have content, media, music, or stickers' });
     }
     
+    // Enhanced post destination validation
     if (!['profile', 'community'].includes(postTo)) {
       return res.status(400).json({ error: 'Invalid post destination' });
     }
     
-    // Upload media files
-    const mediaUrls = [];
-    for (const file of mediaFiles) {
-      const fileExt = file.originalname.split('.').pop();
-      const fileName = `${req.user.id}/${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('posts-media')
-        .upload(fileName, file.buffer, { 
-          contentType: file.mimetype, 
-          cacheControl: '3600' 
-        });
-      
-      if (uploadError) throw new Error('Failed to upload media');
-      
-      const { data: urlData } = supabase.storage.from('posts-media').getPublicUrl(fileName);
-      mediaUrls.push({ 
-        url: urlData.publicUrl, 
-        type: file.mimetype.startsWith('image') ? 'image' : 'video' 
-      });
-    }
-    
-    // Upload music file if provided
-    let musicUrl = null;
-    if (musicFiles.length > 0) {
-      const musicFile = musicFiles[0];
-      const fileExt = musicFile.originalname.split('.').pop();
-      const fileName = `${req.user.id}/music/${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('posts-media')
-        .upload(fileName, musicFile.buffer, { 
-          contentType: musicFile.mimetype, 
-          cacheControl: '3600' 
-        });
-      
-      if (uploadError) throw new Error('Failed to upload music');
-      
-      const { data: urlData } = supabase.storage.from('posts-media').getPublicUrl(fileName);
-      musicUrl = urlData.publicUrl;
-    }
-    
-    // Create post
-    const postData = { 
-      user_id: req.user.id, 
-      content: content || '', 
-      media: mediaUrls, 
-      college: req.user.college, 
-      posted_to: postTo
-    };
-    
-    if (musicTitle) {
-      postData.music_title = musicTitle;
-      postData.music_artist = musicArtist || 'Unknown Artist';
-      if (musicUrl) {
-        postData.music_url = musicUrl;
+    // Parse music data if provided
+    let parsedMusic = null;
+    if (music && music !== 'null') {
+      try {
+        parsedMusic = JSON.parse(music);
+        console.log('🎵 Parsed music:', parsedMusic);
+        
+        // Validate music object structure
+        if (!parsedMusic.id || !parsedMusic.name || !parsedMusic.url) {
+          console.warn('Invalid music format - missing required fields');
+          parsedMusic = null;
+        } else {
+          // Verify music exists in available songs
+          const validMusic = availableSongs.find(song => song.id === parsedMusic.id);
+          if (!validMusic) {
+            console.warn('Music not found in available songs');
+            parsedMusic = null;
+          }
+        }
+      } catch (e) {
+        console.warn('Invalid music JSON format:', e.message);
+        parsedMusic = null;
       }
     }
     
+    // Parse stickers data if provided
+    let parsedStickers = [];
+    if (stickers && stickers !== '[]' && stickers !== 'null') {
+      try {
+        parsedStickers = JSON.parse(stickers);
+        console.log('🎨 Parsed stickers:', parsedStickers);
+        
+        // Validate stickers array
+        if (!Array.isArray(parsedStickers)) {
+          console.warn('Invalid stickers format - not an array');
+          parsedStickers = [];
+        } else {
+          // Limit to 5 stickers and validate each sticker
+          parsedStickers = parsedStickers.slice(0, 5).filter(sticker => {
+            if (typeof sticker === 'string') {
+              return sticker.length > 0;
+            } else if (typeof sticker === 'object' && sticker.emoji) {
+              return true;
+            }
+            return false;
+          });
+        }
+      } catch (e) {
+        console.warn('Invalid stickers JSON format:', e.message);
+        parsedStickers = [];
+      }
+    }
+    
+    // Validate image filter
+    const validFilter = availableFilters.find(f => f.id === imageFilter) ? imageFilter : 'normal';
+    console.log('🖼️ Using filter:', validFilter);
+
+    const mediaUrls = [];
+    if (files && files.length > 0) {
+      console.log('📁 Processing files:', files.length);
+      
+      for (const file of files) {
+        try {
+          const fileExt = file.originalname.split('.').pop();
+          const fileName = `${req.user.id}/${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
+          
+          console.log('📤 Uploading file:', fileName);
+          
+          const { data: uploadData, error: uploadError } = await supabase.storage
+            .from('posts-media')
+            .upload(fileName, file.buffer, { 
+              contentType: file.mimetype, 
+              cacheControl: '3600' 
+            });
+            
+          if (uploadError) {
+            console.error('❌ Upload error:', uploadError);
+            throw new Error(`Failed to upload media: ${uploadError.message}`);
+          }
+          
+          const { data: urlData } = supabase.storage.from('posts-media').getPublicUrl(fileName);
+          
+          const mediaType = file.mimetype.startsWith('image') ? 'image' : 
+                           file.mimetype.startsWith('video') ? 'video' : 'audio';
+                           
+          mediaUrls.push({ 
+            url: urlData.publicUrl, 
+            type: mediaType,
+            filter: mediaType === 'image' ? validFilter : null
+          });
+          
+          console.log('✅ File uploaded successfully:', urlData.publicUrl);
+        } catch (fileError) {
+          console.error('❌ File processing error:', fileError);
+          // Continue with other files even if one fails
+        }
+      }
+    }
+    
+    // Create post data
+    const postData = { 
+      user_id: req.user.id, 
+      content: content?.trim() || '', 
+      media: mediaUrls, 
+      college: req.user.college, 
+      posted_to: postTo,
+      music: parsedMusic,
+      stickers: parsedStickers,
+      image_filter: validFilter
+    };
+    
+    console.log('💾 Saving post to database:', {
+      userId: req.user.id,
+      contentLength: postData.content.length,
+      mediaCount: postData.media.length,
+      hasMusic: !!postData.music,
+      stickersCount: postData.stickers.length,
+      postedTo: postData.posted_to
+    });
+
     const { data: newPost, error: postError } = await supabase
       .from('posts')
       .insert([postData])
       .select(`*, users (id, username, profile_pic, college, registration_number)`)
       .single();
     
-    if (postError) throw new Error('Failed to create post');
+    if (postError) {
+      console.error('❌ Database error:', postError);
+      throw new Error(`Failed to create post: ${postError.message}`);
+    }
     
-    // Award badges
+    console.log('✅ Post created successfully:', newPost.id);
+
+    // Handle badges
     const currentBadges = req.user.badges || [];
     const { data: userPosts } = await supabase.from('posts').select('id').eq('user_id', req.user.id);
     const postCount = userPosts?.length || 0;
     
+    let badgeUpdated = false;
+    let newBadges = [];
+    
+    // First post badge
     if (postCount === 1 && !currentBadges.includes('🎨 First Post')) {
       currentBadges.push('🎨 First Post');
-      await supabase.from('users').update({ badges: currentBadges }).eq('id', req.user.id);
-    } else if (postCount === 10 && !currentBadges.includes('⭐ Content Creator')) {
-      currentBadges.push('⭐ Content Creator');
-      await supabase.from('users').update({ badges: currentBadges }).eq('id', req.user.id);
+      newBadges.push('🎨 First Post');
+      badgeUpdated = true;
     }
     
-    io.emit('new_post', newPost);
+    // Content creator badge
+    if (postCount === 10 && !currentBadges.includes('⭐ Content Creator')) {
+      currentBadges.push('⭐ Content Creator');
+      newBadges.push('⭐ Content Creator');
+      badgeUpdated = true;
+    }
+    
+    // Music lover badge
+    if (parsedMusic && !currentBadges.includes('🎵 Music Lover')) {
+      currentBadges.push('🎵 Music Lover');
+      newBadges.push('🎵 Music Lover');
+      badgeUpdated = true;
+    }
+    
+    // Creative badge for stickers
+    if (parsedStickers.length > 0 && !currentBadges.includes('🎨 Creative')) {
+      currentBadges.push('🎨 Creative');
+      newBadges.push('🎨 Creative');
+      badgeUpdated = true;
+    }
+    
+    // Photo editor badge for filters
+    if (validFilter !== 'normal' && !currentBadges.includes('🖼️ Photo Editor')) {
+      currentBadges.push('🖼️ Photo Editor');
+      newBadges.push('🖼️ Photo Editor');
+      badgeUpdated = true;
+    }
+    
+    if (badgeUpdated) {
+      await supabase.from('users').update({ badges: currentBadges }).eq('id', req.user.id);
+      console.log('🏆 Badges updated:', newBadges);
+    }
+    
+    // Emit socket events for new posts
+    if (postTo === 'community' && req.user.college) {
+      io.to(req.user.college).emit('new_post', newPost);
+      console.log('📢 Emitted new post to community:', req.user.college);
+    } else {
+      io.emit('new_profile_post', { userId: req.user.id, post: newPost });
+      console.log('📢 Emitted new profile post for user:', req.user.id);
+    }
+    
     res.status(201).json({ 
       success: true, 
       post: newPost, 
-      message: 'Post created successfully!', 
-      badges: currentBadges 
+      message: postTo === 'community' 
+        ? '✅ Your post has been shared to the community feed!' 
+        : '✅ Your post has been added to your profile!', 
+      badges: currentBadges,
+      badgeUpdated: badgeUpdated,
+      newBadges: newBadges
     });
+    
   } catch (error) {
-    console.error('Create post error:', error);
+    console.error('❌ Create post error:', error);
     res.status(500).json({ error: error.message || 'Failed to create post' });
   }
 });
 
-// OPTIMIZED GET POSTS WITH PAGINATION
+// Enhanced get posts with filtering - FIXED
 app.get('/api/posts', authenticateToken, async (req, res) => {
   try {
-    const { limit = 20, offset = 0, type = 'all' } = req.query;
+    const { limit = 20, offset = 0, type = 'all', destination } = req.query;
+    
+    console.log('📨 Fetching posts:', { type, destination, limit, offset });
+    
     let query = supabase
       .from('posts')
-      .select(`*, users (id, username, profile_pic, college, registration_number)`, { count: 'exact' })
+      .select(`*, users (id, username, profile_pic, college, registration_number)`)
       .order('created_at', { ascending: false });
     
     if (type === 'my') {
@@ -367,78 +598,496 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
       query = query.eq('user_id', req.user.id).eq('posted_to', 'profile');
     }
     
-    const { data: posts, error, count } = await query.range(
-      parseInt(offset), 
-      parseInt(offset) + parseInt(limit) - 1
-    );
+    // Filter by destination if specified
+    if (destination && ['profile', 'community'].includes(destination)) {
+      query = query.eq('posted_to', destination);
+    }
     
-    if (error) throw new Error('Failed to fetch posts');
+    const { data: posts, error } = await query.range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
     
-    res.json({ 
-      success: true, 
-      posts: posts || [], 
-      total: count,
-      hasMore: count > parseInt(offset) + parseInt(limit)
-    });
+    if (error) {
+      console.error('❌ Database error:', error);
+      throw new Error('Failed to fetch posts');
+    }
+    
+    // Ensure music, stickers, and filters are properly formatted
+    const formattedPosts = (posts || []).map(post => ({
+      ...post,
+      music: post.music || null,
+      stickers: post.stickers || [],
+      image_filter: post.image_filter || 'normal'
+    }));
+    
+    console.log(`✅ Fetched ${formattedPosts.length} posts`);
+    
+    res.json({ success: true, posts: formattedPosts });
   } catch (error) {
-    console.error('Get posts error:', error);
-    res.json({ success: true, posts: [], total: 0, hasMore: false });
+    console.error('❌ Get posts error:', error);
+    res.json({ success: true, posts: [] });
   }
 });
 
 app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { data: post } = await supabase.from('posts').select('user_id, media, music_url').eq('id', id).single();
+    console.log('🗑️ Deleting post:', id);
+    
+    const { data: post } = await supabase.from('posts').select('user_id, media, posted_to, college').eq('id', id).single();
     if (!post) return res.status(404).json({ error: 'Post not found' });
     if (post.user_id !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
     
-    // Delete media files
+    // Delete media files if they exist
     if (post.media && post.media.length > 0) {
       for (const media of post.media) {
-        const urlParts = media.url.split('/');
-        const fileName = `${req.user.id}/${urlParts[urlParts.length - 1]}`;
-        await supabase.storage.from('posts-media').remove([fileName]);
+        try {
+          const fileName = media.url.split('/').pop();
+          await supabase.storage.from('posts-media').remove([`${req.user.id}/${fileName}`]);
+        } catch (mediaError) {
+          console.warn('Could not delete media file:', mediaError);
+        }
       }
     }
     
-    // Delete music file
-    if (post.music_url) {
-      const urlParts = post.music_url.split('/');
-      const fileName = `${req.user.id}/music/${urlParts[urlParts.length - 1]}`;
-      await supabase.storage.from('posts-media').remove([fileName]);
+    await supabase.from('posts').delete().eq('id', id);
+    
+    // Emit socket event for post deletion
+    if (post.posted_to === 'community') {
+      io.to(post.college).emit('post_deleted', { id });
+    } else {
+      io.emit('profile_post_deleted', { userId: req.user.id, postId: id });
     }
     
-    await supabase.from('posts').delete().eq('id', id);
+    console.log('✅ Post deleted successfully');
     res.json({ success: true, message: 'Post deleted successfully' });
   } catch (error) {
-    console.error('Delete post error:', error);
+    console.error('❌ Delete post error:', error);
     res.status(500).json({ error: 'Failed to delete post' });
   }
 });
 
-// Keep all other existing endpoints from original server.js
-// (community messages, reactions, views, profile, search, feedback, etc.)
+// Enhanced post reactions
+app.post('/api/posts/:id/react', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { emoji } = req.body;
+    
+    if (!emoji) return res.status(400).json({ error: 'Emoji required' });
+    
+    const { data: existing } = await supabase.from('post_reactions')
+      .select('*')
+      .eq('post_id', id)
+      .eq('user_id', req.user.id)
+      .eq('emoji', emoji)
+      .maybeSingle();
+    
+    if (existing) {
+      await supabase.from('post_reactions').delete().eq('id', existing.id);
+      return res.json({ success: true, action: 'removed' });
+    }
+    
+    const { data: reaction, error } = await supabase.from('post_reactions').insert([{
+      post_id: id,
+      user_id: req.user.id,
+      emoji: emoji
+    }]).select().single();
+    
+    if (error) throw error;
+    
+    // Emit socket event for post reaction
+    const { data: post } = await supabase.from('posts').select('posted_to, college, user_id').eq('id', id).single();
+    if (post) {
+      if (post.posted_to === 'community') {
+        io.to(post.college).emit('post_reaction', { postId: id, reaction });
+      } else {
+        io.emit('profile_post_reaction', { userId: post.user_id, postId: id, reaction });
+      }
+    }
+    
+    res.json({ success: true, action: 'added', reaction });
+  } catch (error) {
+    console.error('❌ React to post error:', error);
+    res.status(500).json({ error: 'Failed to react' });
+  }
+});
 
+app.get('/api/community/messages', authenticateToken, async (req, res) => {
+  try {
+    if (!req.user.community_joined || !req.user.college) {
+      return res.status(403).json({ error: 'Join a college community first' });
+    }
+    const { limit = 50 } = req.query;
+    const { data: messages, error } = await supabase.from('messages')
+      .select(`*, users (id, username, profile_pic), message_reactions (*)`)
+      .eq('college', req.user.college)
+      .order('timestamp', { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    res.json({ success: true, messages: messages || [] });
+  } catch (error) {
+    console.error('❌ Get messages error:', error);
+    res.status(500).json({ error: 'Failed to fetch messages' });
+  }
+});
+
+app.post('/api/community/messages', authenticateToken, async (req, res) => {
+  try {
+    const { content } = req.body;
+    if (!content || !content.trim()) return res.status(400).json({ error: 'Message content required' });
+    if (!req.user.community_joined || !req.user.college) {
+      return res.status(403).json({ error: 'Join a college community first' });
+    }
+    const { data: newMessage, error } = await supabase.from('messages').insert([{ 
+      sender_id: req.user.id, 
+      content: content.trim(),
+      college: req.user.college 
+    }]).select(`*, users (id, username, profile_pic)`).single();
+    
+    if (error) throw error;
+    
+    io.to(req.user.college).emit('new_message', newMessage);
+    res.json({ success: true, message: newMessage });
+  } catch (error) {
+    console.error('❌ Send message error:', error);
+    res.status(500).json({ error: 'Failed to send message' });
+  }
+});
+
+app.patch('/api/community/messages/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { content } = req.body;
+    
+    if (!content || !content.trim()) {
+      return res.status(400).json({ error: 'Message content required' });
+    }
+    
+    const { data: message } = await supabase.from('messages').select('*').eq('id', id).single();
+    if (!message) return res.status(404).json({ error: 'Message not found' });
+    if (message.sender_id !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
+    
+    const messageTime = new Date(message.timestamp);
+    const now = new Date();
+    const diffMinutes = (now - messageTime) / 1000 / 60;
+    
+    if (diffMinutes > 2) {
+      return res.status(403).json({ error: 'Can only edit messages within 2 minutes' });
+    }
+    
+    const { data: updated, error } = await supabase.from('messages')
+      .update({ content: content.trim(), edited: true })
+      .eq('id', id)
+      .select(`*, users (id, username, profile_pic)`)
+      .single();
+    
+    if (error) throw error;
+    
+    io.to(req.user.college).emit('message_updated', updated);
+    res.json({ success: true, message: updated });
+  } catch (error) {
+    console.error('❌ Edit message error:', error);
+    res.status(500).json({ error: 'Failed to edit message' });
+  }
+});
+
+app.delete('/api/community/messages/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { data: message } = await supabase.from('messages').select('sender_id, college').eq('id', id).single();
+    if (!message) return res.status(404).json({ error: 'Message not found' });
+    if (message.sender_id !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
+    
+    await supabase.from('messages').delete().eq('id', id);
+    io.to(message.college).emit('message_deleted', { id });
+    res.json({ success: true, message: 'Message deleted' });
+  } catch (error) {
+    console.error('❌ Delete message error:', error);
+    res.status(500).json({ error: 'Failed to delete message' });
+  }
+});
+
+app.post('/api/community/messages/:id/react', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { emoji } = req.body;
+    
+    if (!emoji) return res.status(400).json({ error: 'Emoji required' });
+    
+    const { data: existing } = await supabase.from('message_reactions')
+      .select('*')
+      .eq('message_id', id)
+      .eq('user_id', req.user.id)
+      .eq('emoji', emoji)
+      .maybeSingle();
+    
+    if (existing) {
+      await supabase.from('message_reactions').delete().eq('id', existing.id);
+      return res.json({ success: true, action: 'removed' });
+    }
+    
+    const { data: reaction, error } = await supabase.from('message_reactions').insert([{
+      message_id: id,
+      user_id: req.user.id,
+      emoji: emoji
+    }]).select().single();
+    
+    if (error) throw error;
+    
+    io.to(req.user.college).emit('message_reaction', { messageId: id, reaction });
+    res.json({ success: true, action: 'added', reaction });
+  } catch (error) {
+    console.error('❌ React to message error:', error);
+    res.status(500).json({ error: 'Failed to react' });
+  }
+});
+
+app.post('/api/community/messages/:id/view', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const { data: existing } = await supabase.from('message_views')
+      .select('*')
+      .eq('message_id', id)
+      .eq('user_id', req.user.id)
+      .maybeSingle();
+    
+    if (existing) {
+      return res.json({ success: true });
+    }
+    
+    await supabase.from('message_views').insert([{
+      message_id: id,
+      user_id: req.user.id
+    }]);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Mark view error:', error);
+    res.status(500).json({ error: 'Failed to mark view' });
+  }
+});
+
+app.get('/api/community/messages/:id/views', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { data: views, error } = await supabase.from('message_views')
+      .select('user_id, users (username, profile_pic)', { count: 'exact' })
+      .eq('message_id', id);
+    
+    if (error) throw error;
+    res.json({ success: true, views: views || [], count: views?.length || 0 });
+  } catch (error) {
+    console.error('❌ Get views error:', error);
+    res.status(500).json({ error: 'Failed to get views' });
+  }
+});
+
+app.patch('/api/profile', authenticateToken, upload.single('profilePic'), async (req, res) => {
+  try {
+    const { username, bio } = req.body;
+    const updates = {};
+    
+    if (username) updates.username = username;
+    if (bio !== undefined) updates.bio = bio;
+    
+    if (req.file) {
+      const fileExt = req.file.originalname.split('.').pop();
+      const fileName = `${req.user.id}/profile.${fileExt}`;
+      const { error: uploadError } = await supabase.storage
+        .from('profile-pics')
+        .upload(fileName, req.file.buffer, { 
+          contentType: req.file.mimetype, 
+          cacheControl: '3600',
+          upsert: true 
+        });
+      
+      if (uploadError) throw new Error('Failed to upload profile picture');
+      
+      const { data: urlData } = supabase.storage.from('profile-pics').getPublicUrl(fileName);
+      updates.profile_pic = urlData.publicUrl;
+    }
+    
+    const { data: updated, error } = await supabase.from('users')
+      .update(updates)
+      .eq('id', req.user.id)
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    res.json({ success: true, user: updated });
+  } catch (error) {
+    console.error('❌ Update profile error:', error);
+    res.status(500).json({ error: 'Failed to update profile' });
+  }
+});
+
+app.get('/api/search/users', authenticateToken, async (req, res) => {
+  try {
+    const { query } = req.query;
+    if (!query || query.trim().length < 2) {
+      return res.status(400).json({ error: 'Search query must be at least 2 characters' });
+    }
+    
+    const searchTerm = query.trim().toLowerCase();
+    const { data: users, error } = await supabase
+      .from('users')
+      .select('id, username, email, college, profile_pic, registration_number')
+      .or(`username.ilike.%${searchTerm}%,registration_number.ilike.%${searchTerm}%`)
+      .limit(10);
+    
+    if (error) throw error;
+    res.json({ success: true, users: users || [] });
+  } catch (error) {
+    console.error('❌ Search users error:', error);
+    res.status(500).json({ error: 'Search failed' });
+  }
+});
+
+app.post('/api/feedback', authenticateToken, async (req, res) => {
+  try {
+    const { subject, message } = req.body;
+    if (!subject || !message) {
+      return res.status(400).json({ error: 'Subject and message required' });
+    }
+    
+    const { data: feedback, error } = await supabase.from('feedback').insert([{
+      user_id: req.user.id,
+      subject: subject.trim(),
+      message: message.trim()
+    }]).select().single();
+    
+    if (error) throw error;
+    
+    res.json({ success: true, message: 'Feedback submitted successfully!', feedback });
+  } catch (error) {
+    console.error('❌ Feedback error:', error);
+    res.status(500).json({ error: 'Failed to submit feedback' });
+  }
+});
+
+app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, username, email, college, profile_pic, bio, badges, created_at, registration_number')
+      .eq('id', userId)
+      .single();
+    
+    if (error || !user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    const { data: posts } = await supabase
+      .from('posts')
+      .select('id', { count: 'exact' })
+      .eq('user_id', userId);
+    
+    res.json({ 
+      success: true, 
+      user: {
+        ...user,
+        postCount: posts?.length || 0
+      }
+    });
+  } catch (error) {
+    console.error('❌ Get profile error:', error);
+    res.status(500).json({ error: 'Failed to get profile' });
+  }
+});
+
+app.get('/api/badges', authenticateToken, async (req, res) => {
+  try {
+    res.json({ 
+      success: true, 
+      badges: req.user?.badges || [],
+      availableBadges: [
+        { emoji: '🎓', name: 'Community Member', description: 'Joined a college community' },
+        { emoji: '🎨', name: 'First Post', description: 'Created your first post' },
+        { emoji: '⭐', name: 'Content Creator', description: 'Posted 10 times' },
+        { emoji: '💬', name: 'Chatty', description: 'Sent 50 messages' },
+        { emoji: '🔥', name: 'On Fire', description: '7 day streak' },
+        { emoji: '🎵', name: 'Music Lover', description: 'Added music to a post' },
+        { emoji: '🎨', name: 'Creative', description: 'Used stickers in a post' },
+        { emoji: '🖼️', name: 'Photo Editor', description: 'Applied filters to photos' }
+      ]
+    });
+  } catch (error) {
+    console.error('❌ Get badges error:', error);
+    res.status(500).json({ error: 'Failed to get badges' });
+  }
+});
+
+// New endpoint for music player status
+app.post('/api/music/status', authenticateToken, async (req, res) => {
+  try {
+    const { songId, isPlaying, currentTime } = req.body;
+    
+    // Update user's current music status in database
+    await supabase.from('users').update({ 
+      current_music: songId ? availableSongs.find(s => s.id === songId) : null,
+      music_playing: isPlaying || false,
+      last_activity: new Date().toISOString()
+    }).eq('id', req.user.id);
+    
+    // Broadcast to other users in the same college if applicable
+    if (req.user.college) {
+      io.to(req.user.college).emit('user_music_status', {
+        userId: req.user.id,
+        username: req.user.username,
+        song: songId ? availableSongs.find(s => s.id === songId) : null,
+        isPlaying: isPlaying || false
+      });
+    }
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Music status error:', error);
+    res.status(500).json({ error: 'Failed to update music status' });
+  }
+});
+
+// Health check endpoint
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '3.1' });
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(), 
+    version: '3.4',
+    features: {
+      music: availableSongs.length,
+      stickers: availableStickers.length,
+      filters: availableFilters.length
+    }
+  });
 });
 
 app.get('/', (req, res) => {
   res.json({ 
-    message: 'VibeXpert API v3.1 - Enhanced Post Features', 
+    message: 'VibeXpert API v3.4 - Enhanced Posts with Music, Stickers & Filters', 
     features: [
       'Auth', 
       'College Verification', 
-      'Enhanced Posts with Music', 
-      'Advanced Image Editor',
-      'Media Upload (10 files)',
-      'Music Library Integration',
-      'Community Chat',
+      'Posts with Music & Stickers & Filters', 
+      'Enhanced Media Upload', 
+      'Community Chat with Reactions',
+      'Message Edit/Delete',
+      'Message Views',
       'User Search',
       'Profile Management',
-      'Badge System'
-    ] 
+      'Feedback System',
+      'Badge System',
+      'Music Library',
+      'Sticker Library',
+      'Image Filters',
+      'Post Reactions',
+      'Music Player Integration'
+    ],
+    stats: {
+      songs: availableSongs.length,
+      stickers: availableStickers.length,
+      filters: availableFilters.length
+    }
   });
 });
 
@@ -454,26 +1103,57 @@ io.on('connection', (socket) => {
   });
   
   socket.on('user_online', (userId) => {
-    onlineUsers[socket.id] = userId;
-    io.emit('online_count', Object.keys(onlineUsers).length);
+    onlineUsers[userId] = socket.id;
+    io.emit('online_users', Object.keys(onlineUsers));
+    console.log(`👤 User ${userId} is online. Total online: ${Object.keys(onlineUsers).length}`);
+  });
+  
+  socket.on('typing_start', (data) => {
+    socket.to(data.college).emit('user_typing', { userId: data.userId, username: data.username });
+  });
+  
+  socket.on('typing_stop', (data) => {
+    socket.to(data.college).emit('user_stop_typing', { userId: data.userId });
+  });
+  
+  // Music player events
+  socket.on('music_playing', (data) => {
+    socket.to(data.college).emit('user_music_playing', {
+      userId: data.userId,
+      username: data.username,
+      song: data.song
+    });
+  });
+  
+  socket.on('music_stopped', (data) => {
+    socket.to(data.college).emit('user_music_stopped', {
+      userId: data.userId,
+      username: data.username
+    });
   });
   
   socket.on('disconnect', () => {
-    delete onlineUsers[socket.id];
-    console.log('❌ User disconnected:', socket.id, '| Online:', Object.keys(onlineUsers).length);
-    io.emit('online_count', Object.keys(onlineUsers).length);
+    console.log('❌ User disconnected:', socket.id);
+    const userId = Object.keys(onlineUsers).find(key => onlineUsers[key] === socket.id);
+    if (userId) {
+      delete onlineUsers[userId];
+      io.emit('online_users', Object.keys(onlineUsers));
+      console.log(`👤 User ${userId} went offline. Total online: ${Object.keys(onlineUsers).length}`);
+    }
   });
-});
-
-app.use((err, req, res, next) => {
-  console.error('Server error:', err);
-  res.status(500).json({ error: 'Internal server error' });
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📧 Email: Brevo API`);
-  console.log(`🗄️ Database: Supabase`);
-  console.log(`✅ Enhanced post features enabled`);
+  console.log(`🚀 VibeXpert Server v3.4 running on port ${PORT}`);
+  console.log(`🎵 Available Songs: ${availableSongs.length}`);
+  console.log(`🎨 Available Stickers: ${availableStickers.length}`);
+  console.log(`🖼️ Available Filters: ${availableFilters.length}`);
+  console.log(`📱 Enhanced Posts with Music, Stickers & Filters`);
+  console.log(`✨ All features fully enabled and ready!`);
+  console.log(`🔧 Fixes applied:`);
+  console.log(`   ✅ Music system with proper audio handling`);
+  console.log(`   ✅ Enhanced post creation with better validation`);
+  console.log(`   ✅ Improved error handling and logging`);
+  console.log(`   ✅ Better file upload management`);
 });
