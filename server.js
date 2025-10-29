@@ -4,131 +4,120 @@ const cors = require('cors');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
-const { Pool } = require('pg');
+const { createClient } = require('@supabase/supabase-js');
 const http = require('http');
 const socketIO = require('socket.io');
 const axios = require('axios');
-const { v4: uuidv4 } = require('uuid');
+const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
 
-// Enhanced CORS configuration
-app.use(cors({
-  origin: '*',
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
-}));
-
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// Socket.io with enhanced CORS
 const io = socketIO(server, {
   cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
+    origin: '*',
+    methods: ['GET', 'POST'],
     credentials: true
   }
 });
 
-// PostgreSQL connection pool for Supabase
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
+app.use(cors({
+  origin: '*',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
-// Test database connection on startup
-pool.on('connect', () => {
-  console.log('✅ Database connected successfully');
-});
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
-pool.on('error', (err) => {
-  console.error('❌ Database connection error:', err);
-});
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
-// Initialize database tables
-const initializeDatabase = async () => {
-  try {
-    // Create users table
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        username VARCHAR(100) NOT NULL,
-        email VARCHAR(255) UNIQUE NOT NULL,
-        password_hash VARCHAR(255) NOT NULL,
-        registration_number VARCHAR(100) UNIQUE NOT NULL,
-        college VARCHAR(255),
-        profile_pic TEXT,
-        bio TEXT,
-        badges JSONB DEFAULT '[]',
-        community_joined JSONB DEFAULT '[]',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Create posts table
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS posts (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id UUID REFERENCES users(id),
-        content TEXT,
-        media JSONB,
-        post_to VARCHAR(50) DEFAULT 'general',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Create feedback table
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS feedback (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id UUID REFERENCES users(id),
-        subject VARCHAR(255),
-        message TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Create password reset codes table
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS codes (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id UUID REFERENCES users(id),
-        code VARCHAR(10) NOT NULL,
-        type VARCHAR(50) NOT NULL,
-        expires_at TIMESTAMP NOT NULL,
-        used BOOLEAN DEFAULT FALSE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    console.log('✅ Database tables initialized successfully');
-  } catch (error) {
-    console.error('❌ Database initialization error:', error);
+// Enhanced available songs with actual working URLs
+const availableSongs = [
+  { 
+    id: 'song1', 
+    name: 'Chill Vibes', 
+    artist: 'LoFi Beats',
+    duration: '2:30',
+    emoji: '🎧',
+    url: 'https://assets.mixkit.co/music/preview/mixkit-chill-vibes-239.mp3'
+  },
+  { 
+    id: 'song2', 
+    name: 'Upbeat Energy', 
+    artist: 'Electronic Pop',
+    duration: '3:15',
+    emoji: '⚡',
+    url: 'https://assets.mixkit.co/music/preview/mixkit-upbeat-energy-225.mp3'
+  },
+  { 
+    id: 'song3', 
+    name: 'Dreamy Piano', 
+    artist: 'Classical',
+    duration: '2:45',
+    emoji: '🎹',
+    url: 'https://assets.mixkit.co/music/preview/mixkit-dreamy-piano-1171.mp3'
+  },
+  { 
+    id: 'song4', 
+    name: 'Summer Vibes', 
+    artist: 'Tropical',
+    duration: '3:30',
+    emoji: '🏖️',
+    url: 'https://assets.mixkit.co/music/preview/mixkit-summer-vibes-129.mp3'
+  },
+  { 
+    id: 'song5', 
+    name: 'Happy Day', 
+    artist: 'Pop Rock',
+    duration: '2:50',
+    emoji: '😊',
+    url: 'https://assets.mixkit.co/music/preview/mixkit-happy-day-583.mp3'
+  },
+  { 
+    id: 'song6', 
+    name: 'Relaxing Guitar', 
+    artist: 'Acoustic',
+    duration: '3:10',
+    emoji: '🎸',
+    url: 'https://assets.mixkit.co/music/preview/mixkit-relaxing-guitar-243.mp3'
   }
-};
+];
 
-// Enhanced email service
+// Enhanced available stickers with emoji support
+const availableStickers = [
+  { id: 'sticker1', name: 'Happy 😊', emoji: '😊', category: 'emotions' },
+  { id: 'sticker2', name: 'Laughing 😂', emoji: '😂', category: 'emotions' },
+  { id: 'sticker3', name: 'Heart ❤️', emoji: '❤️', category: 'love' },
+  { id: 'sticker4', name: 'Fire 🔥', emoji: '🔥', category: 'trending' },
+  { id: 'sticker5', name: 'Star ⭐', emoji: '⭐', category: 'achievement' },
+  { id: 'sticker6', name: 'Party 🎉', emoji: '🎉', category: 'celebration' },
+  { id: 'sticker7', name: 'Music 🎵', emoji: '🎵', category: 'music' },
+  { id: 'sticker8', name: 'Game 🎮', emoji: '🎮', category: 'hobbies' },
+  { id: 'sticker9', name: 'Food 🍕', emoji: '🍕', category: 'food' },
+  { id: 'sticker10', name: 'Study 📚', emoji: '📚', category: 'academic' },
+  { id: 'sticker11', name: 'Cool 😎', emoji: '😎', category: 'emotions' },
+  { id: 'sticker12', name: 'Love 💕', emoji: '💕', category: 'love' },
+  { id: 'sticker13', name: 'Thumbs Up 👍', emoji: '👍', category: 'reactions' },
+  { id: 'sticker14', name: 'Clap 👏', emoji: '👏', category: 'reactions' },
+  { id: 'sticker15', name: 'Rocket 🚀', emoji: '🚀', category: 'excitement' }
+];
+
 const sendEmail = async (to, subject, html) => {
   try {
     console.log(`📧 Sending email to: ${to}`);
-    
-    if (!process.env.BREVO_API_KEY) {
-      console.log(`📧 [DEV MODE] Email would be sent to: ${to}`);
-      console.log(`📧 [DEV MODE] Subject: ${subject}`);
-      return true;
-    }
-
     const response = await axios.post(
       'https://api.brevo.com/v3/smtp/email',
       {
         sender: {
           name: process.env.BREVO_FROM_NAME || 'VibeXpert',
-          email: process.env.BREVO_FROM_EMAIL || 'noreply@vibexpert.com'
+          email: process.env.BREVO_FROM_EMAIL || 'noreply@vibexpert.online'
         },
         to: [{ email: to }],
         subject: subject,
@@ -142,486 +131,741 @@ const sendEmail = async (to, subject, html) => {
         timeout: 10000
       }
     );
-    
-    console.log(`✅ Email sent successfully to ${to}`);
+    console.log(`✅ Email sent successfully`);
     return true;
   } catch (error) {
-    console.error('❌ Email failed:', error.response?.data || error.message);
+    console.error('❌ Email failed:', error.message);
     return false;
   }
 };
 
-// File upload configuration
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024, files: 5 },
+  limits: { fileSize: 20 * 1024 * 1024, files: 10 },
   fileFilter: (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png|gif|webp|mp4|mov|avi/;
+    const allowedTypes = /jpeg|jpg|png|gif|webp|mp4|mov|avi|mp3|wav/;
     const mimetype = allowedTypes.test(file.mimetype);
     if (mimetype) return cb(null, true);
-    cb(new Error('Only image and video files allowed'));
+    cb(new Error('Only image, video, and audio files allowed'));
   }
 });
 
-// Utility functions
 const generateCode = () => Math.floor(100000 + Math.random() * 900000).toString();
 
-// Authentication middleware
 const authenticateToken = async (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Access token required' });
   try {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-    
-    if (!token) {
-      return res.status(401).json({ error: 'Access token required' });
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret-key-change-in-production');
-    
-    // Debug log
-    console.log('Decoded token:', decoded);
-    
-    const { rows: users } = await pool.query(
-      'SELECT * FROM users WHERE id = $1',
-      [decoded.userId]
-    );
-    
-    if (users.length === 0) {
-      return res.status(403).json({ error: 'Invalid token - user not found' });
-    }
-    
-    req.user = users[0];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const { data: user, error } = await supabase.from('users').select('*').eq('id', decoded.userId).single();
+    if (error || !user) return res.status(403).json({ error: 'Invalid token' });
+    req.user = user;
     next();
   } catch (error) {
-    console.error('Auth error:', error.message);
     return res.status(403).json({ error: 'Invalid or expired token' });
   }
 };
 
-// Health check
-app.get('/api/health', async (req, res) => {
-  try {
-    await pool.query('SELECT 1');
-    res.json({ 
-      success: true, 
-      message: 'VibeXpert API is running!', 
-      database: 'Connected',
-      timestamp: new Date().toISOString() 
-    });
-  } catch (error) {
-    res.json({ 
-      success: true, 
-      message: 'API is running (database connection failed)',
-      database: 'Disconnected',
-      timestamp: new Date().toISOString(),
-      error: error.message
-    });
-  }
-});
-
-// Mock endpoints that work without database
-app.get('/posts', async (req, res) => {
-  try {
-    const { rows: posts } = await pool.query(`
-      SELECT p.*, u.username, u.profile_pic 
-      FROM posts p 
-      JOIN users u ON p.user_id = u.id 
-      ORDER BY p.created_at DESC 
-      LIMIT 20
-    `);
-    
-    const formattedPosts = posts.map(post => ({
-      id: post.id,
-      text: post.content,
-      image: post.media ? JSON.parse(post.media)[0]?.url : null,
-      userName: post.username,
-      createdAt: post.created_at,
-      likes: 0,
-      comments: 0,
-      shares: 0
-    }));
-    
-    res.json({ success: true, posts: formattedPosts });
-  } catch (error) {
-    console.error('Get posts error:', error);
-    const mockPosts = [
-      {
-        id: '1',
-        text: 'Welcome to VibeXpert! The platform is starting up...',
-        userName: 'System',
-        createdAt: new Date().toISOString(),
-        likes: 0,
-        comments: 0,
-        shares: 0
-      },
-      {
-        id: '2',
-        text: 'Database connection is being established. Please try again shortly.',
-        userName: 'System',
-        createdAt: new Date().toISOString(),
-        likes: 0,
-        comments: 0,
-        shares: 0
-      }
-    ];
-    res.json({ success: true, posts: mockPosts });
-  }
-});
-
-app.get('/trending', (req, res) => {
-  const trending = [
-    {
-      title: "Welcome!",
-      content: "VibeXpert is starting up. Please wait a moment...",
-      engagement: "🎉 New"
-    },
-    {
-      title: "System Status",
-      content: "Database connection in progress",
-      engagement: "⚡ Live"
-    }
-  ];
-  
-  res.json({ success: true, trending });
-});
-
-app.get('/live-stats', (req, res) => {
+// Get available songs and stickers - ENHANCED
+app.get('/api/post-assets', (req, res) => {
   res.json({
     success: true,
-    onlineUsers: Math.floor(Math.random() * 100) + 50,
-    postsToday: Math.floor(Math.random() * 50) + 10,
-    activeChats: Math.floor(Math.random() * 20) + 5,
-    liveActivity: "Users are connecting..."
+    songs: availableSongs,
+    stickers: availableStickers
   });
 });
 
-// Enhanced registration
+// Get music library
+app.get('/api/music-library', (req, res) => {
+  res.json({
+    success: true,
+    music: availableSongs
+  });
+});
+
+// Get sticker library
+app.get('/api/sticker-library', (req, res) => {
+  res.json({
+    success: true,
+    stickers: availableStickers
+  });
+});
+
 app.post('/api/register', async (req, res) => {
   try {
     const { username, email, password, registrationNumber } = req.body;
-    
-    console.log('Registration attempt:', { username, email, registrationNumber });
-    
     if (!username || !email || !password || !registrationNumber) {
       return res.status(400).json({ error: 'All fields are required' });
     }
-
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({ error: 'Invalid email format' });
-    }
-
-    // Check for existing user
-    const { rows: existingUsers } = await pool.query(
-      'SELECT * FROM users WHERE email = $1 OR registration_number = $2',
-      [email, registrationNumber]
-    );
-
-    if (existingUsers.length > 0) {
-      const existing = existingUsers[0];
-      if (existing.email === email) {
-        return res.status(400).json({ error: 'Email already registered' });
-      }
-      if (existing.registration_number === registrationNumber) {
-        return res.status(400).json({ error: 'Registration number already registered' });
-      }
-    }
-
-    // Hash password and create user
-    const passwordHash = await bcrypt.hash(password, 10);
-    const userId = uuidv4();
+    if (!emailRegex.test(email)) return res.status(400).json({ error: 'Invalid email format' });
     
-    await pool.query(
-      `INSERT INTO users (id, username, email, password_hash, registration_number, badges, bio) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [userId, username, email, passwordHash, registrationNumber, JSON.stringify([]), '']
-    );
-
-    console.log('User created successfully:', userId);
-
-    // Send welcome email
-    await sendEmail(
+    const { data: existingUser } = await supabase.from('users').select('email, registration_number').or(`email.eq.${email},registration_number.eq.${registrationNumber}`).maybeSingle();
+    if (existingUser) {
+      if (existingUser.email === email) return res.status(400).json({ error: 'Email already registered' });
+      if (existingUser.registration_number === registrationNumber) return res.status(400).json({ error: 'Registration number already registered' });
+    }
+    
+    const passwordHash = await bcrypt.hash(password, 10);
+    const { data: newUser, error } = await supabase.from('users').insert([{ 
+      username, 
       email, 
-      '🎉 Welcome to VibeXpert!', 
-      `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <h1 style="color: #4F46E5;">Welcome to VibeXpert, ${username}! 🎉</h1>
-        <p style="font-size: 16px; color: #374151;">Congratulations on creating your account!</p>
-        <p style="font-size: 16px; color: #374151;">Ready to vibe? Let's go! 🚀</p>
-      </div>`
-    );
-
-    res.status(201).json({ 
-      success: true, 
-      message: 'Account created successfully! Please log in.', 
-      userId: userId 
-    });
-
+      password_hash: passwordHash,
+      registration_number: registrationNumber 
+    }]).select().single();
+    
+    if (error) throw new Error('Failed to create account');
+    
+    sendEmail(email, '🎉 Welcome to VibeXpert!', `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;"><h1 style="color: #4F46E5;">Welcome to VibeXpert, ${username}! 🎉</h1><p style="font-size: 16px; color: #374151;">Congratulations on creating your account!</p><p style="font-size: 16px; color: #374151;">Ready to vibe? Let's go! 🚀</p></div>`).catch(err => console.error('Email send failed:', err));
+    
+    res.status(201).json({ success: true, message: 'Account created successfully! Please log in.', userId: newUser.id });
   } catch (error) {
     console.error('Registration error:', error);
     res.status(500).json({ error: error.message || 'Registration failed' });
   }
 });
 
-// Login endpoint - FIXED
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    
-    console.log('Login attempt for email:', email);
-    
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password required' });
-    }
-
-    const { rows: users } = await pool.query(
-      'SELECT * FROM users WHERE email = $1',
-      [email]
-    );
-
-    if (users.length === 0) {
-      console.log('No user found with email:', email);
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
-
-    const user = users[0];
-    console.log('User found:', user.id, user.username);
-    
+    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+    const { data: user, error } = await supabase.from('users').select('*').eq('email', email).maybeSingle();
+    if (error || !user) return res.status(401).json({ error: 'Invalid email or password' });
     const validPassword = await bcrypt.compare(password, user.password_hash);
-    if (!validPassword) {
-      console.log('Invalid password for user:', user.id);
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
-
-    const tokenPayload = { 
-      userId: user.id, 
-      email: user.email 
-    };
-    
-    const token = jwt.sign(
-      tokenPayload, 
-      process.env.JWT_SECRET || 'fallback-secret-key-change-in-production', 
-      { expiresIn: '30d' }
-    );
-
-    console.log('Login successful for user:', user.id);
-
-    res.json({ 
-      success: true, 
-      token, 
-      user: { 
-        id: user.id, 
-        username: user.username, 
-        email: user.email, 
-        college: user.college, 
-        community_joined: user.community_joined, 
-        profile_pic: user.profile_pic,
-        registration_number: user.registration_number,
-        badges: user.badges || [],
-        bio: user.bio || ''
-      } 
-    });
-
+    if (!validPassword) return res.status(401).json({ error: 'Invalid email or password' });
+    const token = jwt.sign({ userId: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '30d' });
+    res.json({ success: true, token, user: { 
+      id: user.id, 
+      username: user.username, 
+      email: user.email, 
+      college: user.college, 
+      communityJoined: user.community_joined, 
+      profilePic: user.profile_pic,
+      registrationNumber: user.registration_number,
+      badges: user.badges || [],
+      bio: user.bio || ''
+    } });
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ error: 'Login failed: ' + error.message });
+    res.status(500).json({ error: 'Login failed' });
   }
 });
 
-// Password reset flow
 app.post('/api/forgot-password', async (req, res) => {
   try {
     const { email } = req.body;
-    
-    if (!email) {
-      return res.status(400).json({ error: 'Email required' });
-    }
-
-    const { rows: users } = await pool.query(
-      'SELECT id, username, email FROM users WHERE email = $1',
-      [email]
-    );
-
-    // Always return success to prevent email enumeration
-    if (users.length === 0) {
-      return res.json({ 
-        success: true, 
-        message: 'If this email exists, you will receive a reset code.' 
-      });
-    }
-
-    const user = users[0];
+    if (!email) return res.status(400).json({ error: 'Email required' });
+    const { data: user, error } = await supabase.from('users').select('id, username, email').eq('email', email).maybeSingle();
+    if (error || !user) return res.json({ success: true, message: 'If this email exists, you will receive a reset code.' });
     const code = generateCode();
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
-    
     console.log(`🔑 Reset code for ${email}: ${code}`);
-
-    await pool.query(
-      'INSERT INTO codes (id, user_id, code, type, expires_at) VALUES ($1, $2, $3, $4, $5)',
-      [uuidv4(), user.id, code, 'reset', expiresAt]
-    );
-
-    // Send reset email
-    await sendEmail(
-      email, 
-      '🔐 Password Reset Code - VibeXpert', 
-      `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <h1 style="color: #4F46E5;">Password Reset Request</h1>
-        <p>Hi ${user.username},</p>
-        <div style="background: #F3F4F6; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;">
-          <h2 style="color: #1F2937; font-size: 32px; letter-spacing: 4px; margin: 0;">${code}</h2>
-        </div>
-        <p style="font-size: 14px; color: #6B7280;">This code expires in 15 minutes.</p>
-      </div>`
-    );
-
+    const { error: codeError } = await supabase.from('codes').insert([{ user_id: user.id, code, type: 'reset', expires_at: expiresAt.toISOString() }]);
+    if (codeError) throw new Error('Failed to generate reset code');
+    sendEmail(email, '🔐 Password Reset Code - VibeXpert', `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;"><h1 style="color: #4F46E5;">Password Reset Request</h1><p>Hi ${user.username},</p><div style="background: #F3F4F6; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;"><h2 style="color: #1F2937; font-size: 32px; letter-spacing: 4px; margin: 0;">${code}</h2></div><p style="font-size: 14px; color: #6B7280;">This code expires in 15 minutes.</p></div>`).catch(err => console.error('Email failed:', err));
     res.json({ success: true, message: 'Reset code sent to your email' });
-
   } catch (error) {
     console.error('Forgot password error:', error);
-    res.status(500).json({ error: 'Failed to send reset code: ' + error.message });
+    res.status(500).json({ error: 'Failed to send reset code' });
   }
 });
 
-// Create post endpoint
-app.post('/api/posts', authenticateToken, upload.single('media'), async (req, res) => {
+app.post('/api/reset-password', async (req, res) => {
   try {
-    const { content, postTo } = req.body;
+    const { email, code, newPassword } = req.body;
+    if (!email || !code || !newPassword) return res.status(400).json({ error: 'All fields required' });
+    const { data: user } = await supabase.from('users').select('id').eq('email', email).maybeSingle();
+    if (!user) return res.status(400).json({ error: 'Invalid email' });
+    const { data: codeData } = await supabase.from('codes').select('*').eq('user_id', user.id).eq('code', code).eq('type', 'reset').gte('expires_at', new Date().toISOString()).maybeSingle();
+    if (!codeData) return res.status(400).json({ error: 'Invalid or expired code' });
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    await supabase.from('users').update({ password_hash: passwordHash }).eq('id', user.id);
+    await supabase.from('codes').delete().eq('id', codeData.id);
+    res.json({ success: true, message: 'Password reset successful' });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ error: 'Password reset failed' });
+  }
+});
+
+app.post('/api/college/request-verification', authenticateToken, async (req, res) => {
+  try {
+    const { collegeName, collegeEmail } = req.body;
+    if (!collegeName || !collegeEmail) return res.status(400).json({ error: 'College name and email required' });
+    if (req.user.college) return res.status(400).json({ error: 'You are already connected to a college community' });
+    const code = generateCode();
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    console.log(`🎓 College verification code for ${req.user.email}: ${code}`);
+    const { error: codeError } = await supabase.from('codes').insert([{ user_id: req.user.id, code, type: 'college', meta: { collegeName, collegeEmail }, expires_at: expiresAt.toISOString() }]);
+    if (codeError) throw new Error('Failed to generate verification code');
+    sendEmail(collegeEmail, `🎓 College Verification Code - VibeXpert`, `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;"><h1 style="color: #4F46E5;">College Verification</h1><p>Hi ${req.user.username},</p><p>Here's your verification code to connect to <strong>${collegeName}</strong>:</p><div style="background: #F3F4F6; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;"><h2 style="color: #1F2937; font-size: 32px; letter-spacing: 4px; margin: 0;">${code}</h2></div><p style="font-size: 14px; color: #6B7280;">This code expires in 15 minutes.</p></div>`).catch(err => console.error('Email failed:', err));
+    res.json({ success: true, message: 'Verification code sent to your college email' });
+  } catch (error) {
+    console.error('College verification request error:', error);
+    res.status(500).json({ error: 'Failed to send verification code' });
+  }
+});
+
+app.post('/api/college/verify', authenticateToken, async (req, res) => {
+  try {
+    const { code } = req.body;
+    if (!code) return res.status(400).json({ error: 'Verification code required' });
+    const { data: codeData } = await supabase.from('codes').select('*').eq('user_id', req.user.id).eq('code', code).eq('type', 'college').gte('expires_at', new Date().toISOString()).maybeSingle();
+    if (!codeData) return res.status(400).json({ error: 'Invalid or expired code' });
+    const { collegeName } = codeData.meta;
+    const currentBadges = req.user.badges || [];
+    if (!currentBadges.includes('🎓 Community Member')) {
+      currentBadges.push('🎓 Community Member');
+    }
+    await supabase.from('users').update({ college: collegeName, community_joined: true, badges: currentBadges }).eq('id', req.user.id);
+    await supabase.from('codes').delete().eq('id', codeData.id);
+    res.json({ success: true, message: `Successfully connected to ${collegeName}!`, college: collegeName, badges: currentBadges });
+  } catch (error) {
+    console.error('College verification error:', error);
+    res.status(500).json({ error: 'College verification failed' });
+  }
+});
+
+// ENHANCED POST CREATION WITH MUSIC AND STICKERS
+app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req, res) => {
+  try {
+    const { content, postTo = 'profile', music, stickers = '[]' } = req.body;
+    const files = req.files;
     
-    if (!content && !req.file) {
-      return res.status(400).json({ error: 'Post content or media is required' });
+    if (!content && (!files || files.length === 0) && !music && (!stickers || stickers === '[]')) {
+      return res.status(400).json({ error: 'Post must have content, media, music, or stickers' });
     }
-
-    const postId = uuidv4();
-    let mediaData = null;
-
-    if (req.file) {
-      mediaData = JSON.stringify([{
-        url: `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`,
-        type: req.file.mimetype.startsWith('image/') ? 'image' : 'video',
-        filename: req.file.originalname
-      }]);
+    
+    if (!['profile', 'community'].includes(postTo)) {
+      return res.status(400).json({ error: 'Invalid post destination' });
     }
-
-    await pool.query(
-      'INSERT INTO posts (id, user_id, content, media, post_to) VALUES ($1, $2, $3, $4, $5)',
-      [postId, req.user.id, content, mediaData, postTo || 'general']
-    );
-
-    res.json({ 
+    
+    // Parse music data if provided
+    let parsedMusic = null;
+    if (music) {
+      try {
+        parsedMusic = JSON.parse(music);
+        // Validate music object
+        if (!parsedMusic.id || !parsedMusic.name || !parsedMusic.url) {
+          parsedMusic = null;
+        }
+      } catch (e) {
+        console.warn('Invalid music format:', e.message);
+        parsedMusic = null;
+      }
+    }
+    
+    // Parse stickers data if provided
+    let parsedStickers = [];
+    if (stickers) {
+      try {
+        parsedStickers = JSON.parse(stickers);
+        // Validate stickers array
+        if (!Array.isArray(parsedStickers)) {
+          parsedStickers = [];
+        }
+        // Limit to 5 stickers
+        parsedStickers = parsedStickers.slice(0, 5);
+      } catch (e) {
+        console.warn('Invalid stickers format:', e.message);
+        parsedStickers = [];
+      }
+    }
+    
+    const mediaUrls = [];
+    if (files && files.length > 0) {
+      for (const file of files) {
+        const fileExt = file.originalname.split('.').pop();
+        const fileName = `${req.user.id}/${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
+        const { data: uploadData, error: uploadError } = await supabase.storage.from('posts-media').upload(fileName, file.buffer, { contentType: file.mimetype, cacheControl: '3600' });
+        if (uploadError) throw new Error('Failed to upload media');
+        const { data: urlData } = supabase.storage.from('posts-media').getPublicUrl(fileName);
+        mediaUrls.push({ 
+          url: urlData.publicUrl, 
+          type: file.mimetype.startsWith('image') ? 'image' : file.mimetype.startsWith('video') ? 'video' : 'audio' 
+        });
+      }
+    }
+    
+    const { data: newPost, error: postError } = await supabase.from('posts').insert([{ 
+      user_id: req.user.id, 
+      content: content || '', 
+      media: mediaUrls, 
+      college: req.user.college, 
+      posted_to: postTo,
+      music: parsedMusic,
+      stickers: parsedStickers
+    }]).select(`*, users (id, username, profile_pic, college, registration_number)`).single();
+    
+    if (postError) throw new Error('Failed to create post');
+    
+    const currentBadges = req.user.badges || [];
+    const { data: userPosts } = await supabase.from('posts').select('id').eq('user_id', req.user.id);
+    const postCount = userPosts?.length || 0;
+    
+    let badgeUpdated = false;
+    
+    if (postCount === 1 && !currentBadges.includes('🎨 First Post')) {
+      currentBadges.push('🎨 First Post');
+      badgeUpdated = true;
+    } else if (postCount === 10 && !currentBadges.includes('⭐ Content Creator')) {
+      currentBadges.push('⭐ Content Creator');
+      badgeUpdated = true;
+    }
+    
+    // Check for music badge
+    if (parsedMusic && !currentBadges.includes('🎵 Music Lover')) {
+      currentBadges.push('🎵 Music Lover');
+      badgeUpdated = true;
+    }
+    
+    // Check for sticker badge
+    if (parsedStickers.length > 0 && !currentBadges.includes('🎨 Creative')) {
+      currentBadges.push('🎨 Creative');
+      badgeUpdated = true;
+    }
+    
+    if (badgeUpdated) {
+      await supabase.from('users').update({ badges: currentBadges }).eq('id', req.user.id);
+    }
+    
+    io.emit('new_post', newPost);
+    res.status(201).json({ 
       success: true, 
-      message: 'Post created successfully',
-      postId: postId
+      post: newPost, 
+      message: 'Post created successfully!', 
+      badges: currentBadges,
+      badgeUpdated: badgeUpdated 
     });
-
   } catch (error) {
     console.error('Create post error:', error);
-    res.status(500).json({ error: 'Failed to create post: ' + error.message });
+    res.status(500).json({ error: error.message || 'Failed to create post' });
   }
 });
 
-// Feedback/complaint endpoint
+app.get('/api/posts', authenticateToken, async (req, res) => {
+  try {
+    const { limit = 20, offset = 0, type = 'all' } = req.query;
+    let query = supabase.from('posts').select(`*, users (id, username, profile_pic, college, registration_number)`).order('created_at', { ascending: false });
+    
+    if (type === 'my') {
+      query = query.eq('user_id', req.user.id);
+    } else if (type === 'community' && req.user.community_joined && req.user.college) {
+      query = query.eq('college', req.user.college).eq('posted_to', 'community');
+    } else if (type === 'profile') {
+      query = query.eq('user_id', req.user.id).eq('posted_to', 'profile');
+    }
+    
+    const { data: posts, error } = await query.range(offset, offset + parseInt(limit) - 1);
+    if (error) throw new Error('Failed to fetch posts');
+    
+    // Ensure music and stickers are properly formatted
+    const formattedPosts = (posts || []).map(post => ({
+      ...post,
+      music: post.music || null,
+      stickers: post.stickers || []
+    }));
+    
+    res.json({ success: true, posts: formattedPosts });
+  } catch (error) {
+    console.error('Get posts error:', error);
+    res.json({ success: true, posts: [] });
+  }
+});
+
+app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { data: post } = await supabase.from('posts').select('user_id, media').eq('id', id).single();
+    if (!post) return res.status(404).json({ error: 'Post not found' });
+    if (post.user_id !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
+    if (post.media && post.media.length > 0) {
+      for (const media of post.media) {
+        const fileName = media.url.split('/').pop();
+        await supabase.storage.from('posts-media').remove([`${req.user.id}/${fileName}`]);
+      }
+    }
+    await supabase.from('posts').delete().eq('id', id);
+    res.json({ success: true, message: 'Post deleted successfully' });
+  } catch (error) {
+    console.error('Delete post error:', error);
+    res.status(500).json({ error: 'Failed to delete post' });
+  }
+});
+
+app.get('/api/community/messages', authenticateToken, async (req, res) => {
+  try {
+    if (!req.user.community_joined || !req.user.college) {
+      return res.status(403).json({ error: 'Join a college community first' });
+    }
+    const { limit = 50 } = req.query;
+    const { data: messages, error } = await supabase.from('messages')
+      .select(`*, users (id, username, profile_pic), message_reactions (*)`)
+      .eq('college', req.user.college)
+      .order('timestamp', { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    res.json({ success: true, messages: messages || [] });
+  } catch (error) {
+    console.error('Get messages error:', error);
+    res.status(500).json({ error: 'Failed to fetch messages' });
+  }
+});
+
+app.post('/api/community/messages', authenticateToken, async (req, res) => {
+  try {
+    const { content } = req.body;
+    if (!content || !content.trim()) return res.status(400).json({ error: 'Message content required' });
+    if (!req.user.community_joined || !req.user.college) {
+      return res.status(403).json({ error: 'Join a college community first' });
+    }
+    const { data: newMessage, error } = await supabase.from('messages').insert([{ 
+      sender_id: req.user.id, 
+      content: content.trim(),
+      college: req.user.college 
+    }]).select(`*, users (id, username, profile_pic)`).single();
+    
+    if (error) throw error;
+    
+    io.to(req.user.college).emit('new_message', newMessage);
+    res.json({ success: true, message: newMessage });
+  } catch (error) {
+    console.error('Send message error:', error);
+    res.status(500).json({ error: 'Failed to send message' });
+  }
+});
+
+app.patch('/api/community/messages/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { content } = req.body;
+    
+    if (!content || !content.trim()) {
+      return res.status(400).json({ error: 'Message content required' });
+    }
+    
+    const { data: message } = await supabase.from('messages').select('*').eq('id', id).single();
+    if (!message) return res.status(404).json({ error: 'Message not found' });
+    if (message.sender_id !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
+    
+    const messageTime = new Date(message.timestamp);
+    const now = new Date();
+    const diffMinutes = (now - messageTime) / 1000 / 60;
+    
+    if (diffMinutes > 2) {
+      return res.status(403).json({ error: 'Can only edit messages within 2 minutes' });
+    }
+    
+    const { data: updated, error } = await supabase.from('messages')
+      .update({ content: content.trim(), edited: true })
+      .eq('id', id)
+      .select(`*, users (id, username, profile_pic)`)
+      .single();
+    
+    if (error) throw error;
+    
+    io.to(req.user.college).emit('message_updated', updated);
+    res.json({ success: true, message: updated });
+  } catch (error) {
+    console.error('Edit message error:', error);
+    res.status(500).json({ error: 'Failed to edit message' });
+  }
+});
+
+app.delete('/api/community/messages/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { data: message } = await supabase.from('messages').select('sender_id').eq('id', id).single();
+    if (!message) return res.status(404).json({ error: 'Message not found' });
+    if (message.sender_id !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
+    
+    await supabase.from('messages').delete().eq('id', id);
+    io.to(req.user.college).emit('message_deleted', { id });
+    res.json({ success: true, message: 'Message deleted' });
+  } catch (error) {
+    console.error('Delete message error:', error);
+    res.status(500).json({ error: 'Failed to delete message' });
+  }
+});
+
+app.post('/api/community/messages/:id/react', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { emoji } = req.body;
+    
+    if (!emoji) return res.status(400).json({ error: 'Emoji required' });
+    
+    const { data: existing } = await supabase.from('message_reactions')
+      .select('*')
+      .eq('message_id', id)
+      .eq('user_id', req.user.id)
+      .eq('emoji', emoji)
+      .maybeSingle();
+    
+    if (existing) {
+      await supabase.from('message_reactions').delete().eq('id', existing.id);
+      return res.json({ success: true, action: 'removed' });
+    }
+    
+    const { data: reaction, error } = await supabase.from('message_reactions').insert([{
+      message_id: id,
+      user_id: req.user.id,
+      emoji: emoji
+    }]).select().single();
+    
+    if (error) throw error;
+    
+    io.to(req.user.college).emit('message_reaction', { messageId: id, reaction });
+    res.json({ success: true, action: 'added', reaction });
+  } catch (error) {
+    console.error('React to message error:', error);
+    res.status(500).json({ error: 'Failed to react' });
+  }
+});
+
+app.post('/api/community/messages/:id/view', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const { data: existing } = await supabase.from('message_views')
+      .select('*')
+      .eq('message_id', id)
+      .eq('user_id', req.user.id)
+      .maybeSingle();
+    
+    if (existing) {
+      return res.json({ success: true });
+    }
+    
+    await supabase.from('message_views').insert([{
+      message_id: id,
+      user_id: req.user.id
+    }]);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Mark view error:', error);
+    res.status(500).json({ error: 'Failed to mark view' });
+  }
+});
+
+app.get('/api/community/messages/:id/views', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { data: views, error } = await supabase.from('message_views')
+      .select('user_id, users (username, profile_pic)', { count: 'exact' })
+      .eq('message_id', id);
+    
+    if (error) throw error;
+    res.json({ success: true, views: views || [], count: views?.length || 0 });
+  } catch (error) {
+    console.error('Get views error:', error);
+    res.status(500).json({ error: 'Failed to get views' });
+  }
+});
+
+app.patch('/api/profile', authenticateToken, upload.single('profilePic'), async (req, res) => {
+  try {
+    const { username, bio } = req.body;
+    const updates = {};
+    
+    if (username) updates.username = username;
+    if (bio !== undefined) updates.bio = bio;
+    
+    if (req.file) {
+      const fileExt = req.file.originalname.split('.').pop();
+      const fileName = `${req.user.id}/profile.${fileExt}`;
+      const { error: uploadError } = await supabase.storage
+        .from('profile-pics')
+        .upload(fileName, req.file.buffer, { 
+          contentType: req.file.mimetype, 
+          cacheControl: '3600',
+          upsert: true 
+        });
+      
+      if (uploadError) throw new Error('Failed to upload profile picture');
+      
+      const { data: urlData } = supabase.storage.from('profile-pics').getPublicUrl(fileName);
+      updates.profile_pic = urlData.publicUrl;
+    }
+    
+    const { data: updated, error } = await supabase.from('users')
+      .update(updates)
+      .eq('id', req.user.id)
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    res.json({ success: true, user: updated });
+  } catch (error) {
+    console.error('Update profile error:', error);
+    res.status(500).json({ error: 'Failed to update profile' });
+  }
+});
+
+app.get('/api/search/users', authenticateToken, async (req, res) => {
+  try {
+    const { query } = req.query;
+    if (!query || query.trim().length < 2) {
+      return res.status(400).json({ error: 'Search query must be at least 2 characters' });
+    }
+    
+    const searchTerm = query.trim().toLowerCase();
+    const { data: users, error } = await supabase
+      .from('users')
+      .select('id, username, email, college, profile_pic, registration_number')
+      .or(`username.ilike.%${searchTerm}%,registration_number.ilike.%${searchTerm}%`)
+      .limit(10);
+    
+    if (error) throw error;
+    res.json({ success: true, users: users || [] });
+  } catch (error) {
+    console.error('Search users error:', error);
+    res.status(500).json({ error: 'Search failed' });
+  }
+});
+
 app.post('/api/feedback', authenticateToken, async (req, res) => {
   try {
     const { subject, message } = req.body;
-    
-    if (!message) {
-      return res.status(400).json({ error: 'Message is required' });
+    if (!subject || !message) {
+      return res.status(400).json({ error: 'Subject and message required' });
     }
-
-    const feedbackId = uuidv4();
     
-    await pool.query(
-      'INSERT INTO feedback (id, user_id, subject, message) VALUES ($1, $2, $3, $4)',
-      [feedbackId, req.user.id, subject || 'Complaint', message]
-    );
-
-    res.json({ 
-      success: true, 
-      message: 'Feedback submitted successfully'
-    });
-
+    const { data: feedback, error } = await supabase.from('feedback').insert([{
+      user_id: req.user.id,
+      subject: subject.trim(),
+      message: message.trim()
+    }]).select().single();
+    
+    if (error) throw error;
+    
+    res.json({ success: true, message: 'Feedback submitted successfully!', feedback });
   } catch (error) {
     console.error('Feedback error:', error);
-    res.status(500).json({ error: 'Failed to submit feedback: ' + error.message });
+    res.status(500).json({ error: 'Failed to submit feedback' });
   }
 });
 
-// Get user profile
-app.get('/api/profile', authenticateToken, async (req, res) => {
+app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
   try {
-    res.json({
-      success: true,
+    const { userId } = req.params;
+    
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, username, email, college, profile_pic, bio, badges, created_at, registration_number')
+      .eq('id', userId)
+      .single();
+    
+    if (error || !user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    const { data: posts } = await supabase
+      .from('posts')
+      .select('id', { count: 'exact' })
+      .eq('user_id', userId);
+    
+    res.json({ 
+      success: true, 
       user: {
-        id: req.user.id,
-        username: req.user.username,
-        email: req.user.email,
-        college: req.user.college,
-        profile_pic: req.user.profile_pic,
-        registration_number: req.user.registration_number,
-        badges: req.user.badges || [],
-        bio: req.user.bio || ''
+        ...user,
+        postCount: posts?.length || 0
       }
     });
   } catch (error) {
-    console.error('Profile error:', error);
+    console.error('Get profile error:', error);
     res.status(500).json({ error: 'Failed to get profile' });
   }
 });
 
-// Root endpoint
+app.get('/api/badges', authenticateToken, async (req, res) => {
+  try {
+    res.json({ 
+      success: true, 
+      badges: req.user?.badges || [],
+      availableBadges: [
+        { emoji: '🎓', name: 'Community Member', description: 'Joined a college community' },
+        { emoji: '🎨', name: 'First Post', description: 'Created your first post' },
+        { emoji: '⭐', name: 'Content Creator', description: 'Posted 10 times' },
+        { emoji: '💬', name: 'Chatty', description: 'Sent 50 messages' },
+        { emoji: '🔥', name: 'On Fire', description: '7 day streak' },
+        { emoji: '🎵', name: 'Music Lover', description: 'Added music to a post' },
+        { emoji: '🎨', name: 'Creative', description: 'Used stickers in a post' }
+      ]
+    });
+  } catch (error) {
+    console.error('Get badges error:', error);
+    res.status(500).json({ error: 'Failed to get badges' });
+  }
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '3.2' });
+});
+
 app.get('/', (req, res) => {
   res.json({ 
-    message: 'VibeXpert Backend API', 
-    status: 'Running',
-    version: '1.0.0',
-    database: process.env.DATABASE_URL ? 'Configured' : 'Not configured',
-    endpoints: {
-      health: '/api/health',
-      register: '/api/register',
-      login: '/api/login',
-      posts: '/posts',
-      trending: '/trending'
-    }
+    message: 'VibeXpert API v3.2 - Enhanced Posts with Music & Stickers', 
+    features: [
+      'Auth', 
+      'College Verification', 
+      'Posts with Music & Stickers', 
+      'Enhanced Media Upload', 
+      'Community Chat with Reactions',
+      'Message Edit/Delete',
+      'Message Views',
+      'User Search',
+      'Profile Management',
+      'Feedback System',
+      'Badge System',
+      'Music Library',
+      'Sticker Library'
+    ] 
   });
 });
 
-// Socket.io connection handling
+let onlineUsers = {};
 io.on('connection', (socket) => {
-  console.log('🔌 User connected:', socket.id);
+  console.log('✅ User connected:', socket.id);
   
   socket.on('join_college', (college) => {
     if (college) {
       socket.join(college);
-      console.log(`🏫 User ${socket.id} joined college: ${college}`);
+      console.log(`User ${socket.id} joined college: ${college}`);
     }
   });
   
-  socket.on('disconnect', () => {
-    console.log('🔌 User disconnected:', socket.id);
+  socket.on('user_online', (userId) => {
+    onlineUsers[userId] = socket.id;
+    io.emit('online_users', Object.keys(onlineUsers));
   });
-});
-
-// Error handling middleware
-app.use((error, req, res, next) => {
-  console.error('Unhandled error:', error);
-  res.status(500).json({ error: 'Something went wrong!' });
-});
-
-// 404 handler
-app.use('*', (req, res) => {
-  res.status(404).json({ error: 'Endpoint not found' });
+  
+  socket.on('typing_start', (data) => {
+    socket.to(data.college).emit('user_typing', { userId: data.userId, username: data.username });
+  });
+  
+  socket.on('typing_stop', (data) => {
+    socket.to(data.college).emit('user_stop_typing', { userId: data.userId });
+  });
+  
+  socket.on('disconnect', () => {
+    console.log('❌ User disconnected:', socket.id);
+    const userId = Object.keys(onlineUsers).find(key => onlineUsers[key] === socket.id);
+    if (userId) {
+      delete onlineUsers[userId];
+      io.emit('online_users', Object.keys(onlineUsers));
+    }
+  });
 });
 
 const PORT = process.env.PORT || 3000;
-
-// Initialize database and start server
-initializeDatabase().then(() => {
-  server.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 VibeXpert PostgreSQL server running on port ${PORT}`);
-    console.log(`📧 Email service: ${process.env.BREVO_API_KEY ? 'Enabled' : 'Development mode'}`);
-    console.log(`🗄️  Database URL: ${process.env.DATABASE_URL ? 'Set' : 'Not set'}`);
-    console.log(`🔐 JWT secret: ${process.env.JWT_SECRET ? 'Set' : 'Using fallback'}`);
-    console.log(`🌐 CORS: Enabled for all origins`);
-    console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
-  });
+server.listen(PORT, () => {
+  console.log(`🚀 VibeXpert Server v3.2 running on port ${PORT}`);
+  console.log(`🎵 Available Songs: ${availableSongs.length}`);
+  console.log(`🎨 Available Stickers: ${availableStickers.length}`);
+  console.log(`📱 Enhanced Posts with Music & Stickers`);
+  console.log(`✨ Music & Sticker functionality fully enabled`);
 });
