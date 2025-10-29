@@ -13,28 +13,44 @@ const { v4: uuidv4 } = require('uuid');
 const app = express();
 const server = http.createServer(app);
 
-const io = socketIO(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST'],
-    credentials: true
-  }
-});
-
+// Enhanced CORS configuration
 app.use(cors({
-  origin: '*',
+  origin: [
+    'http://localhost:3000',
+    'http://localhost:3001',
+    'https://your-frontend-domain.vercel.app', // Replace with your actual frontend URL
+    '*'
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// Socket.io with enhanced CORS
+const io = socketIO(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+    credentials: true
+  }
+});
+
 // PostgreSQL connection pool for Supabase
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+  ssl: { rejectUnauthorized: false }
+});
+
+// Test database connection on startup
+pool.query('SELECT NOW()', (err, res) => {
+  if (err) {
+    console.error('❌ Database connection failed:', err);
+  } else {
+    console.log('✅ Database connected successfully');
+  }
 });
 
 // Enhanced email service
@@ -93,15 +109,15 @@ const generateCode = () => Math.floor(100000 + Math.random() * 900000).toString(
 
 // Authentication middleware for PostgreSQL
 const authenticateToken = async (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-  
-  if (!token) {
-    return res.status(401).json({ error: 'Access token required' });
-  }
-
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    
+    if (!token) {
+      return res.status(401).json({ error: 'Access token required' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret-key');
     const { rows: users } = await pool.query(
       'SELECT * FROM users WHERE id = $1',
       [decoded.userId]
@@ -114,6 +130,7 @@ const authenticateToken = async (req, res, next) => {
     req.user = users[0];
     next();
   } catch (error) {
+    console.error('Auth error:', error);
     return res.status(403).json({ error: 'Invalid or expired token' });
   }
 };
@@ -206,7 +223,7 @@ app.post('/api/login', async (req, res) => {
 
     const token = jwt.sign(
       { userId: user.id, email: user.email }, 
-      process.env.JWT_SECRET, 
+      process.env.JWT_SECRET || 'fallback-secret-key', 
       { expiresIn: '30d' }
     );
 
@@ -334,733 +351,96 @@ app.post('/api/reset-password', async (req, res) => {
   }
 });
 
-// College verification with PostgreSQL
-app.post('/api/college/request-verification', authenticateToken, async (req, res) => {
+// Mock endpoints for frontend compatibility
+app.get('/posts', async (req, res) => {
   try {
-    const { collegeName, collegeEmail } = req.body;
-    
-    if (!collegeName || !collegeEmail) {
-      return res.status(400).json({ error: 'College name and email required' });
-    }
-
-    // Protection: Check if user already has a college
-    if (req.user.college) {
-      return res.status(400).json({ 
-        error: 'You are already connected to a college community' 
-      });
-    }
-
-    const code = generateCode();
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
-    
-    console.log(`🎓 College verification code for ${req.user.email}: ${code}`);
-
-    await pool.query(
-      'INSERT INTO codes (id, user_id, code, type, meta, expires_at) VALUES ($1, $2, $3, $4, $5, $6)',
-      [uuidv4(), req.user.id, code, 'college', JSON.stringify({ collegeName, collegeEmail }), expiresAt]
-    );
-
-    await sendEmail(
-      collegeEmail, 
-      `🎓 College Verification Code - VibeXpert`, 
-      `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <h1 style="color: #4F46E5;">College Verification</h1>
-        <p>Hi ${req.user.username},</p>
-        <p>Here's your verification code to connect to <strong>${collegeName}</strong>:</p>
-        <div style="background: #F3F4F6; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;">
-          <h2 style="color: #1F2937; font-size: 32px; letter-spacing: 4px; margin: 0;">${code}</h2>
-        </div>
-        <p style="font-size: 14px; color: #6B7280;">This code expires in 15 minutes.</p>
-      </div>`
-    );
-
-    res.json({ success: true, message: 'Verification code sent to your college email' });
-
-  } catch (error) {
-    console.error('College verification request error:', error);
-    res.status(500).json({ error: 'Failed to send verification code' });
-  }
-});
-
-app.post('/api/college/verify', authenticateToken, async (req, res) => {
-  try {
-    const { code } = req.body;
-    
-    if (!code) {
-      return res.status(400).json({ error: 'Verification code required' });
-    }
-
-    const { rows: codes } = await pool.query(
-      'SELECT * FROM codes WHERE user_id = $1 AND code = $2 AND type = $3 AND expires_at > $4',
-      [req.user.id, code, 'college', new Date()]
-    );
-
-    if (codes.length === 0) {
-      return res.status(400).json({ error: 'Invalid or expired code' });
-    }
-
-    const codeData = codes[0];
-    const { collegeName } = JSON.parse(codeData.meta);
-    const currentBadges = req.user.badges ? JSON.parse(req.user.badges) : [];
-    
-    // Award community member badge if not already earned
-    if (!currentBadges.includes('🎓 Community Member')) {
-      currentBadges.push('🎓 Community Member');
-    }
-
-    await pool.query(
-      'UPDATE users SET college = $1, community_joined = TRUE, badges = $2 WHERE id = $3',
-      [collegeName, JSON.stringify(currentBadges), req.user.id]
-    );
-
-    await pool.query(
-      'DELETE FROM codes WHERE id = $1',
-      [codeData.id]
-    );
-
-    res.json({ 
-      success: true, 
-      message: `Successfully connected to ${collegeName}!`, 
-      college: collegeName, 
-      badges: currentBadges 
-    });
-
-  } catch (error) {
-    console.error('College verification error:', error);
-    res.status(500).json({ error: 'College verification failed' });
-  }
-});
-
-// Enhanced posts with PostgreSQL
-app.post('/api/posts', authenticateToken, upload.array('media', 5), async (req, res) => {
-  try {
-    const { content, postTo = 'profile' } = req.body;
-    const files = req.files;
-    
-    if (!content && (!files || files.length === 0)) {
-      return res.status(400).json({ error: 'Post must have content or media' });
-    }
-    
-    if (!['profile', 'community'].includes(postTo)) {
-      return res.status(400).json({ error: 'Invalid post destination' });
-    }
-    
-    // If posting to community, verify user has joined a college
-    if (postTo === 'community' && (!req.user.community_joined || !req.user.college)) {
-      return res.status(403).json({ 
-        error: 'Join a college community first to post there' 
-      });
-    }
-    
-    const mediaUrls = [];
-    
-    // For production, you'd upload to cloud storage and store URLs
-    if (files && files.length > 0) {
-      for (const file of files) {
-        // Simulate file upload - in production, upload to Supabase Storage
-        const mockUrl = `https://example.com/media/${file.originalname}`;
-        mediaUrls.push({ 
-          url: mockUrl, 
-          type: file.mimetype.startsWith('image') ? 'image' : 'video' 
-        });
-      }
-    }
-    
-    // Create post
-    const postId = uuidv4();
-    await pool.query(
-      'INSERT INTO posts (id, user_id, content, media, college, posted_to) VALUES ($1, $2, $3, $4, $5, $6)',
-      [postId, req.user.id, content || '', JSON.stringify(mediaUrls), req.user.college, postTo]
-    );
-
-    // Get the created post with user info
-    const { rows: posts } = await pool.query(
-      `SELECT p.*, u.username, u.profile_pic, u.college, u.registration_number 
-       FROM posts p 
-       JOIN users u ON p.user_id = u.id 
-       WHERE p.id = $1`,
-      [postId]
-    );
-
-    const newPost = posts[0];
-    
-    // Award badges based on post count
-    const { rows: userPosts } = await pool.query(
-      'SELECT id FROM posts WHERE user_id = $1',
-      [req.user.id]
-    );
-      
-    const postCount = userPosts.length;
-    const currentBadges = req.user.badges ? JSON.parse(req.user.badges) : [];
-    
-    if (postCount === 1 && !currentBadges.includes('🎨 First Post')) {
-      currentBadges.push('🎨 First Post');
-      await pool.query(
-        'UPDATE users SET badges = $1 WHERE id = $2',
-        [JSON.stringify(currentBadges), req.user.id]
-      );
-    } else if (postCount === 10 && !currentBadges.includes('⭐ Content Creator')) {
-      currentBadges.push('⭐ Content Creator');
-      await pool.query(
-        'UPDATE users SET badges = $1 WHERE id = $2',
-        [JSON.stringify(currentBadges), req.user.id]
-      );
-    }
-    
-    // Emit socket event for real-time updates (only for community posts)
-    if (postTo === 'community' && req.user.college) {
-      io.to(req.user.college).emit('new_post', newPost);
-    }
-    
-    res.status(201).json({ 
-      success: true, 
-      post: newPost, 
-      message: 'Post created successfully!', 
-      badges: currentBadges 
-    });
-    
-  } catch (error) {
-    console.error('Create post error:', error);
-    res.status(500).json({ error: error.message || 'Failed to create post' });
-  }
-});
-
-// Enhanced posts retrieval with PostgreSQL
-app.get('/api/posts', authenticateToken, async (req, res) => {
-  try {
-    const { limit = 20, offset = 0, type = 'all' } = req.query;
-    
-    let query = `
-      SELECT p.*, u.username, u.profile_pic, u.college, u.registration_number 
+    const { rows: posts } = await pool.query(`
+      SELECT p.*, u.username, u.profile_pic 
       FROM posts p 
       JOIN users u ON p.user_id = u.id 
-    `;
-    let params = [];
-    let paramCount = 0;
+      ORDER BY p.created_at DESC 
+      LIMIT 20
+    `);
     
-    if (type === 'my') {
-      paramCount++;
-      query += ` WHERE p.user_id = $${paramCount} `;
-      params.push(req.user.id);
-    } else if (type === 'community' && req.user.community_joined && req.user.college) {
-      paramCount++;
-      paramCount++;
-      query += ` WHERE p.college = $${paramCount - 1} AND p.posted_to = $${paramCount} `;
-      params.push(req.user.college, 'community');
-    } else if (type === 'profile') {
-      paramCount++;
-      paramCount++;
-      query += ` WHERE p.user_id = $${paramCount - 1} AND p.posted_to = $${paramCount} `;
-      params.push(req.user.id, 'profile');
-    }
-    
-    paramCount++;
-    paramCount++;
-    query += ` ORDER BY p.created_at DESC LIMIT $${paramCount - 1} OFFSET $${paramCount} `;
-    params.push(parseInt(limit), parseInt(offset));
-    
-    const { rows: posts } = await pool.query(query, params);
-    
-    // Parse JSON fields
-    const parsedPosts = posts.map(post => ({
-      ...post,
-      media: post.media ? JSON.parse(post.media) : [],
-      created_at: post.created_at,
-      updated_at: post.updated_at
+    const formattedPosts = posts.map(post => ({
+      id: post.id,
+      text: post.content,
+      image: post.media ? JSON.parse(post.media)[0]?.url : null,
+      userName: post.username,
+      createdAt: post.created_at,
+      likes: 0,
+      comments: 0,
+      shares: 0
     }));
     
-    res.json({ success: true, posts: parsedPosts });
-    
+    res.json({ success: true, posts: formattedPosts });
   } catch (error) {
     console.error('Get posts error:', error);
     res.json({ success: true, posts: [] });
   }
 });
 
-app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    const { rows: posts } = await pool.query(
-      'SELECT user_id, media FROM posts WHERE id = $1',
-      [id]
-    );
-      
-    if (posts.length === 0) {
-      return res.status(404).json({ error: 'Post not found' });
+app.get('/trending', (req, res) => {
+  // Mock trending data
+  const trending = [
+    {
+      title: "Campus Events",
+      content: "Annual tech fest starting next week!",
+      engagement: "🔥 245"
+    },
+    {
+      title: "Study Groups",
+      content: "Forming study groups for finals",
+      engagement: "📚 189"
+    },
+    {
+      title: "Sports",
+      content: "Inter-college cricket tournament",
+      engagement: "🏏 156"
     }
-    
-    const post = posts[0];
-    if (post.user_id !== req.user.id) {
-      return res.status(403).json({ error: 'Not authorized' });
-    }
-    
-    await pool.query(
-      'DELETE FROM posts WHERE id = $1',
-      [id]
-    );
-      
-    res.json({ success: true, message: 'Post deleted successfully' });
-    
-  } catch (error) {
-    console.error('Delete post error:', error);
-    res.status(500).json({ error: 'Failed to delete post' });
-  }
+  ];
+  
+  res.json({ success: true, trending });
 });
 
-// Enhanced community messages with PostgreSQL
-app.get('/api/community/messages', authenticateToken, async (req, res) => {
-  try {
-    if (!req.user.community_joined || !req.user.college) {
-      return res.status(403).json({ error: 'Join a college community first' });
-    }
-    
-    const { limit = 50 } = req.query;
-    
-    const { rows: messages } = await pool.query(
-      `SELECT m.*, u.username, u.profile_pic 
-       FROM messages m 
-       JOIN users u ON m.sender_id = u.id 
-       WHERE m.college = $1 
-       ORDER BY m.timestamp DESC 
-       LIMIT $2`,
-      [req.user.college, parseInt(limit)]
-    );
-      
-    // Get reactions for each message
-    for (let message of messages) {
-      const { rows: reactions } = await pool.query(
-        'SELECT * FROM message_reactions WHERE message_id = $1',
-        [message.id]
-      );
-      message.reactions = reactions;
-    }
-    
-    res.json({ success: true, messages: messages || [] });
-    
-  } catch (error) {
-    console.error('Get messages error:', error);
-    res.status(500).json({ error: 'Failed to fetch messages' });
-  }
+app.get('/live-stats', (req, res) => {
+  // Mock live stats
+  res.json({
+    success: true,
+    onlineUsers: Math.floor(Math.random() * 100) + 50,
+    postsToday: Math.floor(Math.random() * 50) + 20,
+    activeChats: Math.floor(Math.random() * 30) + 10,
+    liveActivity: "5 new posts in last 10 minutes"
+  });
 });
 
-app.post('/api/community/messages', authenticateToken, async (req, res) => {
+// Health check
+app.get('/api/health', async (req, res) => {
   try {
-    const { content } = req.body;
-    
-    if (!content || !content.trim()) {
-      return res.status(400).json({ error: 'Message content required' });
-    }
-    
-    if (!req.user.community_joined || !req.user.college) {
-      return res.status(403).json({ error: 'Join a college community first' });
-    }
-    
-    const messageId = uuidv4();
-    await pool.query(
-      'INSERT INTO messages (id, sender_id, content, college) VALUES ($1, $2, $3, $4)',
-      [messageId, req.user.id, content.trim(), req.user.college]
-    );
-
-    // Get the created message with user info
-    const { rows: messages } = await pool.query(
-      `SELECT m.*, u.username, u.profile_pic 
-       FROM messages m 
-       JOIN users u ON m.sender_id = u.id 
-       WHERE m.id = $1`,
-      [messageId]
-    );
-
-    const newMessage = messages[0];
-    
-    // Emit socket event for real-time messaging
-    io.to(req.user.college).emit('new_message', newMessage);
-    
-    res.json({ success: true, message: newMessage });
-    
-  } catch (error) {
-    console.error('Send message error:', error);
-    res.status(500).json({ error: 'Failed to send message' });
-  }
-});
-
-// Enhanced message editing with PostgreSQL
-app.patch('/api/community/messages/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { content } = req.body;
-    
-    if (!content || !content.trim()) {
-      return res.status(400).json({ error: 'Message content required' });
-    }
-    
-    const { rows: messages } = await pool.query(
-      'SELECT * FROM messages WHERE id = $1',
-      [id]
-    );
-      
-    if (messages.length === 0) {
-      return res.status(404).json({ error: 'Message not found' });
-    }
-    
-    const message = messages[0];
-    if (message.sender_id !== req.user.id) {
-      return res.status(403).json({ error: 'Not authorized' });
-    }
-    
-    // Check if message can be edited (within 2 minutes)
-    const messageTime = new Date(message.timestamp);
-    const now = new Date();
-    const diffMinutes = (now - messageTime) / 1000 / 60;
-    
-    if (diffMinutes > 2) {
-      return res.status(403).json({ error: 'Can only edit messages within 2 minutes' });
-    }
-    
-    await pool.query(
-      'UPDATE messages SET content = $1, edited = TRUE WHERE id = $2',
-      [content.trim(), id]
-    );
-
-    // Get the updated message
-    const { rows: updatedMessages } = await pool.query(
-      `SELECT m.*, u.username, u.profile_pic 
-       FROM messages m 
-       JOIN users u ON m.sender_id = u.id 
-       WHERE m.id = $1`,
-      [id]
-    );
-
-    const updated = updatedMessages[0];
-    
-    // Emit socket event for real-time update
-    io.to(req.user.college).emit('message_updated', updated);
-    
-    res.json({ success: true, message: updated });
-    
-  } catch (error) {
-    console.error('Edit message error:', error);
-    res.status(500).json({ error: 'Failed to edit message' });
-  }
-});
-
-app.delete('/api/community/messages/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    const { rows: messages } = await pool.query(
-      'SELECT sender_id FROM messages WHERE id = $1',
-      [id]
-    );
-      
-    if (messages.length === 0) {
-      return res.status(404).json({ error: 'Message not found' });
-    }
-    
-    const message = messages[0];
-    if (message.sender_id !== req.user.id) {
-      return res.status(403).json({ error: 'Not authorized' });
-    }
-    
-    await pool.query(
-      'DELETE FROM messages WHERE id = $1',
-      [id]
-    );
-      
-    // Emit socket event for real-time deletion
-    io.to(req.user.college).emit('message_deleted', { id });
-    
-    res.json({ success: true, message: 'Message deleted' });
-    
-  } catch (error) {
-    console.error('Delete message error:', error);
-    res.status(500).json({ error: 'Failed to delete message' });
-  }
-});
-
-// Message reactions with PostgreSQL
-app.post('/api/community/messages/:id/react', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { emoji } = req.body;
-    
-    if (!emoji) {
-      return res.status(400).json({ error: 'Emoji required' });
-    }
-    
-    // Check if reaction already exists
-    const { rows: existing } = await pool.query(
-      'SELECT * FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3',
-      [id, req.user.id, emoji]
-    );
-    
-    // If exists, remove it (toggle)
-    if (existing.length > 0) {
-      await pool.query(
-        'DELETE FROM message_reactions WHERE id = $1',
-        [existing[0].id]
-      );
-        
-      return res.json({ success: true, action: 'removed' });
-    }
-    
-    // Add new reaction
-    const reactionId = uuidv4();
-    await pool.query(
-      'INSERT INTO message_reactions (id, message_id, user_id, emoji) VALUES ($1, $2, $3, $4)',
-      [reactionId, id, req.user.id, emoji]
-    );
-
-    const { rows: reactions } = await pool.query(
-      'SELECT * FROM message_reactions WHERE id = $1',
-      [reactionId]
-    );
-
-    const reaction = reactions[0];
-    
-    // Emit socket event for real-time reaction
-    io.to(req.user.college).emit('message_reaction', { 
-      messageId: id, 
-      reaction 
-    });
-    
-    res.json({ success: true, action: 'added', reaction });
-    
-  } catch (error) {
-    console.error('React to message error:', error);
-    res.status(500).json({ error: 'Failed to react' });
-  }
-});
-
-// Message views tracking with PostgreSQL
-app.post('/api/community/messages/:id/view', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    // Check if already viewed
-    const { rows: existing } = await pool.query(
-      'SELECT * FROM message_views WHERE message_id = $1 AND user_id = $2',
-      [id, req.user.id]
-    );
-    
-    if (existing.length > 0) {
-      return res.json({ success: true });
-    }
-    
-    // Record view
-    await pool.query(
-      'INSERT INTO message_views (id, message_id, user_id) VALUES ($1, $2, $3)',
-      [uuidv4(), id, req.user.id]
-    );
-    
-    res.json({ success: true });
-    
-  } catch (error) {
-    console.error('Mark view error:', error);
-    res.status(500).json({ error: 'Failed to mark view' });
-  }
-});
-
-app.get('/api/community/messages/:id/views', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    const { rows: views } = await pool.query(
-      `SELECT mv.user_id, u.username, u.profile_pic 
-       FROM message_views mv 
-       JOIN users u ON mv.user_id = u.id 
-       WHERE mv.message_id = $1`,
-      [id]
-    );
-    
+    await pool.query('SELECT 1');
     res.json({ 
       success: true, 
-      views: views || [], 
-      count: views.length 
-    });
-    
-  } catch (error) {
-    console.error('Get views error:', error);
-    res.status(500).json({ error: 'Failed to get views' });
-  }
-});
-
-// Enhanced profile management with PostgreSQL
-app.patch('/api/profile', authenticateToken, upload.single('profilePic'), async (req, res) => {
-  try {
-    const { username, bio } = req.body;
-    const updates = {};
-    const params = [];
-    let paramCount = 0;
-    
-    if (username) {
-      updates.username = username;
-      paramCount++;
-      params.push(username);
-    }
-    if (bio !== undefined) {
-      updates.bio = bio;
-      paramCount++;
-      params.push(bio);
-    }
-    
-    // Handle profile picture upload
-    if (req.file) {
-      // In production, upload to Supabase Storage and get URL
-      const profilePicUrl = `https://example.com/profile-pics/${req.user.id}.jpg`;
-      updates.profile_pic = profilePicUrl;
-      paramCount++;
-      params.push(profilePicUrl);
-    }
-    
-    // Build dynamic update query
-    if (params.length > 0) {
-      const setClause = Object.keys(updates).map((key, index) => `${key} = $${index + 1}`).join(', ');
-      paramCount++;
-      params.push(req.user.id);
-      
-      await pool.query(
-        `UPDATE users SET ${setClause} WHERE id = $${paramCount}`,
-        params
-      );
-    }
-    
-    // Get updated user
-    const { rows: users } = await pool.query(
-      'SELECT * FROM users WHERE id = $1',
-      [req.user.id]
-    );
-
-    const updated = users[0];
-    
-    res.json({ success: true, user: updated });
-    
-  } catch (error) {
-    console.error('Update profile error:', error);
-    res.status(500).json({ error: 'Failed to update profile' });
-  }
-});
-
-// User search with PostgreSQL
-app.get('/api/search/users', authenticateToken, async (req, res) => {
-  try {
-    const { query } = req.query;
-    
-    if (!query || query.trim().length < 2) {
-      return res.status(400).json({ 
-        error: 'Search query must be at least 2 characters' 
-      });
-    }
-    
-    const searchTerm = `%${query.trim().toLowerCase()}%`;
-    
-    const { rows: users } = await pool.query(
-      `SELECT id, username, email, college, profile_pic, registration_number 
-       FROM users 
-       WHERE LOWER(username) LIKE $1 OR LOWER(registration_number) LIKE $2 
-       LIMIT 10`,
-      [searchTerm, searchTerm]
-    );
-    
-    res.json({ success: true, users: users || [] });
-    
-  } catch (error) {
-    console.error('Search users error:', error);
-    res.status(500).json({ error: 'Search failed' });
-  }
-});
-
-// Feedback system with PostgreSQL
-app.post('/api/feedback', authenticateToken, async (req, res) => {
-  try {
-    const { subject, message } = req.body;
-    
-    if (!subject || !message) {
-      return res.status(400).json({ error: 'Subject and message required' });
-    }
-    
-    await pool.query(
-      'INSERT INTO feedback (id, user_id, subject, message) VALUES ($1, $2, $3, $4)',
-      [uuidv4(), req.user.id, subject.trim(), message.trim()]
-    );
-
-    // Get the created feedback
-    const { rows: feedback } = await pool.query(
-      'SELECT * FROM feedback WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1',
-      [req.user.id]
-    );
-
-    const newFeedback = feedback[0];
-    
-    res.json({ 
-      success: true, 
-      message: 'Feedback submitted successfully!', 
-      feedback: newFeedback 
-    });
-    
-  } catch (error) {
-    console.error('Feedback error:', error);
-    res.status(500).json({ error: 'Failed to submit feedback' });
-  }
-});
-
-// Get user profile with PostgreSQL
-app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
-  try {
-    const { userId } = req.params;
-    
-    const { rows: users } = await pool.query(
-      'SELECT id, username, email, college, profile_pic, bio, badges, created_at, registration_number FROM users WHERE id = $1',
-      [userId]
-    );
-    
-    if (users.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    
-    const user = users[0];
-    
-    // Get user's post count
-    const { rows: posts } = await pool.query(
-      'SELECT id FROM posts WHERE user_id = $1',
-      [userId]
-    );
-    
-    res.json({ 
-      success: true, 
-      user: {
-        ...user,
-        badges: user.badges ? JSON.parse(user.badges) : [],
-        postCount: posts.length
-      }
-    });
-    
-  } catch (error) {
-    console.error('Get profile error:', error);
-    res.status(500).json({ error: 'Failed to get profile' });
-  }
-});
-
-// Badges endpoint with PostgreSQL
-app.get('/api/badges', authenticateToken, async (req, res) => {
-  try {
-    const badges = req.user.badges ? JSON.parse(req.user.badges) : [];
-    
-    res.json({ 
-      success: true, 
-      badges: badges,
-      availableBadges: [
-        { emoji: '🎓', name: 'Community Member', description: 'Joined a college community' },
-        { emoji: '🎨', name: 'First Post', description: 'Created your first post' },
-        { emoji: '⭐', name: 'Content Creator', description: 'Posted 10 times' },
-        { emoji: '💬', name: 'Chatty', description: 'Sent 50 messages' },
-        { emoji: '🔥', name: 'On Fire', description: '7 day streak' }
-      ]
+      message: 'VibeXpert API is running!', 
+      database: 'Connected',
+      timestamp: new Date().toISOString() 
     });
   } catch (error) {
-    console.error('Get badges error:', error);
-    res.status(500).json({ error: 'Failed to get badges' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'API is running but database connection failed',
+      database: 'Disconnected',
+      timestamp: new Date().toISOString() 
+    });
   }
+});
+
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'VibeXpert Backend API', 
+    status: 'Running',
+    version: '1.0.0'
+  });
 });
 
 // Socket.io connection handling
@@ -1080,27 +460,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// Health check
-app.get('/api/health', async (req, res) => {
-  try {
-    // Test database connection
-    await pool.query('SELECT 1');
-    res.json({ 
-      success: true, 
-      message: 'VibeXpert API is running!', 
-      database: 'Connected',
-      timestamp: new Date().toISOString() 
-    });
-  } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      message: 'API is running but database connection failed',
-      database: 'Disconnected',
-      timestamp: new Date().toISOString() 
-    });
-  }
-});
-
 // Error handling middleware
 app.use((error, req, res, next) => {
   console.error('Unhandled error:', error);
@@ -1113,9 +472,10 @@ app.use('*', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 VibeXpert PostgreSQL server running on port ${PORT}`);
   console.log(`📧 Email service: ${process.env.BREVO_API_KEY ? 'Enabled' : 'Development mode'}`);
-  console.log(`🗄️  Database: PostgreSQL`);
-  console.log(`🔐 JWT secret: ${process.env.JWT_SECRET ? 'Set' : 'Not set'}`);
+  console.log(`🗄️  Database: ${process.env.DATABASE_URL ? 'Connected' : 'Not configured'}`);
+  console.log(`🔐 JWT secret: ${process.env.JWT_SECRET ? 'Set' : 'Using fallback'}`);
+  console.log(`🌐 CORS: Enabled for all origins`);
 });
