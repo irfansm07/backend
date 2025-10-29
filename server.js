@@ -4,7 +4,7 @@ const cors = require('cors');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
-const mysql = require('mysql2/promise');
+const { Pool } = require('pg');
 const http = require('http');
 const socketIO = require('socket.io');
 const axios = require('axios');
@@ -31,15 +31,10 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// MySQL connection pool
-const pool = mysql.createPool({
-  host: process.env.MYSQL_HOST || 'localhost',
-  user: process.env.MYSQL_USER || 'root',
-  password: process.env.MYSQL_PASSWORD || '',
-  database: process.env.MYSQL_DATABASE || 'vibexpert',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
+// PostgreSQL connection pool for Supabase
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
 // Enhanced email service
@@ -58,7 +53,7 @@ const sendEmail = async (to, subject, html) => {
       {
         sender: {
           name: process.env.BREVO_FROM_NAME || 'VibeXpert',
-          email: process.env.BREVO_FROM_EMAIL || 'noreply@vibexpert.online'
+          email: process.env.BREVO_FROM_EMAIL || 'noreply@vibexpert.com'
         },
         to: [{ email: to }],
         subject: subject,
@@ -77,7 +72,7 @@ const sendEmail = async (to, subject, html) => {
     return true;
   } catch (error) {
     console.error('❌ Email failed:', error.response?.data || error.message);
-    return true;
+    return false;
   }
 };
 
@@ -96,7 +91,7 @@ const upload = multer({
 // Utility functions
 const generateCode = () => Math.floor(100000 + Math.random() * 900000).toString();
 
-// Authentication middleware for MySQL
+// Authentication middleware for PostgreSQL
 const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -107,8 +102,8 @@ const authenticateToken = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const [users] = await pool.execute(
-      'SELECT * FROM users WHERE id = ?',
+    const { rows: users } = await pool.query(
+      'SELECT * FROM users WHERE id = $1',
       [decoded.userId]
     );
     
@@ -123,7 +118,7 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// Enhanced registration with MySQL
+// Enhanced registration with PostgreSQL
 app.post('/api/register', async (req, res) => {
   try {
     const { username, email, password, registrationNumber } = req.body;
@@ -138,8 +133,8 @@ app.post('/api/register', async (req, res) => {
     }
 
     // Check for existing user
-    const [existingUsers] = await pool.execute(
-      'SELECT * FROM users WHERE email = ? OR registration_number = ?',
+    const { rows: existingUsers } = await pool.query(
+      'SELECT * FROM users WHERE email = $1 OR registration_number = $2',
       [email, registrationNumber]
     );
 
@@ -157,13 +152,13 @@ app.post('/api/register', async (req, res) => {
     const passwordHash = await bcrypt.hash(password, 10);
     const userId = uuidv4();
     
-    await pool.execute(
-      'INSERT INTO users (id, username, email, password_hash, registration_number, badges) VALUES (?, ?, ?, ?, ?, ?)',
+    await pool.query(
+      'INSERT INTO users (id, username, email, password_hash, registration_number, badges) VALUES ($1, $2, $3, $4, $5, $6)',
       [userId, username, email, passwordHash, registrationNumber, JSON.stringify([])]
     );
 
     // Send welcome email
-    sendEmail(
+    await sendEmail(
       email, 
       '🎉 Welcome to VibeXpert!', 
       `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -171,7 +166,7 @@ app.post('/api/register', async (req, res) => {
         <p style="font-size: 16px; color: #374151;">Congratulations on creating your account!</p>
         <p style="font-size: 16px; color: #374151;">Ready to vibe? Let's go! 🚀</p>
       </div>`
-    ).catch(err => console.error('Email send failed:', err));
+    );
 
     res.status(201).json({ 
       success: true, 
@@ -185,7 +180,7 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// Login with MySQL
+// Login with PostgreSQL
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -194,8 +189,8 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password required' });
     }
 
-    const [users] = await pool.execute(
-      'SELECT * FROM users WHERE email = ?',
+    const { rows: users } = await pool.query(
+      'SELECT * FROM users WHERE email = $1',
       [email]
     );
 
@@ -223,9 +218,9 @@ app.post('/api/login', async (req, res) => {
         username: user.username, 
         email: user.email, 
         college: user.college, 
-        communityJoined: user.community_joined, 
-        profilePic: user.profile_pic,
-        registrationNumber: user.registration_number,
+        community_joined: user.community_joined, 
+        profile_pic: user.profile_pic,
+        registration_number: user.registration_number,
         badges: user.badges ? JSON.parse(user.badges) : [],
         bio: user.bio || ''
       } 
@@ -237,7 +232,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Password reset flow with MySQL
+// Password reset flow with PostgreSQL
 app.post('/api/forgot-password', async (req, res) => {
   try {
     const { email } = req.body;
@@ -246,8 +241,8 @@ app.post('/api/forgot-password', async (req, res) => {
       return res.status(400).json({ error: 'Email required' });
     }
 
-    const [users] = await pool.execute(
-      'SELECT id, username, email FROM users WHERE email = ?',
+    const { rows: users } = await pool.query(
+      'SELECT id, username, email FROM users WHERE email = $1',
       [email]
     );
 
@@ -265,13 +260,13 @@ app.post('/api/forgot-password', async (req, res) => {
     
     console.log(`🔑 Reset code for ${email}: ${code}`);
 
-    await pool.execute(
-      'INSERT INTO codes (id, user_id, code, type, expires_at) VALUES (?, ?, ?, ?, ?)',
+    await pool.query(
+      'INSERT INTO codes (id, user_id, code, type, expires_at) VALUES ($1, $2, $3, $4, $5)',
       [uuidv4(), user.id, code, 'reset', expiresAt]
     );
 
     // Send reset email
-    sendEmail(
+    await sendEmail(
       email, 
       '🔐 Password Reset Code - VibeXpert', 
       `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -282,7 +277,7 @@ app.post('/api/forgot-password', async (req, res) => {
         </div>
         <p style="font-size: 14px; color: #6B7280;">This code expires in 15 minutes.</p>
       </div>`
-    ).catch(err => console.error('Email failed:', err));
+    );
 
     res.json({ success: true, message: 'Reset code sent to your email' });
 
@@ -300,8 +295,8 @@ app.post('/api/reset-password', async (req, res) => {
       return res.status(400).json({ error: 'All fields required' });
     }
 
-    const [users] = await pool.execute(
-      'SELECT id FROM users WHERE email = ?',
+    const { rows: users } = await pool.query(
+      'SELECT id FROM users WHERE email = $1',
       [email]
     );
 
@@ -310,8 +305,8 @@ app.post('/api/reset-password', async (req, res) => {
     }
 
     const user = users[0];
-    const [codes] = await pool.execute(
-      'SELECT * FROM codes WHERE user_id = ? AND code = ? AND type = ? AND expires_at > ?',
+    const { rows: codes } = await pool.query(
+      'SELECT * FROM codes WHERE user_id = $1 AND code = $2 AND type = $3 AND expires_at > $4',
       [user.id, code, 'reset', new Date()]
     );
 
@@ -321,13 +316,13 @@ app.post('/api/reset-password', async (req, res) => {
 
     const passwordHash = await bcrypt.hash(newPassword, 10);
     
-    await pool.execute(
-      'UPDATE users SET password_hash = ? WHERE id = ?',
+    await pool.query(
+      'UPDATE users SET password_hash = $1 WHERE id = $2',
       [passwordHash, user.id]
     );
 
-    await pool.execute(
-      'DELETE FROM codes WHERE id = ?',
+    await pool.query(
+      'DELETE FROM codes WHERE id = $1',
       [codes[0].id]
     );
 
@@ -339,7 +334,7 @@ app.post('/api/reset-password', async (req, res) => {
   }
 });
 
-// College verification with MySQL
+// College verification with PostgreSQL
 app.post('/api/college/request-verification', authenticateToken, async (req, res) => {
   try {
     const { collegeName, collegeEmail } = req.body;
@@ -360,12 +355,12 @@ app.post('/api/college/request-verification', authenticateToken, async (req, res
     
     console.log(`🎓 College verification code for ${req.user.email}: ${code}`);
 
-    await pool.execute(
-      'INSERT INTO codes (id, user_id, code, type, meta, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
+    await pool.query(
+      'INSERT INTO codes (id, user_id, code, type, meta, expires_at) VALUES ($1, $2, $3, $4, $5, $6)',
       [uuidv4(), req.user.id, code, 'college', JSON.stringify({ collegeName, collegeEmail }), expiresAt]
     );
 
-    sendEmail(
+    await sendEmail(
       collegeEmail, 
       `🎓 College Verification Code - VibeXpert`, 
       `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -377,7 +372,7 @@ app.post('/api/college/request-verification', authenticateToken, async (req, res
         </div>
         <p style="font-size: 14px; color: #6B7280;">This code expires in 15 minutes.</p>
       </div>`
-    ).catch(err => console.error('Email failed:', err));
+    );
 
     res.json({ success: true, message: 'Verification code sent to your college email' });
 
@@ -395,8 +390,8 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Verification code required' });
     }
 
-    const [codes] = await pool.execute(
-      'SELECT * FROM codes WHERE user_id = ? AND code = ? AND type = ? AND expires_at > ?',
+    const { rows: codes } = await pool.query(
+      'SELECT * FROM codes WHERE user_id = $1 AND code = $2 AND type = $3 AND expires_at > $4',
       [req.user.id, code, 'college', new Date()]
     );
 
@@ -413,13 +408,13 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
       currentBadges.push('🎓 Community Member');
     }
 
-    await pool.execute(
-      'UPDATE users SET college = ?, community_joined = TRUE, badges = ? WHERE id = ?',
+    await pool.query(
+      'UPDATE users SET college = $1, community_joined = TRUE, badges = $2 WHERE id = $3',
       [collegeName, JSON.stringify(currentBadges), req.user.id]
     );
 
-    await pool.execute(
-      'DELETE FROM codes WHERE id = ?',
+    await pool.query(
+      'DELETE FROM codes WHERE id = $1',
       [codeData.id]
     );
 
@@ -436,7 +431,7 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
   }
 });
 
-// Enhanced posts with MySQL
+// Enhanced posts with PostgreSQL
 app.post('/api/posts', authenticateToken, upload.array('media', 5), async (req, res) => {
   try {
     const { content, postTo = 'profile' } = req.body;
@@ -459,11 +454,10 @@ app.post('/api/posts', authenticateToken, upload.array('media', 5), async (req, 
     
     const mediaUrls = [];
     
-    // For MySQL, we'll store media URLs as JSON string
-    // In production, you'd upload to cloud storage and store URLs
+    // For production, you'd upload to cloud storage and store URLs
     if (files && files.length > 0) {
       for (const file of files) {
-        // Simulate file upload - in production, upload to S3/Cloud Storage
+        // Simulate file upload - in production, upload to Supabase Storage
         const mockUrl = `https://example.com/media/${file.originalname}`;
         mediaUrls.push({ 
           url: mockUrl, 
@@ -474,25 +468,25 @@ app.post('/api/posts', authenticateToken, upload.array('media', 5), async (req, 
     
     // Create post
     const postId = uuidv4();
-    await pool.execute(
-      'INSERT INTO posts (id, user_id, content, media, college, posted_to) VALUES (?, ?, ?, ?, ?, ?)',
+    await pool.query(
+      'INSERT INTO posts (id, user_id, content, media, college, posted_to) VALUES ($1, $2, $3, $4, $5, $6)',
       [postId, req.user.id, content || '', JSON.stringify(mediaUrls), req.user.college, postTo]
     );
 
     // Get the created post with user info
-    const [posts] = await pool.execute(
+    const { rows: posts } = await pool.query(
       `SELECT p.*, u.username, u.profile_pic, u.college, u.registration_number 
        FROM posts p 
        JOIN users u ON p.user_id = u.id 
-       WHERE p.id = ?`,
+       WHERE p.id = $1`,
       [postId]
     );
 
     const newPost = posts[0];
     
     // Award badges based on post count
-    const [userPosts] = await pool.execute(
-      'SELECT id FROM posts WHERE user_id = ?',
+    const { rows: userPosts } = await pool.query(
+      'SELECT id FROM posts WHERE user_id = $1',
       [req.user.id]
     );
       
@@ -501,14 +495,14 @@ app.post('/api/posts', authenticateToken, upload.array('media', 5), async (req, 
     
     if (postCount === 1 && !currentBadges.includes('🎨 First Post')) {
       currentBadges.push('🎨 First Post');
-      await pool.execute(
-        'UPDATE users SET badges = ? WHERE id = ?',
+      await pool.query(
+        'UPDATE users SET badges = $1 WHERE id = $2',
         [JSON.stringify(currentBadges), req.user.id]
       );
     } else if (postCount === 10 && !currentBadges.includes('⭐ Content Creator')) {
       currentBadges.push('⭐ Content Creator');
-      await pool.execute(
-        'UPDATE users SET badges = ? WHERE id = ?',
+      await pool.query(
+        'UPDATE users SET badges = $1 WHERE id = $2',
         [JSON.stringify(currentBadges), req.user.id]
       );
     }
@@ -531,7 +525,7 @@ app.post('/api/posts', authenticateToken, upload.array('media', 5), async (req, 
   }
 });
 
-// Enhanced posts retrieval with MySQL
+// Enhanced posts retrieval with PostgreSQL
 app.get('/api/posts', authenticateToken, async (req, res) => {
   try {
     const { limit = 20, offset = 0, type = 'all' } = req.query;
@@ -542,27 +536,37 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
       JOIN users u ON p.user_id = u.id 
     `;
     let params = [];
+    let paramCount = 0;
     
     if (type === 'my') {
-      query += ' WHERE p.user_id = ? ';
+      paramCount++;
+      query += ` WHERE p.user_id = $${paramCount} `;
       params.push(req.user.id);
     } else if (type === 'community' && req.user.community_joined && req.user.college) {
-      query += ' WHERE p.college = ? AND p.posted_to = ? ';
+      paramCount++;
+      paramCount++;
+      query += ` WHERE p.college = $${paramCount - 1} AND p.posted_to = $${paramCount} `;
       params.push(req.user.college, 'community');
     } else if (type === 'profile') {
-      query += ' WHERE p.user_id = ? AND p.posted_to = ? ';
+      paramCount++;
+      paramCount++;
+      query += ` WHERE p.user_id = $${paramCount - 1} AND p.posted_to = $${paramCount} `;
       params.push(req.user.id, 'profile');
     }
     
-    query += ' ORDER BY p.created_at DESC LIMIT ? OFFSET ? ';
+    paramCount++;
+    paramCount++;
+    query += ` ORDER BY p.created_at DESC LIMIT $${paramCount - 1} OFFSET $${paramCount} `;
     params.push(parseInt(limit), parseInt(offset));
     
-    const [posts] = await pool.execute(query, params);
+    const { rows: posts } = await pool.query(query, params);
     
     // Parse JSON fields
     const parsedPosts = posts.map(post => ({
       ...post,
-      media: post.media ? JSON.parse(post.media) : []
+      media: post.media ? JSON.parse(post.media) : [],
+      created_at: post.created_at,
+      updated_at: post.updated_at
     }));
     
     res.json({ success: true, posts: parsedPosts });
@@ -577,8 +581,8 @@ app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     
-    const [posts] = await pool.execute(
-      'SELECT user_id, media FROM posts WHERE id = ?',
+    const { rows: posts } = await pool.query(
+      'SELECT user_id, media FROM posts WHERE id = $1',
       [id]
     );
       
@@ -591,8 +595,8 @@ app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Not authorized' });
     }
     
-    await pool.execute(
-      'DELETE FROM posts WHERE id = ?',
+    await pool.query(
+      'DELETE FROM posts WHERE id = $1',
       [id]
     );
       
@@ -604,7 +608,7 @@ app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// Enhanced community messages with MySQL
+// Enhanced community messages with PostgreSQL
 app.get('/api/community/messages', authenticateToken, async (req, res) => {
   try {
     if (!req.user.community_joined || !req.user.college) {
@@ -613,23 +617,23 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
     
     const { limit = 50 } = req.query;
     
-    const [messages] = await pool.execute(
+    const { rows: messages } = await pool.query(
       `SELECT m.*, u.username, u.profile_pic 
        FROM messages m 
        JOIN users u ON m.sender_id = u.id 
-       WHERE m.college = ? 
+       WHERE m.college = $1 
        ORDER BY m.timestamp DESC 
-       LIMIT ?`,
+       LIMIT $2`,
       [req.user.college, parseInt(limit)]
     );
       
     // Get reactions for each message
     for (let message of messages) {
-      const [reactions] = await pool.execute(
-        'SELECT * FROM message_reactions WHERE message_id = ?',
+      const { rows: reactions } = await pool.query(
+        'SELECT * FROM message_reactions WHERE message_id = $1',
         [message.id]
       );
-      message.message_reactions = reactions;
+      message.reactions = reactions;
     }
     
     res.json({ success: true, messages: messages || [] });
@@ -653,17 +657,17 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
     }
     
     const messageId = uuidv4();
-    await pool.execute(
-      'INSERT INTO messages (id, sender_id, content, college) VALUES (?, ?, ?, ?)',
+    await pool.query(
+      'INSERT INTO messages (id, sender_id, content, college) VALUES ($1, $2, $3, $4)',
       [messageId, req.user.id, content.trim(), req.user.college]
     );
 
     // Get the created message with user info
-    const [messages] = await pool.execute(
+    const { rows: messages } = await pool.query(
       `SELECT m.*, u.username, u.profile_pic 
        FROM messages m 
        JOIN users u ON m.sender_id = u.id 
-       WHERE m.id = ?`,
+       WHERE m.id = $1`,
       [messageId]
     );
 
@@ -680,7 +684,7 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
   }
 });
 
-// Enhanced message editing with MySQL
+// Enhanced message editing with PostgreSQL
 app.patch('/api/community/messages/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -690,8 +694,8 @@ app.patch('/api/community/messages/:id', authenticateToken, async (req, res) => 
       return res.status(400).json({ error: 'Message content required' });
     }
     
-    const [messages] = await pool.execute(
-      'SELECT * FROM messages WHERE id = ?',
+    const { rows: messages } = await pool.query(
+      'SELECT * FROM messages WHERE id = $1',
       [id]
     );
       
@@ -713,17 +717,17 @@ app.patch('/api/community/messages/:id', authenticateToken, async (req, res) => 
       return res.status(403).json({ error: 'Can only edit messages within 2 minutes' });
     }
     
-    await pool.execute(
-      'UPDATE messages SET content = ?, edited = TRUE WHERE id = ?',
+    await pool.query(
+      'UPDATE messages SET content = $1, edited = TRUE WHERE id = $2',
       [content.trim(), id]
     );
 
     // Get the updated message
-    const [updatedMessages] = await pool.execute(
+    const { rows: updatedMessages } = await pool.query(
       `SELECT m.*, u.username, u.profile_pic 
        FROM messages m 
        JOIN users u ON m.sender_id = u.id 
-       WHERE m.id = ?`,
+       WHERE m.id = $1`,
       [id]
     );
 
@@ -744,8 +748,8 @@ app.delete('/api/community/messages/:id', authenticateToken, async (req, res) =>
   try {
     const { id } = req.params;
     
-    const [messages] = await pool.execute(
-      'SELECT sender_id FROM messages WHERE id = ?',
+    const { rows: messages } = await pool.query(
+      'SELECT sender_id FROM messages WHERE id = $1',
       [id]
     );
       
@@ -758,8 +762,8 @@ app.delete('/api/community/messages/:id', authenticateToken, async (req, res) =>
       return res.status(403).json({ error: 'Not authorized' });
     }
     
-    await pool.execute(
-      'DELETE FROM messages WHERE id = ?',
+    await pool.query(
+      'DELETE FROM messages WHERE id = $1',
       [id]
     );
       
@@ -774,7 +778,7 @@ app.delete('/api/community/messages/:id', authenticateToken, async (req, res) =>
   }
 });
 
-// Message reactions with MySQL
+// Message reactions with PostgreSQL
 app.post('/api/community/messages/:id/react', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -785,15 +789,15 @@ app.post('/api/community/messages/:id/react', authenticateToken, async (req, res
     }
     
     // Check if reaction already exists
-    const [existing] = await pool.execute(
-      'SELECT * FROM message_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?',
+    const { rows: existing } = await pool.query(
+      'SELECT * FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3',
       [id, req.user.id, emoji]
     );
     
     // If exists, remove it (toggle)
     if (existing.length > 0) {
-      await pool.execute(
-        'DELETE FROM message_reactions WHERE id = ?',
+      await pool.query(
+        'DELETE FROM message_reactions WHERE id = $1',
         [existing[0].id]
       );
         
@@ -802,13 +806,13 @@ app.post('/api/community/messages/:id/react', authenticateToken, async (req, res
     
     // Add new reaction
     const reactionId = uuidv4();
-    await pool.execute(
-      'INSERT INTO message_reactions (id, message_id, user_id, emoji) VALUES (?, ?, ?, ?)',
+    await pool.query(
+      'INSERT INTO message_reactions (id, message_id, user_id, emoji) VALUES ($1, $2, $3, $4)',
       [reactionId, id, req.user.id, emoji]
     );
 
-    const [reactions] = await pool.execute(
-      'SELECT * FROM message_reactions WHERE id = ?',
+    const { rows: reactions } = await pool.query(
+      'SELECT * FROM message_reactions WHERE id = $1',
       [reactionId]
     );
 
@@ -828,14 +832,14 @@ app.post('/api/community/messages/:id/react', authenticateToken, async (req, res
   }
 });
 
-// Message views tracking with MySQL
+// Message views tracking with PostgreSQL
 app.post('/api/community/messages/:id/view', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     
     // Check if already viewed
-    const [existing] = await pool.execute(
-      'SELECT * FROM message_views WHERE message_id = ? AND user_id = ?',
+    const { rows: existing } = await pool.query(
+      'SELECT * FROM message_views WHERE message_id = $1 AND user_id = $2',
       [id, req.user.id]
     );
     
@@ -844,8 +848,8 @@ app.post('/api/community/messages/:id/view', authenticateToken, async (req, res)
     }
     
     // Record view
-    await pool.execute(
-      'INSERT INTO message_views (id, message_id, user_id) VALUES (?, ?, ?)',
+    await pool.query(
+      'INSERT INTO message_views (id, message_id, user_id) VALUES ($1, $2, $3)',
       [uuidv4(), id, req.user.id]
     );
     
@@ -861,11 +865,11 @@ app.get('/api/community/messages/:id/views', authenticateToken, async (req, res)
   try {
     const { id } = req.params;
     
-    const [views] = await pool.execute(
+    const { rows: views } = await pool.query(
       `SELECT mv.user_id, u.username, u.profile_pic 
        FROM message_views mv 
        JOIN users u ON mv.user_id = u.id 
-       WHERE mv.message_id = ?`,
+       WHERE mv.message_id = $1`,
       [id]
     );
     
@@ -881,44 +885,49 @@ app.get('/api/community/messages/:id/views', authenticateToken, async (req, res)
   }
 });
 
-// Enhanced profile management with MySQL
+// Enhanced profile management with PostgreSQL
 app.patch('/api/profile', authenticateToken, upload.single('profilePic'), async (req, res) => {
   try {
     const { username, bio } = req.body;
     const updates = {};
     const params = [];
+    let paramCount = 0;
     
     if (username) {
       updates.username = username;
+      paramCount++;
       params.push(username);
     }
     if (bio !== undefined) {
       updates.bio = bio;
+      paramCount++;
       params.push(bio);
     }
     
     // Handle profile picture upload
     if (req.file) {
-      // In production, upload to cloud storage and get URL
+      // In production, upload to Supabase Storage and get URL
       const profilePicUrl = `https://example.com/profile-pics/${req.user.id}.jpg`;
       updates.profile_pic = profilePicUrl;
+      paramCount++;
       params.push(profilePicUrl);
     }
     
     // Build dynamic update query
     if (params.length > 0) {
-      const setClause = Object.keys(updates).map(key => `${key} = ?`).join(', ');
+      const setClause = Object.keys(updates).map((key, index) => `${key} = $${index + 1}`).join(', ');
+      paramCount++;
       params.push(req.user.id);
       
-      await pool.execute(
-        `UPDATE users SET ${setClause} WHERE id = ?`,
+      await pool.query(
+        `UPDATE users SET ${setClause} WHERE id = $${paramCount}`,
         params
       );
     }
     
     // Get updated user
-    const [users] = await pool.execute(
-      'SELECT * FROM users WHERE id = ?',
+    const { rows: users } = await pool.query(
+      'SELECT * FROM users WHERE id = $1',
       [req.user.id]
     );
 
@@ -932,7 +941,7 @@ app.patch('/api/profile', authenticateToken, upload.single('profilePic'), async 
   }
 });
 
-// User search with MySQL
+// User search with PostgreSQL
 app.get('/api/search/users', authenticateToken, async (req, res) => {
   try {
     const { query } = req.query;
@@ -945,10 +954,10 @@ app.get('/api/search/users', authenticateToken, async (req, res) => {
     
     const searchTerm = `%${query.trim().toLowerCase()}%`;
     
-    const [users] = await pool.execute(
+    const { rows: users } = await pool.query(
       `SELECT id, username, email, college, profile_pic, registration_number 
        FROM users 
-       WHERE LOWER(username) LIKE ? OR LOWER(registration_number) LIKE ? 
+       WHERE LOWER(username) LIKE $1 OR LOWER(registration_number) LIKE $2 
        LIMIT 10`,
       [searchTerm, searchTerm]
     );
@@ -961,7 +970,7 @@ app.get('/api/search/users', authenticateToken, async (req, res) => {
   }
 });
 
-// Feedback system with MySQL
+// Feedback system with PostgreSQL
 app.post('/api/feedback', authenticateToken, async (req, res) => {
   try {
     const { subject, message } = req.body;
@@ -970,14 +979,14 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Subject and message required' });
     }
     
-    await pool.execute(
-      'INSERT INTO feedback (id, user_id, subject, message) VALUES (?, ?, ?, ?)',
+    await pool.query(
+      'INSERT INTO feedback (id, user_id, subject, message) VALUES ($1, $2, $3, $4)',
       [uuidv4(), req.user.id, subject.trim(), message.trim()]
     );
 
     // Get the created feedback
-    const [feedback] = await pool.execute(
-      'SELECT * FROM feedback WHERE user_id = ? ORDER BY created_at DESC LIMIT 1',
+    const { rows: feedback } = await pool.query(
+      'SELECT * FROM feedback WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1',
       [req.user.id]
     );
 
@@ -995,13 +1004,13 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
   }
 });
 
-// Get user profile with MySQL
+// Get user profile with PostgreSQL
 app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
   try {
     const { userId } = req.params;
     
-    const [users] = await pool.execute(
-      'SELECT id, username, email, college, profile_pic, bio, badges, created_at, registration_number FROM users WHERE id = ?',
+    const { rows: users } = await pool.query(
+      'SELECT id, username, email, college, profile_pic, bio, badges, created_at, registration_number FROM users WHERE id = $1',
       [userId]
     );
     
@@ -1012,8 +1021,8 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
     const user = users[0];
     
     // Get user's post count
-    const [posts] = await pool.execute(
-      'SELECT id FROM posts WHERE user_id = ?',
+    const { rows: posts } = await pool.query(
+      'SELECT id FROM posts WHERE user_id = $1',
       [userId]
     );
     
@@ -1032,7 +1041,7 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
   }
 });
 
-// Badges endpoint with MySQL
+// Badges endpoint with PostgreSQL
 app.get('/api/badges', authenticateToken, async (req, res) => {
   try {
     const badges = req.user.badges ? JSON.parse(req.user.badges) : [];
@@ -1075,7 +1084,7 @@ io.on('connection', (socket) => {
 app.get('/api/health', async (req, res) => {
   try {
     // Test database connection
-    await pool.execute('SELECT 1');
+    await pool.query('SELECT 1');
     res.json({ 
       success: true, 
       message: 'VibeXpert API is running!', 
@@ -1105,8 +1114,8 @@ app.use('*', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 VibeXpert MySQL server running on port ${PORT}`);
+  console.log(`🚀 VibeXpert PostgreSQL server running on port ${PORT}`);
   console.log(`📧 Email service: ${process.env.BREVO_API_KEY ? 'Enabled' : 'Development mode'}`);
-  console.log(`🗄️  Database: MySQL`);
+  console.log(`🗄️  Database: PostgreSQL`);
   console.log(`🔐 JWT secret: ${process.env.JWT_SECRET ? 'Set' : 'Not set'}`);
 });
