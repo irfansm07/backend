@@ -4,10 +4,11 @@ const cors = require('cors');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
-const { createClient } = require('@supabase/supabase-js');
+const mysql = require('mysql2/promise');
 const http = require('http');
 const socketIO = require('socket.io');
 const axios = require('axios');
+const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 const server = http.createServer(app);
@@ -30,17 +31,22 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+// MySQL connection pool
+const pool = mysql.createPool({
+  host: process.env.MYSQL_HOST || 'localhost',
+  user: process.env.MYSQL_USER || 'root',
+  password: process.env.MYSQL_PASSWORD || '',
+  database: process.env.MYSQL_DATABASE || 'vibexpert',
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});
 
-// Enhanced email service with better error handling
+// Enhanced email service
 const sendEmail = async (to, subject, html) => {
   try {
     console.log(`📧 Sending email to: ${to}`);
     
-    // If Brevo API key is not available, log and return success for development
     if (!process.env.BREVO_API_KEY) {
       console.log(`📧 [DEV MODE] Email would be sent to: ${to}`);
       console.log(`📧 [DEV MODE] Subject: ${subject}`);
@@ -71,12 +77,11 @@ const sendEmail = async (to, subject, html) => {
     return true;
   } catch (error) {
     console.error('❌ Email failed:', error.response?.data || error.message);
-    // Don't fail the request if email fails
     return true;
   }
 };
 
-// Enhanced file upload configuration
+// File upload configuration
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024, files: 5 },
@@ -91,7 +96,7 @@ const upload = multer({
 // Utility functions
 const generateCode = () => Math.floor(100000 + Math.random() * 900000).toString();
 
-// Enhanced authentication middleware
+// Authentication middleware for MySQL
 const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -102,79 +107,62 @@ const authenticateToken = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('id', decoded.userId)
-      .single();
+    const [users] = await pool.execute(
+      'SELECT * FROM users WHERE id = ?',
+      [decoded.userId]
+    );
     
-    if (error || !user) {
+    if (users.length === 0) {
       return res.status(403).json({ error: 'Invalid token' });
     }
     
-    req.user = user;
+    req.user = users[0];
     next();
   } catch (error) {
     return res.status(403).json({ error: 'Invalid or expired token' });
   }
 };
 
-// Enhanced registration with better validation
+// Enhanced registration with MySQL
 app.post('/api/register', async (req, res) => {
   try {
     const { username, email, password, registrationNumber } = req.body;
     
-    // Validate required fields
     if (!username || !email || !password || !registrationNumber) {
       return res.status(400).json({ error: 'All fields are required' });
     }
 
-    // Validate email format
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
       return res.status(400).json({ error: 'Invalid email format' });
     }
 
     // Check for existing user
-    const { data: existingUser, error: checkError } = await supabase
-      .from('users')
-      .select('email, registration_number')
-      .or(`email.eq.${email},registration_number.eq.${registrationNumber}`)
-      .maybeSingle();
+    const [existingUsers] = await pool.execute(
+      'SELECT * FROM users WHERE email = ? OR registration_number = ?',
+      [email, registrationNumber]
+    );
 
-    if (checkError) {
-      console.error('Check existing user error:', checkError);
-    }
-
-    if (existingUser) {
-      if (existingUser.email === email) {
+    if (existingUsers.length > 0) {
+      const existing = existingUsers[0];
+      if (existing.email === email) {
         return res.status(400).json({ error: 'Email already registered' });
       }
-      if (existingUser.registration_number === registrationNumber) {
+      if (existing.registration_number === registrationNumber) {
         return res.status(400).json({ error: 'Registration number already registered' });
       }
     }
 
     // Hash password and create user
     const passwordHash = await bcrypt.hash(password, 10);
-    const { data: newUser, error: createError } = await supabase
-      .from('users')
-      .insert([{ 
-        username, 
-        email, 
-        password_hash: passwordHash,
-        registration_number: registrationNumber,
-        badges: [] // Initialize empty badges array
-      }])
-      .select()
-      .single();
+    const userId = uuidv4();
+    
+    await pool.execute(
+      'INSERT INTO users (id, username, email, password_hash, registration_number, badges) VALUES (?, ?, ?, ?, ?, ?)',
+      [userId, username, email, passwordHash, registrationNumber, JSON.stringify([])]
+    );
 
-    if (createError) {
-      console.error('Create user error:', createError);
-      throw new Error('Failed to create account');
-    }
-
-    // Send welcome email (non-blocking)
+    // Send welcome email
     sendEmail(
       email, 
       '🎉 Welcome to VibeXpert!', 
@@ -188,7 +176,7 @@ app.post('/api/register', async (req, res) => {
     res.status(201).json({ 
       success: true, 
       message: 'Account created successfully! Please log in.', 
-      userId: newUser.id 
+      userId: userId 
     });
 
   } catch (error) {
@@ -197,7 +185,7 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// Enhanced login
+// Login with MySQL
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -206,16 +194,16 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password required' });
     }
 
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('email', email)
-      .maybeSingle();
+    const [users] = await pool.execute(
+      'SELECT * FROM users WHERE email = ?',
+      [email]
+    );
 
-    if (error || !user) {
+    if (users.length === 0) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
+    const user = users[0];
     const validPassword = await bcrypt.compare(password, user.password_hash);
     if (!validPassword) {
       return res.status(401).json({ error: 'Invalid email or password' });
@@ -238,7 +226,7 @@ app.post('/api/login', async (req, res) => {
         communityJoined: user.community_joined, 
         profilePic: user.profile_pic,
         registrationNumber: user.registration_number,
-        badges: user.badges || [],
+        badges: user.badges ? JSON.parse(user.badges) : [],
         bio: user.bio || ''
       } 
     });
@@ -249,7 +237,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Password reset flow
+// Password reset flow with MySQL
 app.post('/api/forgot-password', async (req, res) => {
   try {
     const { email } = req.body;
@@ -258,37 +246,29 @@ app.post('/api/forgot-password', async (req, res) => {
       return res.status(400).json({ error: 'Email required' });
     }
 
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('id, username, email')
-      .eq('email', email)
-      .maybeSingle();
+    const [users] = await pool.execute(
+      'SELECT id, username, email FROM users WHERE email = ?',
+      [email]
+    );
 
     // Always return success to prevent email enumeration
-    if (error || !user) {
+    if (users.length === 0) {
       return res.json({ 
         success: true, 
         message: 'If this email exists, you will receive a reset code.' 
       });
     }
 
+    const user = users[0];
     const code = generateCode();
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
     
     console.log(`🔑 Reset code for ${email}: ${code}`);
 
-    const { error: codeError } = await supabase
-      .from('codes')
-      .insert([{ 
-        user_id: user.id, 
-        code, 
-        type: 'reset', 
-        expires_at: expiresAt.toISOString() 
-      }]);
-
-    if (codeError) {
-      throw new Error('Failed to generate reset code');
-    }
+    await pool.execute(
+      'INSERT INTO codes (id, user_id, code, type, expires_at) VALUES (?, ?, ?, ?, ?)',
+      [uuidv4(), user.id, code, 'reset', expiresAt]
+    );
 
     // Send reset email
     sendEmail(
@@ -320,40 +300,36 @@ app.post('/api/reset-password', async (req, res) => {
       return res.status(400).json({ error: 'All fields required' });
     }
 
-    const { data: user } = await supabase
-      .from('users')
-      .select('id')
-      .eq('email', email)
-      .maybeSingle();
+    const [users] = await pool.execute(
+      'SELECT id FROM users WHERE email = ?',
+      [email]
+    );
 
-    if (!user) {
+    if (users.length === 0) {
       return res.status(400).json({ error: 'Invalid email' });
     }
 
-    const { data: codeData } = await supabase
-      .from('codes')
-      .select('*')
-      .eq('user_id', user.id)
-      .eq('code', code)
-      .eq('type', 'reset')
-      .gte('expires_at', new Date().toISOString())
-      .maybeSingle();
+    const user = users[0];
+    const [codes] = await pool.execute(
+      'SELECT * FROM codes WHERE user_id = ? AND code = ? AND type = ? AND expires_at > ?',
+      [user.id, code, 'reset', new Date()]
+    );
 
-    if (!codeData) {
+    if (codes.length === 0) {
       return res.status(400).json({ error: 'Invalid or expired code' });
     }
 
     const passwordHash = await bcrypt.hash(newPassword, 10);
     
-    await supabase
-      .from('users')
-      .update({ password_hash: passwordHash })
-      .eq('id', user.id);
+    await pool.execute(
+      'UPDATE users SET password_hash = ? WHERE id = ?',
+      [passwordHash, user.id]
+    );
 
-    await supabase
-      .from('codes')
-      .delete()
-      .eq('id', codeData.id);
+    await pool.execute(
+      'DELETE FROM codes WHERE id = ?',
+      [codes[0].id]
+    );
 
     res.json({ success: true, message: 'Password reset successful' });
 
@@ -363,7 +339,7 @@ app.post('/api/reset-password', async (req, res) => {
   }
 });
 
-// Enhanced college verification with protection
+// College verification with MySQL
 app.post('/api/college/request-verification', authenticateToken, async (req, res) => {
   try {
     const { collegeName, collegeEmail } = req.body;
@@ -384,19 +360,10 @@ app.post('/api/college/request-verification', authenticateToken, async (req, res
     
     console.log(`🎓 College verification code for ${req.user.email}: ${code}`);
 
-    const { error: codeError } = await supabase
-      .from('codes')
-      .insert([{ 
-        user_id: req.user.id, 
-        code, 
-        type: 'college', 
-        meta: { collegeName, collegeEmail }, 
-        expires_at: expiresAt.toISOString() 
-      }]);
-
-    if (codeError) {
-      throw new Error('Failed to generate verification code');
-    }
+    await pool.execute(
+      'INSERT INTO codes (id, user_id, code, type, meta, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [uuidv4(), req.user.id, code, 'college', JSON.stringify({ collegeName, collegeEmail }), expiresAt]
+    );
 
     sendEmail(
       collegeEmail, 
@@ -428,40 +395,33 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Verification code required' });
     }
 
-    const { data: codeData } = await supabase
-      .from('codes')
-      .select('*')
-      .eq('user_id', req.user.id)
-      .eq('code', code)
-      .eq('type', 'college')
-      .gte('expires_at', new Date().toISOString())
-      .maybeSingle();
+    const [codes] = await pool.execute(
+      'SELECT * FROM codes WHERE user_id = ? AND code = ? AND type = ? AND expires_at > ?',
+      [req.user.id, code, 'college', new Date()]
+    );
 
-    if (!codeData) {
+    if (codes.length === 0) {
       return res.status(400).json({ error: 'Invalid or expired code' });
     }
 
-    const { collegeName } = codeData.meta;
-    const currentBadges = req.user.badges || [];
+    const codeData = codes[0];
+    const { collegeName } = JSON.parse(codeData.meta);
+    const currentBadges = req.user.badges ? JSON.parse(req.user.badges) : [];
     
     // Award community member badge if not already earned
     if (!currentBadges.includes('🎓 Community Member')) {
       currentBadges.push('🎓 Community Member');
     }
 
-    await supabase
-      .from('users')
-      .update({ 
-        college: collegeName, 
-        community_joined: true, 
-        badges: currentBadges 
-      })
-      .eq('id', req.user.id);
+    await pool.execute(
+      'UPDATE users SET college = ?, community_joined = TRUE, badges = ? WHERE id = ?',
+      [collegeName, JSON.stringify(currentBadges), req.user.id]
+    );
 
-    await supabase
-      .from('codes')
-      .delete()
-      .eq('id', codeData.id);
+    await pool.execute(
+      'DELETE FROM codes WHERE id = ?',
+      [codeData.id]
+    );
 
     res.json({ 
       success: true, 
@@ -476,7 +436,7 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
   }
 });
 
-// Enhanced posts with destination selection
+// Enhanced posts with MySQL
 app.post('/api/posts', authenticateToken, upload.array('media', 5), async (req, res) => {
   try {
     const { content, postTo = 'profile' } = req.body;
@@ -499,74 +459,58 @@ app.post('/api/posts', authenticateToken, upload.array('media', 5), async (req, 
     
     const mediaUrls = [];
     
-    // Upload media files if any
+    // For MySQL, we'll store media URLs as JSON string
+    // In production, you'd upload to cloud storage and store URLs
     if (files && files.length > 0) {
       for (const file of files) {
-        const fileExt = file.originalname.split('.').pop();
-        const fileName = `${req.user.id}/${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
-        
-        const { data: uploadData, error: uploadError } = await supabase
-          .storage
-          .from('posts-media')
-          .upload(fileName, file.buffer, { 
-            contentType: file.mimetype, 
-            cacheControl: '3600' 
-          });
-          
-        if (uploadError) {
-          throw new Error('Failed to upload media');
-        }
-        
-        const { data: urlData } = supabase
-          .storage
-          .from('posts-media')
-          .getPublicUrl(fileName);
-          
+        // Simulate file upload - in production, upload to S3/Cloud Storage
+        const mockUrl = `https://example.com/media/${file.originalname}`;
         mediaUrls.push({ 
-          url: urlData.publicUrl, 
+          url: mockUrl, 
           type: file.mimetype.startsWith('image') ? 'image' : 'video' 
         });
       }
     }
     
     // Create post
-    const { data: newPost, error: postError } = await supabase
-      .from('posts')
-      .insert([{ 
-        user_id: req.user.id, 
-        content: content || '', 
-        media: mediaUrls, 
-        college: req.user.college, 
-        posted_to: postTo 
-      }])
-      .select(`*, users (id, username, profile_pic, college, registration_number)`)
-      .single();
-    
-    if (postError) {
-      throw new Error('Failed to create post');
-    }
+    const postId = uuidv4();
+    await pool.execute(
+      'INSERT INTO posts (id, user_id, content, media, college, posted_to) VALUES (?, ?, ?, ?, ?, ?)',
+      [postId, req.user.id, content || '', JSON.stringify(mediaUrls), req.user.college, postTo]
+    );
+
+    // Get the created post with user info
+    const [posts] = await pool.execute(
+      `SELECT p.*, u.username, u.profile_pic, u.college, u.registration_number 
+       FROM posts p 
+       JOIN users u ON p.user_id = u.id 
+       WHERE p.id = ?`,
+      [postId]
+    );
+
+    const newPost = posts[0];
     
     // Award badges based on post count
-    const currentBadges = req.user.badges || [];
-    const { data: userPosts } = await supabase
-      .from('posts')
-      .select('id')
-      .eq('user_id', req.user.id);
+    const [userPosts] = await pool.execute(
+      'SELECT id FROM posts WHERE user_id = ?',
+      [req.user.id]
+    );
       
-    const postCount = userPosts?.length || 0;
+    const postCount = userPosts.length;
+    const currentBadges = req.user.badges ? JSON.parse(req.user.badges) : [];
     
     if (postCount === 1 && !currentBadges.includes('🎨 First Post')) {
       currentBadges.push('🎨 First Post');
-      await supabase
-        .from('users')
-        .update({ badges: currentBadges })
-        .eq('id', req.user.id);
+      await pool.execute(
+        'UPDATE users SET badges = ? WHERE id = ?',
+        [JSON.stringify(currentBadges), req.user.id]
+      );
     } else if (postCount === 10 && !currentBadges.includes('⭐ Content Creator')) {
       currentBadges.push('⭐ Content Creator');
-      await supabase
-        .from('users')
-        .update({ badges: currentBadges })
-        .eq('id', req.user.id);
+      await pool.execute(
+        'UPDATE users SET badges = ? WHERE id = ?',
+        [JSON.stringify(currentBadges), req.user.id]
+      );
     }
     
     // Emit socket event for real-time updates (only for community posts)
@@ -587,30 +531,41 @@ app.post('/api/posts', authenticateToken, upload.array('media', 5), async (req, 
   }
 });
 
-// Enhanced posts retrieval with filtering
+// Enhanced posts retrieval with MySQL
 app.get('/api/posts', authenticateToken, async (req, res) => {
   try {
     const { limit = 20, offset = 0, type = 'all' } = req.query;
-    let query = supabase
-      .from('posts')
-      .select(`*, users (id, username, profile_pic, college, registration_number)`)
-      .order('created_at', { ascending: false });
+    
+    let query = `
+      SELECT p.*, u.username, u.profile_pic, u.college, u.registration_number 
+      FROM posts p 
+      JOIN users u ON p.user_id = u.id 
+    `;
+    let params = [];
     
     if (type === 'my') {
-      query = query.eq('user_id', req.user.id);
+      query += ' WHERE p.user_id = ? ';
+      params.push(req.user.id);
     } else if (type === 'community' && req.user.community_joined && req.user.college) {
-      query = query.eq('college', req.user.college).eq('posted_to', 'community');
+      query += ' WHERE p.college = ? AND p.posted_to = ? ';
+      params.push(req.user.college, 'community');
     } else if (type === 'profile') {
-      query = query.eq('user_id', req.user.id).eq('posted_to', 'profile');
+      query += ' WHERE p.user_id = ? AND p.posted_to = ? ';
+      params.push(req.user.id, 'profile');
     }
     
-    const { data: posts, error } = await query.range(offset, offset + parseInt(limit) - 1);
+    query += ' ORDER BY p.created_at DESC LIMIT ? OFFSET ? ';
+    params.push(parseInt(limit), parseInt(offset));
     
-    if (error) {
-      throw new Error('Failed to fetch posts');
-    }
+    const [posts] = await pool.execute(query, params);
     
-    res.json({ success: true, posts: posts || [] });
+    // Parse JSON fields
+    const parsedPosts = posts.map(post => ({
+      ...post,
+      media: post.media ? JSON.parse(post.media) : []
+    }));
+    
+    res.json({ success: true, posts: parsedPosts });
     
   } catch (error) {
     console.error('Get posts error:', error);
@@ -622,35 +577,24 @@ app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     
-    const { data: post } = await supabase
-      .from('posts')
-      .select('user_id, media')
-      .eq('id', id)
-      .single();
+    const [posts] = await pool.execute(
+      'SELECT user_id, media FROM posts WHERE id = ?',
+      [id]
+    );
       
-    if (!post) {
+    if (posts.length === 0) {
       return res.status(404).json({ error: 'Post not found' });
     }
     
+    const post = posts[0];
     if (post.user_id !== req.user.id) {
       return res.status(403).json({ error: 'Not authorized' });
     }
     
-    // Delete associated media files
-    if (post.media && post.media.length > 0) {
-      for (const media of post.media) {
-        const fileName = media.url.split('/').pop();
-        await supabase
-          .storage
-          .from('posts-media')
-          .remove([`${req.user.id}/${fileName}`]);
-      }
-    }
-    
-    await supabase
-      .from('posts')
-      .delete()
-      .eq('id', id);
+    await pool.execute(
+      'DELETE FROM posts WHERE id = ?',
+      [id]
+    );
       
     res.json({ success: true, message: 'Post deleted successfully' });
     
@@ -660,7 +604,7 @@ app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// Enhanced community messages with reactions and views
+// Enhanced community messages with MySQL
 app.get('/api/community/messages', authenticateToken, async (req, res) => {
   try {
     if (!req.user.community_joined || !req.user.college) {
@@ -669,14 +613,24 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
     
     const { limit = 50 } = req.query;
     
-    const { data: messages, error } = await supabase
-      .from('messages')
-      .select(`*, users (id, username, profile_pic), message_reactions (*)`)
-      .eq('college', req.user.college)
-      .order('timestamp', { ascending: false })
-      .limit(limit);
+    const [messages] = await pool.execute(
+      `SELECT m.*, u.username, u.profile_pic 
+       FROM messages m 
+       JOIN users u ON m.sender_id = u.id 
+       WHERE m.college = ? 
+       ORDER BY m.timestamp DESC 
+       LIMIT ?`,
+      [req.user.college, parseInt(limit)]
+    );
       
-    if (error) throw error;
+    // Get reactions for each message
+    for (let message of messages) {
+      const [reactions] = await pool.execute(
+        'SELECT * FROM message_reactions WHERE message_id = ?',
+        [message.id]
+      );
+      message.message_reactions = reactions;
+    }
     
     res.json({ success: true, messages: messages || [] });
     
@@ -698,17 +652,22 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Join a college community first' });
     }
     
-    const { data: newMessage, error } = await supabase
-      .from('messages')
-      .insert([{ 
-        sender_id: req.user.id, 
-        content: content.trim(),
-        college: req.user.college 
-      }])
-      .select(`*, users (id, username, profile_pic)`)
-      .single();
-    
-    if (error) throw error;
+    const messageId = uuidv4();
+    await pool.execute(
+      'INSERT INTO messages (id, sender_id, content, college) VALUES (?, ?, ?, ?)',
+      [messageId, req.user.id, content.trim(), req.user.college]
+    );
+
+    // Get the created message with user info
+    const [messages] = await pool.execute(
+      `SELECT m.*, u.username, u.profile_pic 
+       FROM messages m 
+       JOIN users u ON m.sender_id = u.id 
+       WHERE m.id = ?`,
+      [messageId]
+    );
+
+    const newMessage = messages[0];
     
     // Emit socket event for real-time messaging
     io.to(req.user.college).emit('new_message', newMessage);
@@ -721,7 +680,7 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
   }
 });
 
-// Enhanced message editing with time limit
+// Enhanced message editing with MySQL
 app.patch('/api/community/messages/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -731,16 +690,16 @@ app.patch('/api/community/messages/:id', authenticateToken, async (req, res) => 
       return res.status(400).json({ error: 'Message content required' });
     }
     
-    const { data: message } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('id', id)
-      .single();
+    const [messages] = await pool.execute(
+      'SELECT * FROM messages WHERE id = ?',
+      [id]
+    );
       
-    if (!message) {
+    if (messages.length === 0) {
       return res.status(404).json({ error: 'Message not found' });
     }
     
+    const message = messages[0];
     if (message.sender_id !== req.user.id) {
       return res.status(403).json({ error: 'Not authorized' });
     }
@@ -754,17 +713,21 @@ app.patch('/api/community/messages/:id', authenticateToken, async (req, res) => 
       return res.status(403).json({ error: 'Can only edit messages within 2 minutes' });
     }
     
-    const { data: updated, error } = await supabase
-      .from('messages')
-      .update({ 
-        content: content.trim(), 
-        edited: true 
-      })
-      .eq('id', id)
-      .select(`*, users (id, username, profile_pic)`)
-      .single();
-    
-    if (error) throw error;
+    await pool.execute(
+      'UPDATE messages SET content = ?, edited = TRUE WHERE id = ?',
+      [content.trim(), id]
+    );
+
+    // Get the updated message
+    const [updatedMessages] = await pool.execute(
+      `SELECT m.*, u.username, u.profile_pic 
+       FROM messages m 
+       JOIN users u ON m.sender_id = u.id 
+       WHERE m.id = ?`,
+      [id]
+    );
+
+    const updated = updatedMessages[0];
     
     // Emit socket event for real-time update
     io.to(req.user.college).emit('message_updated', updated);
@@ -781,24 +744,24 @@ app.delete('/api/community/messages/:id', authenticateToken, async (req, res) =>
   try {
     const { id } = req.params;
     
-    const { data: message } = await supabase
-      .from('messages')
-      .select('sender_id')
-      .eq('id', id)
-      .single();
+    const [messages] = await pool.execute(
+      'SELECT sender_id FROM messages WHERE id = ?',
+      [id]
+    );
       
-    if (!message) {
+    if (messages.length === 0) {
       return res.status(404).json({ error: 'Message not found' });
     }
     
+    const message = messages[0];
     if (message.sender_id !== req.user.id) {
       return res.status(403).json({ error: 'Not authorized' });
     }
     
-    await supabase
-      .from('messages')
-      .delete()
-      .eq('id', id);
+    await pool.execute(
+      'DELETE FROM messages WHERE id = ?',
+      [id]
+    );
       
     // Emit socket event for real-time deletion
     io.to(req.user.college).emit('message_deleted', { id });
@@ -811,7 +774,7 @@ app.delete('/api/community/messages/:id', authenticateToken, async (req, res) =>
   }
 });
 
-// Message reactions
+// Message reactions with MySQL
 app.post('/api/community/messages/:id/react', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -822,36 +785,34 @@ app.post('/api/community/messages/:id/react', authenticateToken, async (req, res
     }
     
     // Check if reaction already exists
-    const { data: existing } = await supabase
-      .from('message_reactions')
-      .select('*')
-      .eq('message_id', id)
-      .eq('user_id', req.user.id)
-      .eq('emoji', emoji)
-      .maybeSingle();
+    const [existing] = await pool.execute(
+      'SELECT * FROM message_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?',
+      [id, req.user.id, emoji]
+    );
     
     // If exists, remove it (toggle)
-    if (existing) {
-      await supabase
-        .from('message_reactions')
-        .delete()
-        .eq('id', existing.id);
+    if (existing.length > 0) {
+      await pool.execute(
+        'DELETE FROM message_reactions WHERE id = ?',
+        [existing[0].id]
+      );
         
       return res.json({ success: true, action: 'removed' });
     }
     
     // Add new reaction
-    const { data: reaction, error } = await supabase
-      .from('message_reactions')
-      .insert([{
-        message_id: id,
-        user_id: req.user.id,
-        emoji: emoji
-      }])
-      .select()
-      .single();
-    
-    if (error) throw error;
+    const reactionId = uuidv4();
+    await pool.execute(
+      'INSERT INTO message_reactions (id, message_id, user_id, emoji) VALUES (?, ?, ?, ?)',
+      [reactionId, id, req.user.id, emoji]
+    );
+
+    const [reactions] = await pool.execute(
+      'SELECT * FROM message_reactions WHERE id = ?',
+      [reactionId]
+    );
+
+    const reaction = reactions[0];
     
     // Emit socket event for real-time reaction
     io.to(req.user.college).emit('message_reaction', { 
@@ -867,30 +828,26 @@ app.post('/api/community/messages/:id/react', authenticateToken, async (req, res
   }
 });
 
-// Message views tracking
+// Message views tracking with MySQL
 app.post('/api/community/messages/:id/view', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     
     // Check if already viewed
-    const { data: existing } = await supabase
-      .from('message_views')
-      .select('*')
-      .eq('message_id', id)
-      .eq('user_id', req.user.id)
-      .maybeSingle();
+    const [existing] = await pool.execute(
+      'SELECT * FROM message_views WHERE message_id = ? AND user_id = ?',
+      [id, req.user.id]
+    );
     
-    if (existing) {
+    if (existing.length > 0) {
       return res.json({ success: true });
     }
     
     // Record view
-    await supabase
-      .from('message_views')
-      .insert([{
-        message_id: id,
-        user_id: req.user.id
-      }]);
+    await pool.execute(
+      'INSERT INTO message_views (id, message_id, user_id) VALUES (?, ?, ?)',
+      [uuidv4(), id, req.user.id]
+    );
     
     res.json({ success: true });
     
@@ -904,17 +861,18 @@ app.get('/api/community/messages/:id/views', authenticateToken, async (req, res)
   try {
     const { id } = req.params;
     
-    const { data: views, error } = await supabase
-      .from('message_views')
-      .select('user_id, users (username, profile_pic)', { count: 'exact' })
-      .eq('message_id', id);
-    
-    if (error) throw error;
+    const [views] = await pool.execute(
+      `SELECT mv.user_id, u.username, u.profile_pic 
+       FROM message_views mv 
+       JOIN users u ON mv.user_id = u.id 
+       WHERE mv.message_id = ?`,
+      [id]
+    );
     
     res.json({ 
       success: true, 
       views: views || [], 
-      count: views?.length || 0 
+      count: views.length 
     });
     
   } catch (error) {
@@ -923,49 +881,48 @@ app.get('/api/community/messages/:id/views', authenticateToken, async (req, res)
   }
 });
 
-// Enhanced profile management
+// Enhanced profile management with MySQL
 app.patch('/api/profile', authenticateToken, upload.single('profilePic'), async (req, res) => {
   try {
     const { username, bio } = req.body;
     const updates = {};
+    const params = [];
     
-    if (username) updates.username = username;
-    if (bio !== undefined) updates.bio = bio;
+    if (username) {
+      updates.username = username;
+      params.push(username);
+    }
+    if (bio !== undefined) {
+      updates.bio = bio;
+      params.push(bio);
+    }
     
     // Handle profile picture upload
     if (req.file) {
-      const fileExt = req.file.originalname.split('.').pop();
-      const fileName = `${req.user.id}/profile.${fileExt}`;
-      
-      const { error: uploadError } = await supabase
-        .storage
-        .from('profile-pics')
-        .upload(fileName, req.file.buffer, { 
-          contentType: req.file.mimetype, 
-          cacheControl: '3600',
-          upsert: true 
-        });
-      
-      if (uploadError) {
-        throw new Error('Failed to upload profile picture');
-      }
-      
-      const { data: urlData } = supabase
-        .storage
-        .from('profile-pics')
-        .getPublicUrl(fileName);
-        
-      updates.profile_pic = urlData.publicUrl;
+      // In production, upload to cloud storage and get URL
+      const profilePicUrl = `https://example.com/profile-pics/${req.user.id}.jpg`;
+      updates.profile_pic = profilePicUrl;
+      params.push(profilePicUrl);
     }
     
-    const { data: updated, error } = await supabase
-      .from('users')
-      .update(updates)
-      .eq('id', req.user.id)
-      .select()
-      .single();
+    // Build dynamic update query
+    if (params.length > 0) {
+      const setClause = Object.keys(updates).map(key => `${key} = ?`).join(', ');
+      params.push(req.user.id);
+      
+      await pool.execute(
+        `UPDATE users SET ${setClause} WHERE id = ?`,
+        params
+      );
+    }
     
-    if (error) throw error;
+    // Get updated user
+    const [users] = await pool.execute(
+      'SELECT * FROM users WHERE id = ?',
+      [req.user.id]
+    );
+
+    const updated = users[0];
     
     res.json({ success: true, user: updated });
     
@@ -975,7 +932,7 @@ app.patch('/api/profile', authenticateToken, upload.single('profilePic'), async 
   }
 });
 
-// User search
+// User search with MySQL
 app.get('/api/search/users', authenticateToken, async (req, res) => {
   try {
     const { query } = req.query;
@@ -986,15 +943,15 @@ app.get('/api/search/users', authenticateToken, async (req, res) => {
       });
     }
     
-    const searchTerm = query.trim().toLowerCase();
+    const searchTerm = `%${query.trim().toLowerCase()}%`;
     
-    const { data: users, error } = await supabase
-      .from('users')
-      .select('id, username, email, college, profile_pic, registration_number')
-      .or(`username.ilike.%${searchTerm}%,registration_number.ilike.%${searchTerm}%`)
-      .limit(10);
-    
-    if (error) throw error;
+    const [users] = await pool.execute(
+      `SELECT id, username, email, college, profile_pic, registration_number 
+       FROM users 
+       WHERE LOWER(username) LIKE ? OR LOWER(registration_number) LIKE ? 
+       LIMIT 10`,
+      [searchTerm, searchTerm]
+    );
     
     res.json({ success: true, users: users || [] });
     
@@ -1004,7 +961,7 @@ app.get('/api/search/users', authenticateToken, async (req, res) => {
   }
 });
 
-// Feedback system
+// Feedback system with MySQL
 app.post('/api/feedback', authenticateToken, async (req, res) => {
   try {
     const { subject, message } = req.body;
@@ -1013,22 +970,23 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Subject and message required' });
     }
     
-    const { data: feedback, error } = await supabase
-      .from('feedback')
-      .insert([{
-        user_id: req.user.id,
-        subject: subject.trim(),
-        message: message.trim()
-      }])
-      .select()
-      .single();
-    
-    if (error) throw error;
+    await pool.execute(
+      'INSERT INTO feedback (id, user_id, subject, message) VALUES (?, ?, ?, ?)',
+      [uuidv4(), req.user.id, subject.trim(), message.trim()]
+    );
+
+    // Get the created feedback
+    const [feedback] = await pool.execute(
+      'SELECT * FROM feedback WHERE user_id = ? ORDER BY created_at DESC LIMIT 1',
+      [req.user.id]
+    );
+
+    const newFeedback = feedback[0];
     
     res.json({ 
       success: true, 
       message: 'Feedback submitted successfully!', 
-      feedback 
+      feedback: newFeedback 
     });
     
   } catch (error) {
@@ -1037,38 +995,62 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
   }
 });
 
-// Get user profile
+// Get user profile with MySQL
 app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
   try {
     const { userId } = req.params;
     
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('id, username, email, college, profile_pic, bio, badges, created_at, registration_number')
-      .eq('id', userId)
-      .single();
+    const [users] = await pool.execute(
+      'SELECT id, username, email, college, profile_pic, bio, badges, created_at, registration_number FROM users WHERE id = ?',
+      [userId]
+    );
     
-    if (error || !user) {
+    if (users.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
     
+    const user = users[0];
+    
     // Get user's post count
-    const { data: posts } = await supabase
-      .from('posts')
-      .select('id', { count: 'exact' })
-      .eq('user_id', userId);
+    const [posts] = await pool.execute(
+      'SELECT id FROM posts WHERE user_id = ?',
+      [userId]
+    );
     
     res.json({ 
       success: true, 
       user: {
         ...user,
-        postCount: posts?.length || 0
+        badges: user.badges ? JSON.parse(user.badges) : [],
+        postCount: posts.length
       }
     });
     
   } catch (error) {
     console.error('Get profile error:', error);
     res.status(500).json({ error: 'Failed to get profile' });
+  }
+});
+
+// Badges endpoint with MySQL
+app.get('/api/badges', authenticateToken, async (req, res) => {
+  try {
+    const badges = req.user.badges ? JSON.parse(req.user.badges) : [];
+    
+    res.json({ 
+      success: true, 
+      badges: badges,
+      availableBadges: [
+        { emoji: '🎓', name: 'Community Member', description: 'Joined a college community' },
+        { emoji: '🎨', name: 'First Post', description: 'Created your first post' },
+        { emoji: '⭐', name: 'Content Creator', description: 'Posted 10 times' },
+        { emoji: '💬', name: 'Chatty', description: 'Sent 50 messages' },
+        { emoji: '🔥', name: 'On Fire', description: '7 day streak' }
+      ]
+    });
+  } catch (error) {
+    console.error('Get badges error:', error);
+    res.status(500).json({ error: 'Failed to get badges' });
   }
 });
 
@@ -1090,12 +1072,24 @@ io.on('connection', (socket) => {
 });
 
 // Health check
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    success: true, 
-    message: 'VibeXpert API is running!', 
-    timestamp: new Date().toISOString() 
-  });
+app.get('/api/health', async (req, res) => {
+  try {
+    // Test database connection
+    await pool.execute('SELECT 1');
+    res.json({ 
+      success: true, 
+      message: 'VibeXpert API is running!', 
+      database: 'Connected',
+      timestamp: new Date().toISOString() 
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'API is running but database connection failed',
+      database: 'Disconnected',
+      timestamp: new Date().toISOString() 
+    });
+  }
 });
 
 // Error handling middleware
@@ -1111,7 +1105,8 @@ app.use('*', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 VibeXpert server running on port ${PORT}`);
+  console.log(`🚀 VibeXpert MySQL server running on port ${PORT}`);
   console.log(`📧 Email service: ${process.env.BREVO_API_KEY ? 'Enabled' : 'Development mode'}`);
+  console.log(`🗄️  Database: MySQL`);
   console.log(`🔐 JWT secret: ${process.env.JWT_SECRET ? 'Set' : 'Not set'}`);
 });
