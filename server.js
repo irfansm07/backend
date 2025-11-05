@@ -701,7 +701,7 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
   }
 });
 
-// Enhanced get posts with filtering - FIXED
+// Enhanced get posts with filtering - FIXED WITH PROPER DESTINATION FILTERING
 app.get('/api/posts', authenticateToken, async (req, res) => {
   try {
     const { limit = 20, offset = 0, type = 'all', destination } = req.query;
@@ -714,12 +714,19 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
       .order('created_at', { ascending: false });
     
     if (type === 'my') {
+      // Get only current user's posts
       query = query.eq('user_id', req.user.id);
       console.log('🔍 Fetching user posts for:', req.user.id);
-    } else if (type === 'community' && req.user.community_joined && req.user.college) {
+    } else if (type === 'community') {
+      // Get community posts from user's college
+      if (!req.user.community_joined || !req.user.college) {
+        console.log('⚠️ User not in any community');
+        return res.json({ success: true, posts: [], message: 'Join a community first' });
+      }
       query = query.eq('college', req.user.college).eq('posted_to', 'community');
       console.log('🔍 Fetching community posts for:', req.user.college);
     } else if (type === 'profile') {
+      // Get only profile posts of current user
       query = query.eq('user_id', req.user.id).eq('posted_to', 'profile');
       console.log('🔍 Fetching profile posts for:', req.user.id);
     }
@@ -751,6 +758,85 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('❌ Get posts error:', error);
     res.json({ success: true, posts: [] });
+  }
+});
+
+// NEW: Get community posts endpoint
+app.get('/api/posts/community', authenticateToken, async (req, res) => {
+  try {
+    if (!req.user.community_joined || !req.user.college) {
+      return res.status(403).json({ 
+        error: 'Please join a college community first to view community posts',
+        needsJoinCommunity: true 
+      });
+    }
+    
+    const { limit = 20, offset = 0 } = req.query;
+    
+    console.log('📨 Fetching community posts for:', req.user.college);
+    
+    const { data: posts, error } = await supabase
+      .from('posts')
+      .select(`*, users (id, username, profile_pic, college, registration_number)`)
+      .eq('college', req.user.college)
+      .eq('posted_to', 'community')
+      .order('created_at', { ascending: false })
+      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+    
+    if (error) {
+      console.error('❌ Database error:', error);
+      throw error;
+    }
+    
+    const formattedPosts = (posts || []).map(post => ({
+      ...post,
+      music: post.music || null,
+      stickers: post.stickers || [],
+      image_filter: post.image_filter || 'normal'
+    }));
+    
+    console.log(`✅ Fetched ${formattedPosts.length} community posts`);
+    
+    res.json({ success: true, posts: formattedPosts });
+  } catch (error) {
+    console.error('❌ Get community posts error:', error);
+    res.status(500).json({ error: 'Failed to fetch community posts' });
+  }
+});
+
+// NEW: Get profile posts endpoint
+app.get('/api/posts/profile', authenticateToken, async (req, res) => {
+  try {
+    const { limit = 20, offset = 0 } = req.query;
+    
+    console.log('📨 Fetching profile posts for:', req.user.id);
+    
+    const { data: posts, error } = await supabase
+      .from('posts')
+      .select(`*, users (id, username, profile_pic, college, registration_number)`)
+      .eq('user_id', req.user.id)
+      .eq('posted_to', 'profile')
+      .order('created_at', { ascending: false })
+      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+    
+    if (error) {
+      console.error('❌ Database error:', error);
+      throw error;
+    }
+    
+    const formattedPosts = (posts || []).map(post => ({
+      ...post,
+      music: post.music || null,
+      stickers: post.stickers || [],
+      image_filter: post.image_filter || 'normal'
+    }));
+    
+    console.log(`✅ Fetched ${formattedPosts.length} profile posts`);
+    
+    res.json({ success: true, posts: formattedPosts });
+  } catch (error) {
+    console.error('❌ Get profile posts error:', error);
+    res.status(500).json({ error: 'Failed to fetch profile posts' });
   }
 });
 
