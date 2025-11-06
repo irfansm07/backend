@@ -211,7 +211,7 @@ app.get('/api/filters', (req, res) => {
   });
 });
 
-// ==================== NEW: USER SEARCH ENDPOINT ====================
+// ==================== USER SEARCH ENDPOINT ====================
 app.get('/api/search/users', authenticateToken, async (req, res) => {
   try {
     const { query } = req.query;
@@ -223,7 +223,6 @@ app.get('/api/search/users', authenticateToken, async (req, res) => {
     const searchTerm = query.trim().toLowerCase();
     console.log('🔍 Searching users with query:', searchTerm);
     
-    // Use a more compatible approach - fetch all users and filter in JavaScript
     const { data: allUsers, error } = await supabase
       .from('users')
       .select('id, username, email, registration_number, college, profile_pic, bio')
@@ -234,19 +233,16 @@ app.get('/api/search/users', authenticateToken, async (req, res) => {
       throw error;
     }
     
-    // Filter users based on search term (case-insensitive partial match)
     const matchedUsers = (allUsers || []).filter(user => {
       const usernameMatch = user.username?.toLowerCase().includes(searchTerm);
       const emailMatch = user.email?.toLowerCase().includes(searchTerm);
       const regMatch = user.registration_number?.toLowerCase().includes(searchTerm);
       
-      // Exclude current user from results
       if (user.id === req.user.id) return false;
       
       return usernameMatch || emailMatch || regMatch;
     });
     
-    // Limit to 20 results
     const limitedResults = matchedUsers.slice(0, 20);
     
     console.log(`✅ Found ${limitedResults.length} users matching "${searchTerm}"`);
@@ -265,7 +261,7 @@ app.get('/api/search/users', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== NEW: GET USER PROFILE BY ID ====================
+// ==================== GET USER PROFILE BY ID ====================
 app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
   try {
     const { userId } = req.params;
@@ -282,7 +278,6 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
     
-    // Get user's post count
     const { data: posts } = await supabase
       .from('posts')
       .select('id')
@@ -443,7 +438,7 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
 // FIXED POST CREATION WITH BETTER VALIDATION AND ERROR HANDLING
 app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req, res) => {
   try {
-    const { content = '', postTo = 'profile', music, stickers = '[]' } = req.body;
+    const { content = '', postTo = 'profile', music, stickers = '[]', imageFilter = 'normal' } = req.body;
     const files = req.files;
     
     console.log('📝 Creating post with data:', {
@@ -451,8 +446,22 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       postTo,
       hasMusic: !!music && music !== 'null',
       hasStickers: stickers !== '[]' && stickers !== 'null',
-      filesCount: files?.length || 0
+      filesCount: files?.length || 0,
+      imageFilter,
+      userCollege: req.user.college,
+      communityJoined: req.user.community_joined
     });
+
+    // CRITICAL: Check if user is trying to post to community without being in one
+    if (postTo === 'community') {
+      if (!req.user.community_joined || !req.user.college) {
+        console.log('❌ User tried to post to community without being in one');
+        return res.status(403).json({ 
+          error: 'You must join a college community first to post to the community feed',
+          requiresCommunity: true
+        });
+      }
+    }
 
     // FIXED VALIDATION - Allow post with ANY content type
     const hasContent = content && content.trim().length > 0;
@@ -481,12 +490,10 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
         parsedMusic = JSON.parse(music);
         console.log('🎵 Parsed music:', parsedMusic);
         
-        // Validate music structure
         if (!parsedMusic || !parsedMusic.id || !parsedMusic.name || !parsedMusic.url) {
           console.warn('⚠️ Invalid music format - missing required fields');
           parsedMusic = null;
         } else {
-          // Verify music exists in library
           const validMusic = availableSongs.find(song => song.id === parseInt(parsedMusic.id));
           if (!validMusic) {
             console.warn('⚠️ Music not found in available songs');
@@ -508,12 +515,10 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
         parsedStickers = JSON.parse(stickers);
         console.log('🎨 Parsed stickers:', parsedStickers);
         
-        // Validate stickers array
         if (!Array.isArray(parsedStickers)) {
           console.warn('⚠️ Invalid stickers format - not an array');
           parsedStickers = [];
         } else {
-          // Limit to 5 stickers and validate each
           parsedStickers = parsedStickers.slice(0, 5).filter(sticker => {
             if (typeof sticker === 'string' && sticker.length > 0) {
               return true;
@@ -528,6 +533,12 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
         console.warn('⚠️ Invalid stickers JSON format:', e.message);
         parsedStickers = [];
       }
+    }
+    
+    // Validate image filter
+    const validFilter = availableFilters.find(f => f.id === imageFilter) ? imageFilter : 'normal';
+    if (validFilter !== imageFilter) {
+      console.warn(`⚠️ Invalid filter "${imageFilter}", using "normal"`);
     }
 
     // Process media files
@@ -553,7 +564,6 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
             
           if (uploadError) {
             console.error(`❌ Upload error for file ${i + 1}:`, uploadError);
-            // Continue with other files
             continue;
           }
           
@@ -564,28 +574,29 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
                            
           mediaUrls.push({ 
             url: urlData.publicUrl, 
-            type: mediaType
+            type: mediaType,
+            filter: mediaType === 'image' ? validFilter : null
           });
           
           console.log(`✅ File ${i + 1} uploaded successfully`);
         } catch (fileError) {
           console.error(`❌ File ${i + 1} processing error:`, fileError);
-          // Continue with other files
         }
       }
       
       console.log(`📊 Successfully processed ${mediaUrls.length}/${files.length} files`);
     }
     
-    // Create post data WITHOUT image_filter column
+    // Create post data
     const postData = { 
       user_id: req.user.id, 
       content: content?.trim() || '', 
       media: mediaUrls, 
-      college: req.user.college || null, 
+      college: postTo === 'community' ? req.user.college : null,
       posted_to: postTo,
       music: parsedMusic,
-      stickers: parsedStickers
+      stickers: parsedStickers,
+      image_filter: validFilter
     };
     
     console.log('💾 Saving post to database:', {
@@ -647,6 +658,13 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       badgeUpdated = true;
     }
     
+    // Photo editor badge for filters
+    if (validFilter !== 'normal' && !currentBadges.includes('🖼️ Photo Editor')) {
+      currentBadges.push('🖼️ Photo Editor');
+      newBadges.push('🖼️ Photo Editor');
+      badgeUpdated = true;
+    }
+    
     if (badgeUpdated) {
       await supabase.from('users').update({ badges: currentBadges }).eq('id', req.user.id);
       console.log('🏆 Badges updated:', newBadges.join(', '));
@@ -654,7 +672,7 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
     
     // Emit socket events for new posts
     if (postTo === 'community' && req.user.college) {
-      io.to(req.user.college).emit('new_post', newPost);
+      io.to(req.user.college).emit('new_community_post', newPost);
       console.log('📢 Emitted new post to community:', req.user.college);
     } else {
       io.emit('new_profile_post', { userId: req.user.id, post: newPost });
@@ -685,7 +703,7 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
   }
 });
 
-// Enhanced get posts with filtering - FIXED WITH PROPER DESTINATION FILTERING
+// Enhanced get posts with filtering - FIXED TO PROPERLY SEPARATE PROFILE AND COMMUNITY POSTS
 app.get('/api/posts', authenticateToken, async (req, res) => {
   try {
     const { limit = 20, offset = 0, type = 'all', destination } = req.query;
@@ -697,28 +715,33 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
       .select(`*, users (id, username, profile_pic, college, registration_number)`)
       .order('created_at', { ascending: false });
     
-    if (type === 'my') {
-      // Get only current user's posts
-      query = query.eq('user_id', req.user.id);
-      console.log('🔍 Fetching user posts for:', req.user.id);
+    // FIXED: Proper filtering based on type
+    if (type === 'my' || type === 'profile') {
+      // Get only user's profile posts
+      query = query.eq('user_id', req.user.id).eq('posted_to', 'profile');
+      console.log('🔍 Fetching profile posts for:', req.user.id);
     } else if (type === 'community') {
-      // Get community posts from user's college
+      // Get only community posts from user's college
       if (!req.user.community_joined || !req.user.college) {
-        console.log('⚠️ User not in any community');
-        return res.json({ success: true, posts: [], message: 'Join a community first' });
+        console.log('⚠️ User not in community, returning empty');
+        return res.json({ success: true, posts: [] });
       }
       query = query.eq('college', req.user.college).eq('posted_to', 'community');
       console.log('🔍 Fetching community posts for:', req.user.college);
-    } else if (type === 'profile') {
-      // Get only profile posts of current user
-      query = query.eq('user_id', req.user.id).eq('posted_to', 'profile');
-      console.log('🔍 Fetching profile posts for:', req.user.id);
+    } else if (type === 'all') {
+      // Get user's profile posts OR community posts from their college
+      if (req.user.community_joined && req.user.college) {
+        query = query.or(`and(user_id.eq.${req.user.id},posted_to.eq.profile),and(college.eq.${req.user.college},posted_to.eq.community)`);
+      } else {
+        query = query.eq('user_id', req.user.id).eq('posted_to', 'profile');
+      }
+      console.log('🔍 Fetching all posts');
     }
     
-    // Filter by destination if specified
+    // Additional filter by destination if specified
     if (destination && ['profile', 'community'].includes(destination)) {
       query = query.eq('posted_to', destination);
-      console.log('🔍 Filtering by destination:', destination);
+      console.log('🔍 Additional filtering by destination:', destination);
     }
     
     const { data: posts, error } = await query.range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
@@ -728,11 +751,12 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
       throw new Error('Failed to fetch posts');
     }
     
-    // Ensure music and stickers are properly formatted
+    // Ensure music, stickers, and filters are properly formatted
     const formattedPosts = (posts || []).map(post => ({
       ...post,
       music: post.music || null,
-      stickers: post.stickers || []
+      stickers: post.stickers || [],
+      image_filter: post.image_filter || 'normal'
     }));
     
     console.log(`✅ Fetched ${formattedPosts.length} posts`);
@@ -741,83 +765,6 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('❌ Get posts error:', error);
     res.json({ success: true, posts: [] });
-  }
-});
-
-// NEW: Get community posts endpoint
-app.get('/api/posts/community', authenticateToken, async (req, res) => {
-  try {
-    if (!req.user.community_joined || !req.user.college) {
-      return res.status(403).json({ 
-        error: 'Please join a college community first to view community posts',
-        needsJoinCommunity: true 
-      });
-    }
-    
-    const { limit = 20, offset = 0 } = req.query;
-    
-    console.log('📨 Fetching community posts for:', req.user.college);
-    
-    const { data: posts, error } = await supabase
-      .from('posts')
-      .select(`*, users (id, username, profile_pic, college, registration_number)`)
-      .eq('college', req.user.college)
-      .eq('posted_to', 'community')
-      .order('created_at', { ascending: false })
-      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
-    
-    if (error) {
-      console.error('❌ Database error:', error);
-      throw error;
-    }
-    
-    const formattedPosts = (posts || []).map(post => ({
-      ...post,
-      music: post.music || null,
-      stickers: post.stickers || []
-    }));
-    
-    console.log(`✅ Fetched ${formattedPosts.length} community posts`);
-    
-    res.json({ success: true, posts: formattedPosts });
-  } catch (error) {
-    console.error('❌ Get community posts error:', error);
-    res.status(500).json({ error: 'Failed to fetch community posts' });
-  }
-});
-
-// NEW: Get profile posts endpoint
-app.get('/api/posts/profile', authenticateToken, async (req, res) => {
-  try {
-    const { limit = 20, offset = 0 } = req.query;
-    
-    console.log('📨 Fetching profile posts for:', req.user.id);
-    
-    const { data: posts, error } = await supabase
-      .from('posts')
-      .select(`*, users (id, username, profile_pic, college, registration_number)`)
-      .eq('user_id', req.user.id)
-      .eq('posted_to', 'profile')
-      .order('created_at', { ascending: false })
-      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
-    
-    if (error) {
-      console.error('❌ Database error:', error);
-      throw error;
-    }
-    
-    const formattedPosts = (posts || []).map(post => ({
-      ...post,
-      music: post.music || null,
-      stickers: post.stickers || []
-    }));
-    
-    console.log(`✅ Fetched ${formattedPosts.length} profile posts`);
-    
-    res.json({ success: true, posts: formattedPosts });
-  } catch (error) {
-    console.error('❌ Get profile posts error:', error);
-    res.status(500).json({ error: 'Failed to fetch profile posts' });
   }
 });
 
@@ -850,8 +797,10 @@ app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
     // Emit socket event for post deletion
     if (post.posted_to === 'community' && post.college) {
       io.to(post.college).emit('post_deleted', { id });
+      console.log('📢 Emitted post deletion to community:', post.college);
     } else {
       io.emit('profile_post_deleted', { userId: req.user.id, postId: id });
+      console.log('📢 Emitted profile post deletion for user:', req.user.id);
     }
     
     console.log('✅ Post deleted successfully');
@@ -859,6 +808,46 @@ app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('❌ Delete post error:', error);
     res.status(500).json({ error: 'Failed to delete post' });
+  }
+});
+
+// ==================== NEW: GET COMMUNITY POSTS ====================
+app.get('/api/community/posts', authenticateToken, async (req, res) => {
+  try {
+    if (!req.user.community_joined || !req.user.college) {
+      return res.status(403).json({ error: 'Join a college community first' });
+    }
+    
+    const { limit = 20, offset = 0 } = req.query;
+    
+    console.log('📨 Fetching community posts for:', req.user.college);
+    
+    const { data: posts, error } = await supabase
+      .from('posts')
+      .select(`*, users (id, username, profile_pic, college, registration_number)`)
+      .eq('college', req.user.college)
+      .eq('posted_to', 'community')
+      .order('created_at', { ascending: false })
+      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+    
+    if (error) {
+      console.error('❌ Database error:', error);
+      throw new Error('Failed to fetch community posts');
+    }
+    
+    const formattedPosts = (posts || []).map(post => ({
+      ...post,
+      music: post.music || null,
+      stickers: post.stickers || [],
+      image_filter: post.image_filter || 'normal'
+    }));
+    
+    console.log(`✅ Fetched ${formattedPosts.length} community posts`);
+    
+    res.json({ success: true, posts: formattedPosts });
+  } catch (error) {
+    console.error('❌ Get community posts error:', error);
+    res.status(500).json({ error: 'Failed to fetch community posts' });
   }
 });
 
