@@ -443,7 +443,7 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
 // FIXED POST CREATION WITH BETTER VALIDATION AND ERROR HANDLING
 app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req, res) => {
   try {
-    const { content = '', postTo = 'profile', music, stickers = '[]', imageFilter = 'normal' } = req.body;
+    const { content = '', postTo = 'profile', music, stickers = '[]' } = req.body;
     const files = req.files;
     
     console.log('📝 Creating post with data:', {
@@ -451,8 +451,7 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       postTo,
       hasMusic: !!music && music !== 'null',
       hasStickers: stickers !== '[]' && stickers !== 'null',
-      filesCount: files?.length || 0,
-      imageFilter
+      filesCount: files?.length || 0
     });
 
     // FIXED VALIDATION - Allow post with ANY content type
@@ -530,12 +529,6 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
         parsedStickers = [];
       }
     }
-    
-    // Validate image filter
-    const validFilter = availableFilters.find(f => f.id === imageFilter) ? imageFilter : 'normal';
-    if (validFilter !== imageFilter) {
-      console.warn(`⚠️ Invalid filter "${imageFilter}", using "normal"`);
-    }
 
     // Process media files
     const mediaUrls = [];
@@ -571,8 +564,7 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
                            
           mediaUrls.push({ 
             url: urlData.publicUrl, 
-            type: mediaType,
-            filter: mediaType === 'image' ? validFilter : null
+            type: mediaType
           });
           
           console.log(`✅ File ${i + 1} uploaded successfully`);
@@ -585,7 +577,7 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       console.log(`📊 Successfully processed ${mediaUrls.length}/${files.length} files`);
     }
     
-    // Create post data
+    // Create post data WITHOUT image_filter column
     const postData = { 
       user_id: req.user.id, 
       content: content?.trim() || '', 
@@ -593,8 +585,7 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       college: req.user.college || null, 
       posted_to: postTo,
       music: parsedMusic,
-      stickers: parsedStickers,
-      image_filter: validFilter
+      stickers: parsedStickers
     };
     
     console.log('💾 Saving post to database:', {
@@ -653,13 +644,6 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
     if (parsedStickers.length > 0 && !currentBadges.includes('🎨 Creative')) {
       currentBadges.push('🎨 Creative');
       newBadges.push('🎨 Creative');
-      badgeUpdated = true;
-    }
-    
-    // Photo editor badge for filters
-    if (validFilter !== 'normal' && !currentBadges.includes('🖼️ Photo Editor')) {
-      currentBadges.push('🖼️ Photo Editor');
-      newBadges.push('🖼️ Photo Editor');
       badgeUpdated = true;
     }
     
@@ -744,12 +728,11 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
       throw new Error('Failed to fetch posts');
     }
     
-    // Ensure music, stickers, and filters are properly formatted
+    // Ensure music and stickers are properly formatted
     const formattedPosts = (posts || []).map(post => ({
       ...post,
       music: post.music || null,
-      stickers: post.stickers || [],
-      image_filter: post.image_filter || 'normal'
+      stickers: post.stickers || []
     }));
     
     console.log(`✅ Fetched ${formattedPosts.length} posts`);
@@ -791,8 +774,7 @@ app.get('/api/posts/community', authenticateToken, async (req, res) => {
     const formattedPosts = (posts || []).map(post => ({
       ...post,
       music: post.music || null,
-      stickers: post.stickers || [],
-      image_filter: post.image_filter || 'normal'
+      stickers: post.stickers || []
     }));
     
     console.log(`✅ Fetched ${formattedPosts.length} community posts`);
@@ -827,8 +809,7 @@ app.get('/api/posts/profile', authenticateToken, async (req, res) => {
     const formattedPosts = (posts || []).map(post => ({
       ...post,
       music: post.music || null,
-      stickers: post.stickers || [],
-      image_filter: post.image_filter || 'normal'
+      stickers: post.stickers || []
     }));
     
     console.log(`✅ Fetched ${formattedPosts.length} profile posts`);
