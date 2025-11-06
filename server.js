@@ -440,118 +440,79 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
   }
 });
 
-// FIXED POST CREATION - WITH image_filter SUPPORT
+// SIMPLIFIED POST CREATION - NO image_filter column needed
 app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req, res) => {
   try {
-    const { content = '', postTo = 'profile', music, stickers = '[]', imageFilter = 'normal' } = req.body;
+    const { content = '', postTo = 'profile', music, stickers = '[]' } = req.body;
     const files = req.files;
     
-    console.log('📝 Creating post with data:', {
-      hasContent: !!content && content.trim().length > 0,
-      postTo,
-      hasMusic: !!music && music !== 'null',
-      hasStickers: stickers !== '[]' && stickers !== 'null',
-      filesCount: files?.length || 0,
-      imageFilter
-    });
+    console.log('📝 Creating post:', { content, postTo, filesCount: files?.length || 0 });
 
-    // FIXED VALIDATION - Allow post with ANY content type
+    // Validate content
     const hasContent = content && content.trim().length > 0;
     const hasFiles = files && files.length > 0;
     const hasMusic = music && music !== 'null' && music !== 'undefined';
     const hasStickers = stickers && stickers !== '[]' && stickers !== 'null';
     
     if (!hasContent && !hasFiles && !hasMusic && !hasStickers) {
-      console.log('❌ Validation failed: No content provided');
-      return res.status(400).json({ 
-        error: 'Post must have at least one of: text content, media files, music, or stickers'
-      });
+      return res.status(400).json({ error: 'Post must have content' });
     }
     
-    // Validate post destination
     if (!['profile', 'community'].includes(postTo)) {
-      console.log('❌ Invalid post destination:', postTo);
-      return res.status(400).json({ error: 'Invalid post destination. Must be "profile" or "community"' });
+      return res.status(400).json({ error: 'Invalid post destination' });
     }
     
-    // Parse and validate music
+    // Parse music
     let parsedMusic = null;
     if (hasMusic) {
       try {
         parsedMusic = JSON.parse(music);
-        if (parsedMusic && parsedMusic.id && parsedMusic.name && parsedMusic.url) {
-          console.log('✅ Valid music selected:', parsedMusic.name);
-        } else {
-          parsedMusic = null;
-        }
+        if (!parsedMusic?.id || !parsedMusic?.name) parsedMusic = null;
       } catch (e) {
-        console.warn('⚠️ Invalid music format');
         parsedMusic = null;
       }
     }
     
-    // Parse and validate stickers
+    // Parse stickers
     let parsedStickers = [];
     if (hasStickers) {
       try {
         parsedStickers = JSON.parse(stickers);
-        if (Array.isArray(parsedStickers)) {
-          parsedStickers = parsedStickers.slice(0, 5);
-          console.log(`✅ Valid stickers: ${parsedStickers.length}`);
-        } else {
-          parsedStickers = [];
-        }
+        if (!Array.isArray(parsedStickers)) parsedStickers = [];
+        parsedStickers = parsedStickers.slice(0, 5);
       } catch (e) {
-        console.warn('⚠️ Invalid stickers format');
         parsedStickers = [];
       }
     }
-    
-    // Validate image filter
-    const validFilter = ['normal', 'vintage', 'clarendon', 'moon', 'lark', 'reyes'].includes(imageFilter) ? imageFilter : 'normal';
 
     // Process media files
     const mediaUrls = [];
     if (hasFiles) {
-      console.log(`📁 Processing ${files.length} files...`);
-      
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
+      for (const file of files) {
         try {
           const fileExt = file.originalname.split('.').pop();
           const fileName = `${req.user.id}/${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
           
-          const { data: uploadData, error: uploadError } = await supabase.storage
+          const { error: uploadError } = await supabase.storage
             .from('posts-media')
             .upload(fileName, file.buffer, { 
-              contentType: file.mimetype, 
-              cacheControl: '3600',
-              upsert: false
+              contentType: file.mimetype,
+              cacheControl: '3600'
             });
             
-          if (uploadError) {
-            console.error(`❌ Upload error for file ${i + 1}:`, uploadError);
-            continue;
+          if (!uploadError) {
+            const { data: urlData } = supabase.storage.from('posts-media').getPublicUrl(fileName);
+            const mediaType = file.mimetype.startsWith('image') ? 'image' : 
+                             file.mimetype.startsWith('video') ? 'video' : 'audio';
+            mediaUrls.push({ url: urlData.publicUrl, type: mediaType });
           }
-          
-          const { data: urlData } = supabase.storage.from('posts-media').getPublicUrl(fileName);
-          
-          const mediaType = file.mimetype.startsWith('image') ? 'image' : 
-                           file.mimetype.startsWith('video') ? 'video' : 'audio';
-                           
-          mediaUrls.push({ 
-            url: urlData.publicUrl, 
-            type: mediaType
-          });
-          
-          console.log(`✅ File ${i + 1} uploaded successfully`);
-        } catch (fileError) {
-          console.error(`❌ File ${i + 1} processing error:`, fileError);
+        } catch (err) {
+          console.error('File upload error:', err);
         }
       }
     }
     
-    // Create post data WITH image_filter column
+    // Create post WITHOUT image_filter
     const postData = { 
       user_id: req.user.id, 
       content: content?.trim() || '', 
@@ -559,11 +520,8 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       college: req.user.college || null, 
       posted_to: postTo,
       music: parsedMusic,
-      stickers: parsedStickers,
-      image_filter: validFilter
+      stickers: parsedStickers
     };
-    
-    console.log('💾 Saving post to database...');
 
     const { data: newPost, error: postError } = await supabase
       .from('posts')
@@ -573,18 +531,18 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
     
     if (postError) {
       console.error('❌ Database error:', postError);
-      throw new Error(`Failed to create post: ${postError.message}`);
+      return res.status(500).json({ error: 'Failed to create post: ' + postError.message });
     }
     
-    console.log('✅ Post created successfully with ID:', newPost.id);
+    console.log('✅ Post created:', newPost.id);
 
-    // Handle badges
+    // Update badges
     const currentBadges = req.user.badges || [];
     const { data: userPosts } = await supabase.from('posts').select('id').eq('user_id', req.user.id);
     const postCount = userPosts?.length || 0;
     
     let badgeUpdated = false;
-    let newBadges = [];
+    const newBadges = [];
     
     if (postCount === 1 && !currentBadges.includes('🎨 First Post')) {
       currentBadges.push('🎨 First Post');
@@ -595,12 +553,6 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
     if (postCount === 10 && !currentBadges.includes('⭐ Content Creator')) {
       currentBadges.push('⭐ Content Creator');
       newBadges.push('⭐ Content Creator');
-      badgeUpdated = true;
-    }
-    
-    if (parsedMusic && !currentBadges.includes('🎵 Music Lover')) {
-      currentBadges.push('🎵 Music Lover');
-      newBadges.push('🎵 Music Lover');
       badgeUpdated = true;
     }
     
@@ -615,26 +567,18 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       io.emit('new_profile_post', { userId: req.user.id, post: newPost });
     }
     
-    const successMessage = postTo === 'community' 
-      ? '✅ Your post has been shared to the community feed!' 
-      : '✅ Your post has been added to your profile!';
-    
-    console.log('🎉 Post creation completed successfully!');
-    
     res.status(201).json({ 
       success: true, 
       post: newPost, 
-      message: successMessage, 
+      message: postTo === 'community' ? 'Posted to community!' : 'Posted to profile!',
       badges: currentBadges,
-      badgeUpdated: badgeUpdated,
-      newBadges: newBadges
+      badgeUpdated,
+      newBadges
     });
     
   } catch (error) {
-    console.error('❌ Create post error:', error);
-    res.status(500).json({ 
-      error: error.message || 'Failed to create post'
-    });
+    console.error('❌ Post creation error:', error);
+    res.status(500).json({ error: error.message || 'Failed to create post' });
   }
 });
 
@@ -681,12 +625,11 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
       throw new Error('Failed to fetch posts');
     }
     
-    // Ensure music, stickers, and image_filter are properly formatted
+    // Format posts
     const formattedPosts = (posts || []).map(post => ({
       ...post,
       music: post.music || null,
-      stickers: post.stickers || [],
-      image_filter: post.image_filter || 'normal'
+      stickers: post.stickers || []
     }));
     
     console.log(`✅ Fetched ${formattedPosts.length} posts`);
@@ -728,7 +671,8 @@ app.get('/api/posts/community', authenticateToken, async (req, res) => {
     const formattedPosts = (posts || []).map(post => ({
       ...post,
       music: post.music || null,
-      stickers: post.stickers || []
+      stickers: post.stickers || [],
+      image_filter: post.image_filter || 'normal'
     }));
     
     console.log(`✅ Fetched ${formattedPosts.length} community posts`);
@@ -763,7 +707,8 @@ app.get('/api/posts/profile', authenticateToken, async (req, res) => {
     const formattedPosts = (posts || []).map(post => ({
       ...post,
       music: post.music || null,
-      stickers: post.stickers || []
+      stickers: post.stickers || [],
+      image_filter: post.image_filter || 'normal'
     }));
     
     console.log(`✅ Fetched ${formattedPosts.length} profile posts`);
