@@ -1098,4 +1098,6 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
     res.json({ success: true, posts: formattedPosts });
   } catch (error) {
     console.error('❌ Get posts error:', error);
-    res.json({ success: true,
+    res.json({ success: true, posts: [] });
+  }
+});
