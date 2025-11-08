@@ -38,59 +38,15 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Enhanced available songs with actual working URLs
 const availableSongs = [
-  { 
-    id: 1, 
-    name: 'Chill Vibes', 
-    artist: 'LoFi Beats',
-    duration: '2:30',
-    emoji: '🎧',
-    url: 'https://assets.mixkit.co/music/preview/mixkit-chill-vibes-239.mp3'
-  },
-  { 
-    id: 2, 
-    name: 'Upbeat Energy', 
-    artist: 'Electronic Pop',
-    duration: '3:15',
-    emoji: '⚡',
-    url: 'https://assets.mixkit.co/music/preview/mixkit-upbeat-energy-225.mp3'
-  },
-  { 
-    id: 3, 
-    name: 'Dreamy Piano', 
-    artist: 'Classical',
-    duration: '2:45',
-    emoji: '🎹',
-    url: 'https://assets.mixkit.co/music/preview/mixkit-dreamy-piano-1171.mp3'
-  },
-  { 
-    id: 4, 
-    name: 'Summer Vibes', 
-    artist: 'Tropical',
-    duration: '3:30',
-    emoji: '🏖️',
-    url: 'https://assets.mixkit.co/music/preview/mixkit-summer-vibes-129.mp3'
-  },
-  { 
-    id: 5, 
-    name: 'Happy Day', 
-    artist: 'Pop Rock',
-    duration: '2:50',
-    emoji: '😊',
-    url: 'https://assets.mixkit.co/music/preview/mixkit-happy-day-583.mp3'
-  },
-  { 
-    id: 6, 
-    name: 'Relaxing Guitar', 
-    artist: 'Acoustic',
-    duration: '3:10',
-    emoji: '🎸',
-    url: 'https://assets.mixkit.co/music/preview/mixkit-relaxing-guitar-243.mp3'
-  }
+  { id: 1, name: 'Chill Vibes', artist: 'LoFi Beats', duration: '2:30', emoji: '🎧', url: 'https://assets.mixkit.co/music/preview/mixkit-chill-vibes-239.mp3' },
+  { id: 2, name: 'Upbeat Energy', artist: 'Electronic Pop', duration: '3:15', emoji: '⚡', url: 'https://assets.mixkit.co/music/preview/mixkit-upbeat-energy-225.mp3' },
+  { id: 3, name: 'Dreamy Piano', artist: 'Classical', duration: '2:45', emoji: '🎹', url: 'https://assets.mixkit.co/music/preview/mixkit-dreamy-piano-1171.mp3' },
+  { id: 4, name: 'Summer Vibes', artist: 'Tropical', duration: '3:30', emoji: '🏖️', url: 'https://assets.mixkit.co/music/preview/mixkit-summer-vibes-129.mp3' },
+  { id: 5, name: 'Happy Day', artist: 'Pop Rock', duration: '2:50', emoji: '😊', url: 'https://assets.mixkit.co/music/preview/mixkit-happy-day-583.mp3' },
+  { id: 6, name: 'Relaxing Guitar', artist: 'Acoustic', duration: '3:10', emoji: '🎸', url: 'https://assets.mixkit.co/music/preview/mixkit-relaxing-guitar-243.mp3' }
 ];
 
-// Enhanced available stickers with emoji support
 const availableStickers = [
   { id: 'sticker1', name: 'Happy', emoji: '😊', category: 'emotions' },
   { id: 'sticker2', name: 'Laughing', emoji: '😂', category: 'emotions' },
@@ -167,114 +123,48 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// Get available songs, stickers, and filters - ENHANCED
 app.get('/api/post-assets', (req, res) => {
-  res.json({
-    success: true,
-    songs: availableSongs,
-    stickers: availableStickers
-  });
+  res.json({ success: true, songs: availableSongs, stickers: availableStickers });
 });
 
-// Get music library
 app.get('/api/music-library', (req, res) => {
-  res.json({
-    success: true,
-    music: availableSongs
-  });
+  res.json({ success: true, music: availableSongs });
 });
 
-// Get sticker library
 app.get('/api/sticker-library', (req, res) => {
-  res.json({
-    success: true,
-    stickers: availableStickers
-  });
+  res.json({ success: true, stickers: availableStickers });
 });
 
-// ==================== USER SEARCH ENDPOINT ====================
 app.get('/api/search/users', authenticateToken, async (req, res) => {
   try {
     const { query } = req.query;
-    
     if (!query || query.trim().length < 2) {
       return res.json({ success: true, users: [] });
     }
-    
     const searchTerm = query.trim().toLowerCase();
-    console.log('🔍 Searching users with query:', searchTerm);
-    
-    const { data: allUsers, error } = await supabase
-      .from('users')
-      .select('id, username, email, registration_number, college, profile_pic, bio')
-      .limit(100);
-    
-    if (error) {
-      console.error('❌ Search error:', error);
-      throw error;
-    }
-    
+    const { data: allUsers, error } = await supabase.from('users').select('id, username, email, registration_number, college, profile_pic, bio').limit(100);
+    if (error) throw error;
     const matchedUsers = (allUsers || []).filter(user => {
       const usernameMatch = user.username?.toLowerCase().includes(searchTerm);
       const emailMatch = user.email?.toLowerCase().includes(searchTerm);
       const regMatch = user.registration_number?.toLowerCase().includes(searchTerm);
-      
       if (user.id === req.user.id) return false;
-      
       return usernameMatch || emailMatch || regMatch;
     });
-    
-    const limitedResults = matchedUsers.slice(0, 20);
-    
-    console.log(`✅ Found ${limitedResults.length} users matching "${searchTerm}"`);
-    
-    res.json({ 
-      success: true, 
-      users: limitedResults 
-    });
+    res.json({ success: true, users: matchedUsers.slice(0, 20) });
   } catch (error) {
     console.error('❌ User search error:', error);
-    res.status(500).json({ 
-      error: 'Search failed',
-      success: false,
-      users: []
-    });
+    res.status(500).json({ error: 'Search failed', success: false, users: [] });
   }
 });
 
-// ==================== GET USER PROFILE BY ID ====================
 app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
   try {
     const { userId } = req.params;
-    
-    console.log('👤 Fetching profile for user:', userId);
-    
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined, created_at')
-      .eq('id', userId)
-      .single();
-    
-    if (error || !user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    
-    const { data: posts } = await supabase
-      .from('posts')
-      .select('id')
-      .eq('user_id', userId);
-    
-    const postCount = posts?.length || 0;
-    
-    console.log(`✅ Profile fetched for ${user.username}`);
-    
-    res.json({
-      success: true,
-      user: {
-        ...user,
-        postCount
-      }
-    });
+    const { data: user, error } = await supabase.from('users').select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined, created_at').eq('id', userId).single();
+    if (error || !user) return res.status(404).json({ error: 'User not found' });
+    const { data: posts } = await supabase.from('posts').select('id').eq('user_id', userId);
+    res.json({ success: true, user: { ...user, postCount: posts?.length || 0 } });
   } catch (error) {
     console.error('❌ Get profile error:', error);
     res.status(500).json({ error: 'Failed to fetch profile' });
@@ -289,25 +179,15 @@ app.post('/api/register', async (req, res) => {
     }
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) return res.status(400).json({ error: 'Invalid email format' });
-    
     const { data: existingUser } = await supabase.from('users').select('email, registration_number').or(`email.eq.${email},registration_number.eq.${registrationNumber}`).maybeSingle();
     if (existingUser) {
       if (existingUser.email === email) return res.status(400).json({ error: 'Email already registered' });
       if (existingUser.registration_number === registrationNumber) return res.status(400).json({ error: 'Registration number already registered' });
     }
-    
     const passwordHash = await bcrypt.hash(password, 10);
-    const { data: newUser, error } = await supabase.from('users').insert([{ 
-      username, 
-      email, 
-      password_hash: passwordHash,
-      registration_number: registrationNumber 
-    }]).select().single();
-    
+    const { data: newUser, error } = await supabase.from('users').insert([{ username, email, password_hash: passwordHash, registration_number: registrationNumber }]).select().single();
     if (error) throw new Error('Failed to create account');
-    
     sendEmail(email, '🎉 Welcome to VibeXpert!', `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;"><h1 style="color: #4F46E5;">Welcome to VibeXpert, ${username}! 🎉</h1><p style="font-size: 16px; color: #374151;">Congratulations on creating your account!</p><p style="font-size: 16px; color: #374151;">Ready to vibe? Let's go! 🚀</p></div>`).catch(err => console.error('Email send failed:', err));
-    
     res.status(201).json({ success: true, message: 'Account created successfully! Please log in.', userId: newUser.id });
   } catch (error) {
     console.error('Registration error:', error);
@@ -324,494 +204,7 @@ app.post('/api/login', async (req, res) => {
     const validPassword = await bcrypt.compare(password, user.password_hash);
     if (!validPassword) return res.status(401).json({ error: 'Invalid email or password' });
     const token = jwt.sign({ userId: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '30d' });
-    res.json({ success: true, posts: [] });
-  }
-});
-
-// Get profile posts only
-app.get('/api/posts/profile', authenticateToken, async (req, res) => {
-  try {
-    const { limit = 20, offset = 0 } = req.query;
-    
-    console.log('📨 Fetching profile posts for:', req.user.id);
-    
-    const { data: posts, error } = await supabase
-      .from('posts')
-      .select(`*, users (id, username, profile_pic, college, registration_number)`)
-      .eq('user_id', req.user.id)
-      .eq('posted_to', 'profile')
-      .order('created_at', { ascending: false })
-      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
-    
-    if (error) {
-      console.error('❌ Database error:', error);
-      throw error;
-    }
-    
-    const formattedPosts = (posts || []).map(post => ({
-      ...post,
-      music: post.music || null,
-      stickers: post.stickers || []
-    }));
-    
-    console.log(`✅ Fetched ${formattedPosts.length} profile posts`);
-    
-    res.json({ success: true, posts: formattedPosts });
-  } catch (error) {
-    console.error('❌ Get profile posts error:', error);
-    res.status(500).json({ error: 'Failed to fetch profile posts' });
-  }
-});
-
-// Get community posts only
-app.get('/api/posts/community', authenticateToken, async (req, res) => {
-  try {
-    if (!req.user.community_joined || !req.user.college) {
-      return res.status(403).json({ 
-        error: 'Please join a college community first to view community posts',
-        needsJoinCommunity: true 
-      });
-    }
-    
-    const { limit = 20, offset = 0 } = req.query;
-    
-    console.log('📨 Fetching community posts for:', req.user.college);
-    
-    const { data: posts, error } = await supabase
-      .from('posts')
-      .select(`*, users (id, username, profile_pic, college, registration_number)`)
-      .eq('college', req.user.college)
-      .eq('posted_to', 'community')
-      .order('created_at', { ascending: false })
-      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
-    
-    if (error) {
-      console.error('❌ Database error:', error);
-      throw error;
-    }
-    
-    const formattedPosts = (posts || []).map(post => ({
-      ...post,
-      music: post.music || null,
-      stickers: post.stickers || []
-    }));
-    
-    console.log(`✅ Fetched ${formattedPosts.length} community posts`);
-    
-    res.json({ success: true, posts: formattedPosts });
-  } catch (error) {
-    console.error('❌ Get community posts error:', error);
-    res.status(500).json({ error: 'Failed to fetch community posts' });
-  }
-});
-
-app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    console.log('🗑️ Deleting post:', id);
-    
-    const { data: post } = await supabase.from('posts').select('user_id, media, posted_to, college').eq('id', id).single();
-    if (!post) return res.status(404).json({ error: 'Post not found' });
-    if (post.user_id !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
-    
-    if (post.media && post.media.length > 0) {
-      for (const media of post.media) {
-        try {
-          const urlParts = media.url.split('/');
-          const fileNameWithUUID = urlParts.pop();
-          const filePath = `${req.user.id}/${fileNameWithUUID}`;
-          await supabase.storage.from('posts-media').remove([filePath]);
-          console.log('✅ Deleted media file:', filePath);
-        } catch (mediaError) {
-          console.warn('⚠️ Could not delete media file:', mediaError.message);
-        }
-      }
-    }
-    
-    await supabase.from('posts').delete().eq('id', id);
-    
-    if (post.posted_to === 'community' && post.college) {
-      io.to(post.college).emit('post_deleted', { id });
-    } else {
-      io.emit('profile_post_deleted', { userId: req.user.id, postId: id });
-    }
-    
-    console.log('✅ Post deleted successfully');
-    res.json({ success: true, message: 'Post deleted successfully' });
-  } catch (error) {
-    console.error('❌ Delete post error:', error);
-    res.status(500).json({ error: 'Failed to delete post' });
-  }
-});
-
-app.post('/api/posts/:id/react', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { emoji } = req.body;
-    
-    if (!emoji) return res.status(400).json({ error: 'Emoji required' });
-    
-    const { data: existing } = await supabase.from('post_reactions')
-      .select('*')
-      .eq('post_id', id)
-      .eq('user_id', req.user.id)
-      .eq('emoji', emoji)
-      .maybeSingle();
-    
-    if (existing) {
-      await supabase.from('post_reactions').delete().eq('id', existing.id);
-      const { data: post } = await supabase.from('posts').select('posted_to, college, user_id').eq('id', id).single();
-      if (post) {
-        io.to(post.college || 'global').emit('post_reaction_updated', { postId: id, userId: req.user.id, emoji, action: 'removed' });
-      }
-      return res.json({ success: true, action: 'removed' });
-    }
-    
-    const { data: reaction, error } = await supabase.from('post_reactions').insert([{
-      post_id: id,
-      user_id: req.user.id,
-      emoji: emoji
-    }]).select().single();
-    
-    if (error) throw error;
-    
-    const { data: post } = await supabase.from('posts').select('posted_to, college, user_id').eq('id', id).single();
-    if (post) {
-      io.to(post.college || 'global').emit('post_reaction_updated', { postId: id, userId: req.user.id, emoji, action: 'added' });
-    }
-    
-    res.json({ success: true, action: 'added', reaction });
-  } catch (error) {
-    console.error('❌ React to post error:', error);
-    res.status(500).json({ error: 'Failed to react' });
-  }
-});
-
-app.get('/api/community/messages', authenticateToken, async (req, res) => {
-  try {
-    if (!req.user.community_joined || !req.user.college) {
-      return res.status(403).json({ error: 'Join a college community first' });
-    }
-    const { limit = 50 } = req.query;
-    const { data: messages, error } = await supabase.from('messages')
-      .select(`*, users (id, username, profile_pic), message_reactions (*)`)
-      .eq('college', req.user.college)
-      .order('timestamp', { ascending: false })
-      .limit(limit);
-    if (error) throw error;
-    res.json({ success: true, messages: messages || [] });
-  } catch (error) {
-    console.error('❌ Get messages error:', error);
-    res.status(500).json({ error: 'Failed to fetch messages' });
-  }
-});
-
-app.post('/api/community/messages', authenticateToken, async (req, res) => {
-  try {
-    const { content } = req.body;
-    if (!content || !content.trim()) return res.status(400).json({ error: 'Message content required' });
-    if (!req.user.community_joined || !req.user.college) {
-      return res.status(403).json({ error: 'Join a college community first' });
-    }
-    const { data: newMessage, error } = await supabase.from('messages').insert([{ 
-      sender_id: req.user.id, 
-      content: content.trim(),
-      college: req.user.college 
-    }]).select(`*, users (id, username, profile_pic)`).single();
-    
-    if (error) throw error;
-    
-    io.to(req.user.college).emit('new_message', newMessage);
-    res.json({ success: true, message: newMessage });
-  } catch (error) {
-    console.error('❌ Send message error:', error);
-    res.status(500).json({ error: 'Failed to send message' });
-  }
-});
-
-app.patch('/api/community/messages/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { content } = req.body;
-    
-    if (!content || !content.trim()) {
-      return res.status(400).json({ error: 'Message content required' });
-    }
-    
-    const { data: message } = await supabase.from('messages').select('timestamp, college, sender_id').eq('id', id).single();
-    if (!message) return res.status(404).json({ error: 'Message not found' });
-    if (message.sender_id !== req.user.id) return res.status(403).json({ error: 'Not authorized to edit this message' });
-    
-    const messageTime = new Date(message.timestamp);
-    const now = new Date();
-    const diffMinutes = (now - messageTime) / 1000 / 60;
-    
-    if (diffMinutes > 2) {
-      return res.status(403).json({ error: 'Can only edit message within 2 minutes of sending' });
-    }
-    
-    const { data: updatedMessage, error: updateError } = await supabase.from('messages')
-      .update({ content: content.trim(), is_edited: true })
-      .eq('id', id)
-      .select(`*, users (id, username, profile_pic)`)
-      .single();
-    
-    if (updateError) throw updateError;
-    
-    io.to(message.college).emit('message_updated', updatedMessage);
-    res.json({ success: true, message: updatedMessage });
-  } catch (error) {
-    console.error('❌ Edit message error:', error);
-    res.status(500).json({ error: 'Failed to edit message' });
-  }
-});
-
-app.delete('/api/community/messages/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { data: message } = await supabase.from('messages').select('college, sender_id').eq('id', id).maybeSingle();
-    if (!message) return res.status(404).json({ error: 'Message not found' });
-    if (message.sender_id !== req.user.id) return res.status(403).json({ error: 'Not authorized to delete this message' });
-    
-    await supabase.from('message_reactions').delete().eq('message_id', id);
-    await supabase.from('messages').delete().eq('id', id);
-    
-    io.to(message.college).emit('message_deleted', { id, college: message.college });
-    res.json({ success: true, message: 'Message deleted' });
-  } catch (error) {
-    console.error('❌ Delete message error:', error);
-    res.status(500).json({ error: 'Failed to delete message' });
-  }
-});
-
-app.post('/api/community/messages/:id/react', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { emoji } = req.body;
-    if (!emoji) return res.status(400).json({ error: 'Emoji required' });
-    
-    const { data: message } = await supabase.from('messages').select('college').eq('id', id).maybeSingle();
-    if (!message) return res.status(404).json({ error: 'Message not found' });
-    
-    const { data: existing } = await supabase.from('message_reactions')
-      .select('*')
-      .eq('message_id', id)
-      .eq('user_id', req.user.id)
-      .eq('emoji', emoji)
-      .maybeSingle();
-    
-    let action = 'added';
-    let reaction = null;
-    
-    if (existing) {
-      await supabase.from('message_reactions').delete().eq('id', existing.id);
-      action = 'removed';
-    } else {
-      const { data: newReaction, error } = await supabase.from('message_reactions').insert([{
-        message_id: id,
-        user_id: req.user.id,
-        emoji: emoji
-      }]).select().single();
-      if (error) throw error;
-      reaction = newReaction;
-    }
-    
-    io.to(message.college).emit('message_reaction_updated', {
-      messageId: id,
-      userId: req.user.id,
-      emoji,
-      action
-    });
-    
-    res.json({ success: true, action, reaction });
-  } catch (error) {
-    console.error('❌ React to message error:', error);
-    res.status(500).json({ error: 'Failed to react to message' });
-  }
-});
-
-app.post('/api/community/messages/:id/view', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { data: existing } = await supabase.from('message_views')
-      .select('*')
-      .eq('message_id', id)
-      .eq('user_id', req.user.id)
-      .maybeSingle();
-    
-    if (!existing) {
-      await supabase.from('message_views').insert([{
-        message_id: id,
-        user_id: req.user.id
-      }]);
-    }
-    
-    res.json({ success: true });
-  } catch (error) {
-    console.error('❌ Mark view error:', error);
-    res.status(500).json({ error: 'Failed to mark as viewed' });
-  }
-});
-
-app.get('/api/community/messages/:id/views', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { data: views, error } = await supabase.from('message_views')
-      .select(`*, users (id, username, profile_pic)`)
-      .eq('message_id', id);
-    
-    if (error) throw error;
-    
-    res.json({ success: true, views: views || [], count: views?.length || 0 });
-  } catch (error) {
-    console.error('❌ Get views error:', error);
-    res.status(500).json({ error: 'Failed to fetch views' });
-  }
-});
-
-app.get('/api/profile', authenticateToken, async (req, res) => {
-  try {
-    const { data: user } = await supabase.from('users')
-      .select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined, created_at')
-      .eq('id', req.user.id)
-      .single();
-    
-    const { data: posts } = await supabase.from('posts').select('id').eq('user_id', req.user.id);
-    const postCount = posts?.length || 0;
-    
-    res.json({
-      success: true,
-      user: {
-        ...user,
-        postCount
-      }
-    });
-  } catch (error) {
-    console.error('❌ Get profile error:', error);
-    res.status(500).json({ error: 'Failed to fetch profile' });
-  }
-});
-
-app.patch('/api/profile', authenticateToken, upload.single('profilePic'), async (req, res) => {
-  try {
-    const updates = {};
-    
-    if (req.body.username) {
-      updates.username = req.body.username.trim();
-    }
-    
-    if (req.body.bio !== undefined) {
-      updates.bio = req.body.bio.trim();
-    }
-    
-    if (req.file) {
-      const fileExt = req.file.originalname.split('.').pop();
-      const fileName = `${req.user.id}/profile-${Date.now()}.${fileExt}`;
-      
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('profile-pics')
-        .upload(fileName, req.file.buffer, { 
-          contentType: req.file.mimetype,
-          cacheControl: '3600',
-          upsert: true
-        });
-      
-      if (uploadError) throw uploadError;
-      
-      const { data: urlData } = supabase.storage.from('profile-pics').getPublicUrl(fileName);
-      updates.profile_pic = urlData.publicUrl;
-    }
-    
-    if (Object.keys(updates).length === 0) {
-      return res.status(400).json({ error: 'No updates provided' });
-    }
-    
-    const { data: updatedUser, error } = await supabase.from('users')
-      .update(updates)
-      .eq('id', req.user.id)
-      .select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined')
-      .single();
-    
-    if (error) throw error;
-    
-    res.json({ success: true, user: updatedUser });
-  } catch (error) {
-    console.error('❌ Update profile error:', error);
-    res.status(500).json({ error: 'Failed to update profile' });
-  }
-});
-
-app.post('/api/feedback', authenticateToken, async (req, res) => {
-  try {
-    const { subject, message } = req.body;
-    if (!subject || !message) return res.status(400).json({ error: 'Subject and message required' });
-    
-    const { error } = await supabase.from('feedback').insert([{
-      user_id: req.user.id,
-      subject: subject.trim(),
-      message: message.trim()
-    }]);
-    
-    if (error) throw error;
-    
-    res.json({ success: true, message: 'Feedback submitted successfully' });
-  } catch (error) {
-    console.error('❌ Submit feedback error:', error);
-    res.status(500).json({ error: 'Failed to submit feedback' });
-  }
-});
-
-io.on('connection', (socket) => {
-  console.log('⚡ User connected:', socket.id);
-  
-  socket.on('join_community', (collegeName) => {
-    if (collegeName && typeof collegeName === 'string') {
-      Object.keys(socket.rooms).forEach(room => {
-        if (room !== socket.id) socket.leave(room);
-      });
-      
-      socket.join(collegeName);
-      socket.data.college = collegeName;
-      console.log(`🧑‍🤝‍🧑 User ${socket.id} joined community: ${collegeName}`);
-      
-      socket.emit('community_joined', collegeName);
-    }
-  });
-
-  socket.on('typing', (data) => {
-    if (data.collegeName && data.username) {
-      socket.to(data.collegeName).emit('user_typing', { username: data.username });
-    }
-  });
-
-  socket.on('stop_typing', (data) => {
-    if (data.collegeName && data.username) {
-      socket.to(data.collegeName).emit('user_stop_typing', { username: data.username });
-    }
-  });
-
-  socket.on('disconnect', () => {
-    console.log('👋 User disconnected:', socket.id);
-    if (socket.data.college) {
-      console.log(`- User left community: ${socket.data.college}`);
-    }
-  });
-});
-
-const PORT = process.env.PORT || 8080;
-server.listen(PORT, () => {
-  console.log(`🚀 VibeXpert Backend running on port ${PORT}`);
-}); token, user: { 
-      id: user.id, 
-      username: user.username, 
-      email: user.email, 
-      college: user.college, 
-      communityJoined: user.community_joined, 
-      profilePic: user.profile_pic,
-      registrationNumber: user.registration_number,
-      badges: user.badges || [],
-      bio: user.bio || ''
-    } });
+    res.json({ success: true, token, user: { id: user.id, username: user.username, email: user.email, college: user.college, communityJoined: user.community_joined, profilePic: user.profile_pic, registrationNumber: user.registration_number, badges: user.badges || [], bio: user.bio || '' } });
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ error: 'Login failed' });
@@ -826,7 +219,6 @@ app.post('/api/forgot-password', async (req, res) => {
     if (error || !user) return res.json({ success: true, message: 'If this email exists, you will receive a reset code.' });
     const code = generateCode();
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
-    console.log(`🔑 Reset code for ${email}: ${code}`);
     const { error: codeError } = await supabase.from('codes').insert([{ user_id: user.id, code, type: 'reset', expires_at: expiresAt.toISOString() }]);
     if (codeError) throw new Error('Failed to generate reset code');
     sendEmail(email, '🔐 Password Reset Code - VibeXpert', `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;"><h1 style="color: #4F46E5;">Password Reset Request</h1><p>Hi ${user.username},</p><div style="background: #F3F4F6; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;"><h2 style="color: #1F2937; font-size: 32px; letter-spacing: 4px; margin: 0;">${code}</h2></div><p style="font-size: 14px; color: #6B7280;">This code expires in 15 minutes.</p></div>`).catch(err => console.error('Email failed:', err));
@@ -862,7 +254,6 @@ app.post('/api/college/request-verification', authenticateToken, async (req, res
     if (req.user.college) return res.status(400).json({ error: 'You are already connected to a college community' });
     const code = generateCode();
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
-    console.log(`🎓 College verification code for ${req.user.email}: ${code}`);
     const { error: codeError } = await supabase.from('codes').insert([{ user_id: req.user.id, code, type: 'college', meta: { collegeName, collegeEmail }, expires_at: expiresAt.toISOString() }]);
     if (codeError) throw new Error('Failed to generate verification code');
     sendEmail(collegeEmail, `🎓 College Verification Code - VibeXpert`, `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;"><h1 style="color: #4F46E5;">College Verification</h1><p>Hi ${req.user.username},</p><p>Here's your verification code to connect to <strong>${collegeName}</strong>:</p><div style="background: #F3F4F6; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;"><h2 style="color: #1F2937; font-size: 32px; letter-spacing: 4px; margin: 0;">${code}</h2></div><p style="font-size: 14px; color: #6B7280;">This code expires in 15 minutes.</p></div>`).catch(err => console.error('Email failed:', err));
@@ -893,15 +284,11 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
   }
 });
 
-// UPDATED POST CREATION - Check community membership before allowing community posts
 app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req, res) => {
   try {
     const { content = '', postTo = 'profile', music, stickers = '[]' } = req.body;
     const files = req.files;
     
-    console.log('📝 Creating post:', { content, postTo, filesCount: files?.length || 0, userId: req.user.id });
-
-    // Validate content
     const hasContent = content && content.trim().length > 0;
     const hasFiles = files && files.length > 0;
     const hasMusic = music && music !== 'null' && music !== 'undefined';
@@ -915,18 +302,12 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       return res.status(400).json({ error: 'Invalid post destination' });
     }
     
-    // CRITICAL: Check community membership if posting to community
     if (postTo === 'community') {
       if (!req.user.community_joined || !req.user.college) {
-        console.log('⚠️ User attempted community post without membership');
-        return res.status(403).json({ 
-          error: 'Please connect to your university first',
-          needsJoinCommunity: true
-        });
+        return res.status(403).json({ error: 'Please connect to your university first', needsJoinCommunity: true });
       }
     }
     
-    // Parse music
     let parsedMusic = null;
     if (hasMusic) {
       try {
@@ -937,7 +318,6 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       }
     }
     
-    // Parse stickers
     let parsedStickers = [];
     if (hasStickers) {
       try {
@@ -949,25 +329,16 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       }
     }
 
-    // Process media files
     const mediaUrls = [];
     if (hasFiles) {
       for (const file of files) {
         try {
           const fileExt = file.originalname.split('.').pop();
           const fileName = `${req.user.id}/${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
-          
-          const { error: uploadError } = await supabase.storage
-            .from('posts-media')
-            .upload(fileName, file.buffer, { 
-              contentType: file.mimetype,
-              cacheControl: '3600'
-            });
-            
+          const { error: uploadError } = await supabase.storage.from('posts-media').upload(fileName, file.buffer, { contentType: file.mimetype, cacheControl: '3600' });
           if (!uploadError) {
             const { data: urlData } = supabase.storage.from('posts-media').getPublicUrl(fileName);
-            const mediaType = file.mimetype.startsWith('image') ? 'image' : 
-                             file.mimetype.startsWith('video') ? 'video' : 'audio';
+            const mediaType = file.mimetype.startsWith('image') ? 'image' : file.mimetype.startsWith('video') ? 'video' : 'audio';
             mediaUrls.push({ url: urlData.publicUrl, type: mediaType });
           }
         } catch (err) {
@@ -976,31 +347,14 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       }
     }
     
-    // Create post
-    const postData = { 
-      user_id: req.user.id, 
-      content: content?.trim() || '', 
-      media: mediaUrls, 
-      college: req.user.college || null, 
-      posted_to: postTo,
-      music: parsedMusic,
-      stickers: parsedStickers
-    };
-
-    const { data: newPost, error: postError } = await supabase
-      .from('posts')
-      .insert([postData])
-      .select(`*, users (id, username, profile_pic, college, registration_number)`)
-      .single();
+    const postData = { user_id: req.user.id, content: content?.trim() || '', media: mediaUrls, college: req.user.college || null, posted_to: postTo, music: parsedMusic, stickers: parsedStickers };
+    const { data: newPost, error: postError } = await supabase.from('posts').insert([postData]).select(`*, users (id, username, profile_pic, college, registration_number)`).single();
     
     if (postError) {
       console.error('❌ Database error:', postError);
       return res.status(500).json({ error: 'Failed to create post: ' + postError.message });
     }
-    
-    console.log('✅ Post created:', newPost.id);
 
-    // Update badges
     const currentBadges = req.user.badges || [];
     const { data: userPosts } = await supabase.from('posts').select('id').eq('user_id', req.user.id);
     const postCount = userPosts?.length || 0;
@@ -1024,57 +378,29 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       await supabase.from('users').update({ badges: currentBadges }).eq('id', req.user.id);
     }
     
-    // Emit socket events
     if (postTo === 'community' && req.user.college) {
       io.to(req.user.college).emit('new_post', newPost);
     } else {
       io.emit('new_profile_post', { userId: req.user.id, post: newPost });
     }
     
-    res.status(201).json({ 
-      success: true, 
-      post: newPost, 
-      message: postTo === 'community' ? 'Posted to community!' : 'Posted to profile!',
-      badges: currentBadges,
-      badgeUpdated,
-      newBadges
-    });
-    
+    res.status(201).json({ success: true, post: newPost, message: postTo === 'community' ? 'Posted to community!' : 'Posted to profile!', badges: currentBadges, badgeUpdated, newBadges });
   } catch (error) {
     console.error('❌ Post creation error:', error);
     res.status(500).json({ error: error.message || 'Failed to create post' });
   }
 });
 
-// UPDATED: Get all posts (profile + community for authenticated user)
 app.get('/api/posts', authenticateToken, async (req, res) => {
   try {
     const { limit = 20, offset = 0 } = req.query;
     
-    console.log('📨 Fetching all posts for user:', req.user.id);
+    const { data: profilePosts, error: profileError } = await supabase.from('posts').select(`*, users (id, username, profile_pic, college, registration_number)`).eq('user_id', req.user.id).eq('posted_to', 'profile').order('created_at', { ascending: false });
+    if (profileError) console.error('❌ Profile posts error:', profileError);
     
-    // Get user's profile posts
-    const { data: profilePosts, error: profileError } = await supabase
-      .from('posts')
-      .select(`*, users (id, username, profile_pic, college, registration_number)`)
-      .eq('user_id', req.user.id)
-      .eq('posted_to', 'profile')
-      .order('created_at', { ascending: false });
-    
-    if (profileError) {
-      console.error('❌ Profile posts error:', profileError);
-    }
-    
-    // Get community posts if user is in a community
     let communityPosts = [];
     if (req.user.community_joined && req.user.college) {
-      const { data: commPosts, error: commError } = await supabase
-        .from('posts')
-        .select(`*, users (id, username, profile_pic, college, registration_number)`)
-        .eq('college', req.user.college)
-        .eq('posted_to', 'community')
-        .order('created_at', { ascending: false });
-      
+      const { data: commPosts, error: commError } = await supabase.from('posts').select(`*, users (id, username, profile_pic, college, registration_number)`).eq('college', req.user.college).eq('posted_to', 'community').order('created_at', { ascending: false });
       if (commError) {
         console.error('❌ Community posts error:', commError);
       } else {
@@ -1082,22 +408,286 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
       }
     }
     
-    // Combine and sort all posts
-    const allPosts = [...(profilePosts || []), ...communityPosts]
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-      .slice(parseInt(offset), parseInt(offset) + parseInt(limit));
-    
-    console.log(`✅ Fetched ${allPosts.length} total posts (${profilePosts?.length || 0} profile, ${communityPosts.length} community)`);
-    
-    const formattedPosts = allPosts.map(post => ({
-      ...post,
-      music: post.music || null,
-      stickers: post.stickers || []
-    }));
-    
+    const allPosts = [...(profilePosts || []), ...communityPosts].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(parseInt(offset), parseInt(offset) + parseInt(limit));
+    const formattedPosts = allPosts.map(post => ({ ...post, music: post.music || null, stickers: post.stickers || [] }));
     res.json({ success: true, posts: formattedPosts });
   } catch (error) {
     console.error('❌ Get posts error:', error);
     res.json({ success: true, posts: [] });
   }
+});
+
+app.get('/api/posts/profile', authenticateToken, async (req, res) => {
+  try {
+    const { limit = 20, offset = 0 } = req.query;
+    const { data: posts, error } = await supabase.from('posts').select(`*, users (id, username, profile_pic, college, registration_number)`).eq('user_id', req.user.id).eq('posted_to', 'profile').order('created_at', { ascending: false }).range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+    if (error) throw error;
+    const formattedPosts = (posts || []).map(post => ({ ...post, music: post.music || null, stickers: post.stickers || [] }));
+    res.json({ success: true, posts: formattedPosts });
+  } catch (error) {
+    console.error('❌ Get profile posts error:', error);
+    res.status(500).json({ error: 'Failed to fetch profile posts' });
+  }
+});
+
+app.get('/api/posts/community', authenticateToken, async (req, res) => {
+  try {
+    if (!req.user.community_joined || !req.user.college) {
+      return res.status(403).json({ error: 'Please join a college community first to view community posts', needsJoinCommunity: true });
+    }
+    const { limit = 20, offset = 0 } = req.query;
+    const { data: posts, error } = await supabase.from('posts').select(`*, users (id, username, profile_pic, college, registration_number)`).eq('college', req.user.college).eq('posted_to', 'community').order('created_at', { ascending: false }).range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+    if (error) throw error;
+    const formattedPosts = (posts || []).map(post => ({ ...post, music: post.music || null, stickers: post.stickers || [] }));
+    res.json({ success: true, posts: formattedPosts });
+  } catch (error) {
+    console.error('❌ Get community posts error:', error);
+    res.status(500).json({ error: 'Failed to fetch community posts' });
+  }
+});
+
+app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { data: post } = await supabase.from('posts').select('user_id, media, posted_to, college').eq('id', id).single();
+    if (!post) return res.status(404).json({ error: 'Post not found' });
+    if (post.user_id !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
+    if (post.media && post.media.length > 0) {
+      for (const media of post.media) {
+        try {
+          const urlParts = media.url.split('/');
+          const fileNameWithUUID = urlParts.pop();
+          const filePath = `${req.user.id}/${fileNameWithUUID}`;
+          await supabase.storage.from('posts-media').remove([filePath]);
+        } catch (mediaError) {
+          console.warn('⚠️ Could not delete media file:', mediaError.message);
+        }
+      }
+    }
+    await supabase.from('posts').delete().eq('id', id);
+    if (post.posted_to === 'community' && post.college) {
+      io.to(post.college).emit('post_deleted', { id });
+    } else {
+      io.emit('profile_post_deleted', { userId: req.user.id, postId: id });
+    }
+    res.json({ success: true, message: 'Post deleted successfully' });
+  } catch (error) {
+    console.error('❌ Delete post error:', error);
+    res.status(500).json({ error: 'Failed to delete post' });
+  }
+});
+
+app.get('/api/community/messages', authenticateToken, async (req, res) => {
+  try {
+    if (!req.user.community_joined || !req.user.college) {
+      return res.status(403).json({ error: 'Join a college community first' });
+    }
+    const { limit = 50 } = req.query;
+    const { data: messages, error } = await supabase.from('messages').select(`*, users (id, username, profile_pic), message_reactions (*)`).eq('college', req.user.college).order('timestamp', { ascending: false }).limit(limit);
+    if (error) throw error;
+    res.json({ success: true, messages: messages || [] });
+  } catch (error) {
+    console.error('❌ Get messages error:', error);
+    res.status(500).json({ error: 'Failed to fetch messages' });
+  }
+});
+
+app.post('/api/community/messages', authenticateToken, async (req, res) => {
+  try {
+    const { content } = req.body;
+    if (!content || !content.trim()) return res.status(400).json({ error: 'Message content required' });
+    if (!req.user.community_joined || !req.user.college) {
+      return res.status(403).json({ error: 'Join a college community first' });
+    }
+    const { data: newMessage, error } = await supabase.from('messages').insert([{ sender_id: req.user.id, content: content.trim(), college: req.user.college }]).select(`*, users (id, username, profile_pic)`).single();
+    if (error) throw error;
+    io.to(req.user.college).emit('new_message', newMessage);
+    res.json({ success: true, message: newMessage });
+  } catch (error) {
+    console.error('❌ Send message error:', error);
+    res.status(500).json({ error: 'Failed to send message' });
+  }
+});
+
+app.patch('/api/community/messages/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { content } = req.body;
+    if (!content || !content.trim()) {
+      return res.status(400).json({ error: 'Message content required' });
+    }
+    const { data: message } = await supabase.from('messages').select('timestamp, college, sender_id').eq('id', id).single();
+    if (!message) return res.status(404).json({ error: 'Message not found' });
+    if (message.sender_id !== req.user.id) return res.status(403).json({ error: 'Not authorized to edit this message' });
+    const messageTime = new Date(message.timestamp);
+    const now = new Date();
+    const diffMinutes = (now - messageTime) / 1000 / 60;
+    if (diffMinutes > 2) {
+      return res.status(403).json({ error: 'Can only edit message within 2 minutes of sending' });
+    }
+    const { data: updatedMessage, error: updateError } = await supabase.from('messages').update({ content: content.trim(), is_edited: true }).eq('id', id).select(`*, users (id, username, profile_pic)`).single();
+    if (updateError) throw updateError;
+    io.to(message.college).emit('message_updated', updatedMessage);
+    res.json({ success: true, message: updatedMessage });
+  } catch (error) {
+    console.error('❌ Edit message error:', error);
+    res.status(500).json({ error: 'Failed to edit message' });
+  }
+});
+
+app.delete('/api/community/messages/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { data: message } = await supabase.from('messages').select('college, sender_id').eq('id', id).maybeSingle();
+    if (!message) return res.status(404).json({ error: 'Message not found' });
+    if (message.sender_id !== req.user.id) return res.status(403).json({ error: 'Not authorized to delete this message' });
+    await supabase.from('message_reactions').delete().eq('message_id', id);
+    await supabase.from('messages').delete().eq('id', id);
+    io.to(message.college).emit('message_deleted', { id, college: message.college });
+    res.json({ success: true, message: 'Message deleted' });
+  } catch (error) {
+    console.error('❌ Delete message error:', error);
+    res.status(500).json({ error: 'Failed to delete message' });
+  }
+});
+
+app.post('/api/community/messages/:id/react', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { emoji } = req.body;
+    if (!emoji) return res.status(400).json({ error: 'Emoji required' });
+    const { data: message } = await supabase.from('messages').select('college').eq('id', id).maybeSingle();
+    if (!message) return res.status(404).json({ error: 'Message not found' });
+    const { data: existing } = await supabase.from('message_reactions').select('*').eq('message_id', id).eq('user_id', req.user.id).eq('emoji', emoji).maybeSingle();
+    let action = 'added';
+    let reaction = null;
+    if (existing) {
+      await supabase.from('message_reactions').delete().eq('id', existing.id);
+      action = 'removed';
+    } else {
+      const { data: newReaction, error } = await supabase.from('message_reactions').insert([{ message_id: id, user_id: req.user.id, emoji: emoji }]).select().single();
+      if (error) throw error;
+      reaction = newReaction;
+    }
+    io.to(message.college).emit('message_reaction_updated', { messageId: id, userId: req.user.id, emoji, action });
+    res.json({ success: true, action, reaction });
+  } catch (error) {
+    console.error('❌ React to message error:', error);
+    res.status(500).json({ error: 'Failed to react to message' });
+  }
+});
+
+app.post('/api/community/messages/:id/view', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { data: existing } = await supabase.from('message_views').select('*').eq('message_id', id).eq('user_id', req.user.id).maybeSingle();
+    if (!existing) {
+      await supabase.from('message_views').insert([{ message_id: id, user_id: req.user.id }]);
+    }
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Mark view error:', error);
+    res.status(500).json({ error: 'Failed to mark as viewed' });
+  }
+});
+
+app.get('/api/community/messages/:id/views', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { data: views, error } = await supabase.from('message_views').select(`*, users (id, username, profile_pic)`).eq('message_id', id);
+    if (error) throw error;
+    res.json({ success: true, views: views || [], count: views?.length || 0 });
+  } catch (error) {
+    console.error('❌ Get views error:', error);
+    res.status(500).json({ error: 'Failed to fetch views' });
+  }
+});
+
+app.get('/api/profile', authenticateToken, async (req, res) => {
+  try {
+    const { data: user } = await supabase.from('users').select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined, created_at').eq('id', req.user.id).single();
+    const { data: posts } = await supabase.from('posts').select('id').eq('user_id', req.user.id);
+    res.json({ success: true, user: { ...user, postCount: posts?.length || 0 } });
+  } catch (error) {
+    console.error('❌ Get profile error:', error);
+    res.status(500).json({ error: 'Failed to fetch profile' });
+  }
+});
+
+app.patch('/api/profile', authenticateToken, upload.single('profilePic'), async (req, res) => {
+  try {
+    const updates = {};
+    if (req.body.username) {
+      updates.username = req.body.username.trim();
+    }
+    if (req.body.bio !== undefined) {
+      updates.bio = req.body.bio.trim();
+    }
+    if (req.file) {
+      const fileExt = req.file.originalname.split('.').pop();
+      const fileName = `${req.user.id}/profile-${Date.now()}.${fileExt}`;
+      const { data: uploadData, error: uploadError } = await supabase.storage.from('profile-pics').upload(fileName, req.file.buffer, { contentType: req.file.mimetype, cacheControl: '3600', upsert: true });
+      if (uploadError) throw uploadError;
+      const { data: urlData } = supabase.storage.from('profile-pics').getPublicUrl(fileName);
+      updates.profile_pic = urlData.publicUrl;
+    }
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'No updates provided' });
+    }
+    const { data: updatedUser, error } = await supabase.from('users').update(updates).eq('id', req.user.id).select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined').single();
+    if (error) throw error;
+    res.json({ success: true, user: updatedUser });
+  } catch (error) {
+    console.error('❌ Update profile error:', error);
+    res.status(500).json({ error: 'Failed to update profile' });
+  }
+});
+
+app.post('/api/feedback', authenticateToken, async (req, res) => {
+  try {
+    const { subject, message } = req.body;
+    if (!subject || !message) return res.status(400).json({ error: 'Subject and message required' });
+    const { error } = await supabase.from('feedback').insert([{ user_id: req.user.id, subject: subject.trim(), message: message.trim() }]);
+    if (error) throw error;
+    res.json({ success: true, message: 'Feedback submitted successfully' });
+  } catch (error) {
+    console.error('❌ Submit feedback error:', error);
+    res.status(500).json({ error: 'Failed to submit feedback' });
+  }
+});
+
+io.on('connection', (socket) => {
+  console.log('⚡ User connected:', socket.id);
+  socket.on('join_community', (collegeName) => {
+    if (collegeName && typeof collegeName === 'string') {
+      Object.keys(socket.rooms).forEach(room => {
+        if (room !== socket.id) socket.leave(room);
+      });
+      socket.join(collegeName);
+      socket.data.college = collegeName;
+      console.log(`🧑‍🤝‍🧑 User ${socket.id} joined community: ${collegeName}`);
+      socket.emit('community_joined', collegeName);
+    }
+  });
+  socket.on('typing', (data) => {
+    if (data.collegeName && data.username) {
+      socket.to(data.collegeName).emit('user_typing', { username: data.username });
+    }
+  });
+  socket.on('stop_typing', (data) => {
+    if (data.collegeName && data.username) {
+      socket.to(data.collegeName).emit('user_stop_typing', { username: data.username });
+    }
+  });
+  socket.on('disconnect', () => {
+    console.log('👋 User disconnected:', socket.id);
+    if (socket.data.college) {
+      console.log(`- User left community: ${socket.data.college}`);
+    }
+  });
+});
+
+const PORT = process.env.PORT || 8080;
+server.listen(PORT, () => {
+  console.log(`🚀 VibeXpert Backend running on port ${PORT}`);
 });
