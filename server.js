@@ -446,6 +446,20 @@ app.get('/api/posts/community', authenticateToken, async (req, res) => {
   }
 });
 
+app.get('/api/posts/user/:userId', authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { limit = 20, offset = 0 } = req.query;
+    const { data: posts, error } = await supabase.from('posts').select(`*, users (id, username, profile_pic, college, registration_number)`).eq('user_id', userId).eq('posted_to', 'profile').order('created_at', { ascending: false }).range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+    if (error) throw error;
+    const formattedPosts = (posts || []).map(post => ({ ...post, music: post.music || null, stickers: post.stickers || [] }));
+    res.json({ success: true, posts: formattedPosts });
+  } catch (error) {
+    console.error('❌ Get user profile posts error:', error);
+    res.status(500).json({ error: 'Failed to fetch user profile posts' });
+  }
+});
+
 app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
