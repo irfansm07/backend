@@ -734,7 +734,8 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       message: postTo === 'community' ? 'Posted to community!' : 'Posted to profile!',
       badges: currentBadges,
       badgeUpdated,
-      newBadges
+      newBadges,
+      postCount: postCount // NEW: Send post count for celebration
     });
   } catch (error) {
     console.error('❌ Post creation error:', error);
