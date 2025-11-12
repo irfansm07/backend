@@ -1,4 +1,4 @@
-// VIBEXPERT BACKEND - COMPLETE UPDATED VERSION WITH MOBILE FIXES
+// VIBEXPERT BACKEND - COMPLETE WITH LIKES, COMMENTS, SHARES & VIEW TRACKING
 
 require('dotenv').config();
 const express = require('express');
@@ -25,7 +25,6 @@ const io = socketIO(server, {
   pingInterval: 25000
 });
 
-// FIXED: Enhanced CORS for mobile devices
 app.use(cors({
   origin: '*',
   credentials: true,
@@ -35,15 +34,12 @@ app.use(cors({
   maxAge: 86400
 }));
 
-// Explicit OPTIONS handling for mobile
 app.options('*', cors());
 
-// FIXED: Increased limits for mobile uploads
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
-// Request logging for debugging
 app.use((req, res, next) => {
   console.log(`📡 ${req.method} ${req.path} - ${req.get('user-agent')}`);
   next();
@@ -69,16 +65,7 @@ const availableStickers = [
   { id: 'sticker3', name: 'Heart', emoji: '❤️', category: 'love' },
   { id: 'sticker4', name: 'Fire', emoji: '🔥', category: 'trending' },
   { id: 'sticker5', name: 'Star', emoji: '⭐', category: 'achievement' },
-  { id: 'sticker6', name: 'Party', emoji: '🎉', category: 'celebration' },
-  { id: 'sticker7', name: 'Music', emoji: '🎵', category: 'music' },
-  { id: 'sticker8', name: 'Game', emoji: '🎮', category: 'hobbies' },
-  { id: 'sticker9', name: 'Food', emoji: '🍕', category: 'food' },
-  { id: 'sticker10', name: 'Study', emoji: '📚', category: 'academic' },
-  { id: 'sticker11', name: 'Cool', emoji: '😎', category: 'emotions' },
-  { id: 'sticker12', name: 'Love', emoji: '💕', category: 'love' },
-  { id: 'sticker13', name: 'Thumbs Up', emoji: '👍', category: 'reactions' },
-  { id: 'sticker14', name: 'Clap', emoji: '👏', category: 'reactions' },
-  { id: 'sticker15', name: 'Rocket', emoji: '🚀', category: 'excitement' }
+  { id: 'sticker6', name: 'Party', emoji: '🎉', category: 'celebration' }
 ];
 
 const sendEmail = async (to, subject, html) => {
@@ -154,7 +141,7 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// Health check endpoint
+// Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
@@ -171,12 +158,12 @@ app.get('/api/sticker-library', (req, res) => {
   res.json({ success: true, stickers: availableStickers });
 });
 
-// FIXED: Enhanced search endpoint with better error handling for mobile
+// Search users
 app.get('/api/search/users', authenticateToken, async (req, res) => {
   try {
     const { query } = req.query;
     
-    console.log('🔍 Search request:', { query, userId: req.user.id, userAgent: req.get('user-agent') });
+    console.log('🔍 Search request:', { query, userId: req.user.id });
     
     if (!query || query.trim().length < 2) {
       return res.json({ success: true, users: [], count: 0 });
@@ -184,7 +171,6 @@ app.get('/api/search/users', authenticateToken, async (req, res) => {
     
     const searchTerm = query.trim().toLowerCase();
     
-    // Use timeout for Supabase query
     const timeoutPromise = new Promise((_, reject) => 
       setTimeout(() => reject(new Error('Search timeout')), 25000)
     );
@@ -229,6 +215,7 @@ app.get('/api/search/users', authenticateToken, async (req, res) => {
   }
 });
 
+// Get profile by ID
 app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
   try {
     const { userId } = req.params;
@@ -258,6 +245,7 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
   }
 });
 
+// Register
 app.post('/api/register', async (req, res) => {
   try {
     const { username, email, password, registrationNumber } = req.body;
@@ -303,7 +291,6 @@ app.post('/api/register', async (req, res) => {
       throw new Error('Failed to create account');
     }
     
-    // Send welcome email (don't wait for it)
     sendEmail(
       email,
       '🎉 Welcome to VibeXpert!',
@@ -325,6 +312,7 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
+// Login
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -375,6 +363,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
+// Forgot password
 app.post('/api/forgot-password', async (req, res) => {
   try {
     const { email } = req.body;
@@ -432,6 +421,7 @@ app.post('/api/forgot-password', async (req, res) => {
   }
 });
 
+// Reset password
 app.post('/api/reset-password', async (req, res) => {
   try {
     const { email, code, newPassword } = req.body;
@@ -482,6 +472,7 @@ app.post('/api/reset-password', async (req, res) => {
   }
 });
 
+// College verification request
 app.post('/api/college/request-verification', authenticateToken, async (req, res) => {
   try {
     const { collegeName, collegeEmail } = req.body;
@@ -532,6 +523,7 @@ app.post('/api/college/request-verification', authenticateToken, async (req, res
   }
 });
 
+// Verify college
 app.post('/api/college/verify', authenticateToken, async (req, res) => {
   try {
     const { code } = req.body;
@@ -586,7 +578,9 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
   }
 });
 
-// FIXED: Enhanced post creation with better error handling
+// ==================== NEW: POST INTERACTIONS ====================
+
+// Create post
 app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req, res) => {
   try {
     const { content = '', postTo = 'profile', music, stickers = '[]' } = req.body;
@@ -735,7 +729,7 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       badges: currentBadges,
       badgeUpdated,
       newBadges,
-      postCount: postCount // NEW: Send post count for celebration
+      postCount
     });
   } catch (error) {
     console.error('❌ Post creation error:', error);
@@ -743,6 +737,58 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
   }
 });
 
+// Get posts with interaction counts
+async function getPostsWithInteractions(posts, currentUserId) {
+  const enrichedPosts = [];
+  
+  for (const post of posts) {
+    // Get like count and check if user liked
+    const { data: likes } = await supabase
+      .from('post_likes')
+      .select('user_id')
+      .eq('post_id', post.id);
+    
+    const likeCount = likes?.length || 0;
+    const userHasLiked = likes?.some(like => like.user_id === currentUserId) || false;
+    
+    // Get comment count
+    const { data: comments } = await supabase
+      .from('post_comments')
+      .select('id')
+      .eq('post_id', post.id);
+    
+    const commentCount = comments?.length || 0;
+    
+    // Get share count
+    const { data: shares } = await supabase
+      .from('post_shares')
+      .select('id')
+      .eq('post_id', post.id);
+    
+    const shareCount = shares?.length || 0;
+    
+    // Get view count
+    const { data: views } = await supabase
+      .from('post_views')
+      .select('id')
+      .eq('post_id', post.id);
+    
+    const viewCount = views?.length || 0;
+    
+    enrichedPosts.push({
+      ...post,
+      like_count: likeCount,
+      comment_count: commentCount,
+      share_count: shareCount,
+      view_count: viewCount,
+      user_has_liked: userHasLiked
+    });
+  }
+  
+  return enrichedPosts;
+}
+
+// Get all posts (profile + community)
 app.get('/api/posts', authenticateToken, async (req, res) => {
   try {
     const { limit = 20, offset = 0 } = req.query;
@@ -776,19 +822,16 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
       .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
       .slice(parseInt(offset), parseInt(offset) + parseInt(limit));
     
-    const formattedPosts = allPosts.map(post => ({
-      ...post,
-      music: post.music || null,
-      stickers: post.stickers || []
-    }));
+    const enrichedPosts = await getPostsWithInteractions(allPosts, req.user.id);
     
-    res.json({ success: true, posts: formattedPosts });
+    res.json({ success: true, posts: enrichedPosts });
   } catch (error) {
     console.error('❌ Get posts error:', error);
     res.json({ success: true, posts: [] });
   }
 });
 
+// Get profile posts
 app.get('/api/posts/profile', authenticateToken, async (req, res) => {
   try {
     const { limit = 20, offset = 0 } = req.query;
@@ -803,19 +846,16 @@ app.get('/api/posts/profile', authenticateToken, async (req, res) => {
     
     if (error) throw error;
     
-    const formattedPosts = (posts || []).map(post => ({
-      ...post,
-      music: post.music || null,
-      stickers: post.stickers || []
-    }));
+    const enrichedPosts = await getPostsWithInteractions(posts || [], req.user.id);
     
-    res.json({ success: true, posts: formattedPosts });
+    res.json({ success: true, posts: enrichedPosts });
   } catch (error) {
     console.error('❌ Get profile posts error:', error);
     res.status(500).json({ error: 'Failed to fetch profile posts' });
   }
 });
 
+// Get community posts
 app.get('/api/posts/community', authenticateToken, async (req, res) => {
   try {
     if (!req.user.community_joined || !req.user.college) {
@@ -837,19 +877,16 @@ app.get('/api/posts/community', authenticateToken, async (req, res) => {
     
     if (error) throw error;
     
-    const formattedPosts = (posts || []).map(post => ({
-      ...post,
-      music: post.music || null,
-      stickers: post.stickers || []
-    }));
+    const enrichedPosts = await getPostsWithInteractions(posts || [], req.user.id);
     
-    res.json({ success: true, posts: formattedPosts });
+    res.json({ success: true, posts: enrichedPosts });
   } catch (error) {
     console.error('❌ Get community posts error:', error);
     res.status(500).json({ error: 'Failed to fetch community posts' });
   }
 });
 
+// Get user posts
 app.get('/api/posts/user/:userId', authenticateToken, async (req, res) => {
   try {
     const { userId } = req.params;
@@ -865,19 +902,271 @@ app.get('/api/posts/user/:userId', authenticateToken, async (req, res) => {
     
     if (error) throw error;
     
-    const formattedPosts = (posts || []).map(post => ({
-      ...post,
-      music: post.music || null,
-      stickers: post.stickers || []
-    }));
+    const enrichedPosts = await getPostsWithInteractions(posts || [], req.user.id);
     
-    res.json({ success: true, posts: formattedPosts });
+    res.json({ success: true, posts: enrichedPosts });
   } catch (error) {
     console.error('❌ Get user profile posts error:', error);
     res.status(500).json({ error: 'Failed to fetch user profile posts' });
   }
 });
 
+// Like/Unlike a post
+app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
+  try {
+    const { postId } = req.params;
+    
+    // Check if already liked
+    const { data: existingLike } = await supabase
+      .from('post_likes')
+      .select('*')
+      .eq('post_id', postId)
+      .eq('user_id', req.user.id)
+      .maybeSingle();
+    
+    let action = 'liked';
+    
+    if (existingLike) {
+      // Unlike
+      await supabase
+        .from('post_likes')
+        .delete()
+        .eq('id', existingLike.id);
+      action = 'unliked';
+    } else {
+      // Like
+      await supabase
+        .from('post_likes')
+        .insert([{
+          post_id: postId,
+          user_id: req.user.id
+        }]);
+    }
+    
+    // Get updated like count
+    const { data: likes } = await supabase
+      .from('post_likes')
+      .select('id')
+      .eq('post_id', postId);
+    
+    const likeCount = likes?.length || 0;
+    
+    res.json({ success: true, action, likeCount });
+  } catch (error) {
+    console.error('❌ Like post error:', error);
+    res.status(500).json({ error: 'Failed to like post' });
+  }
+});
+
+// Get post likes
+app.get('/api/posts/:postId/likes', authenticateToken, async (req, res) => {
+  try {
+    const { postId } = req.params;
+    
+    const { data: likes, error } = await supabase
+      .from('post_likes')
+      .select(`*, users (id, username, profile_pic)`)
+      .eq('post_id', postId)
+      .order('created_at', { ascending: false });
+    
+    if (error) throw error;
+    
+    res.json({ 
+      success: true, 
+      likes: likes || [], 
+      likeCount: likes?.length || 0 
+    });
+  } catch (error) {
+    console.error('❌ Get likes error:', error);
+    res.status(500).json({ error: 'Failed to fetch likes' });
+  }
+});
+
+// Get post comments
+app.get('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
+  try {
+    const { postId } = req.params;
+    
+    const { data: comments, error } = await supabase
+      .from('post_comments')
+      .select(`*, users (id, username, profile_pic)`)
+      .eq('post_id', postId)
+      .order('created_at', { ascending: true });
+    
+    if (error) throw error;
+    
+    res.json({ success: true, comments: comments || [] });
+  } catch (error) {
+    console.error('❌ Get comments error:', error);
+    res.status(500).json({ error: 'Failed to fetch comments' });
+  }
+});
+
+// Post a comment
+app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
+  try {
+    const { postId } = req.params;
+    const { content } = req.body;
+    
+    if (!content || !content.trim()) {
+      return res.status(400).json({ error: 'Comment content required' });
+    }
+    
+    const { data: newComment, error } = await supabase
+      .from('post_comments')
+      .insert([{
+        post_id: postId,
+        user_id: req.user.id,
+        content: content.trim()
+      }])
+      .select(`*, users (id, username, profile_pic)`)
+      .single();
+    
+    if (error) throw error;
+    
+    res.json({ success: true, comment: newComment });
+  } catch (error) {
+    console.error('❌ Post comment error:', error);
+    res.status(500).json({ error: 'Failed to post comment' });
+  }
+});
+
+// Delete a comment
+app.delete('/api/posts/:postId/comments/:commentId', authenticateToken, async (req, res) => {
+  try {
+    const { postId, commentId } = req.params;
+    
+    // Check if user owns the comment
+    const { data: comment } = await supabase
+      .from('post_comments')
+      .select('user_id')
+      .eq('id', commentId)
+      .eq('post_id', postId)
+      .single();
+    
+    if (!comment) {
+      return res.status(404).json({ error: 'Comment not found' });
+    }
+    
+    if (comment.user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Not authorized to delete this comment' });
+    }
+    
+    await supabase
+      .from('post_comments')
+      .delete()
+      .eq('id', commentId);
+    
+    res.json({ success: true, message: 'Comment deleted' });
+  } catch (error) {
+    console.error('❌ Delete comment error:', error);
+    res.status(500).json({ error: 'Failed to delete comment' });
+  }
+});
+
+// Share a post
+app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
+  try {
+    const { postId } = req.params;
+    
+    // Get original post
+    const { data: originalPost } = await supabase
+      .from('posts')
+      .select('*')
+      .eq('id', postId)
+      .single();
+    
+    if (!originalPost) {
+      return res.status(404).json({ error: 'Post not found' });
+    }
+    
+    // Create shared post
+    const { data: sharedPost, error } = await supabase
+      .from('posts')
+      .insert([{
+        user_id: req.user.id,
+        content: originalPost.content,
+        media: originalPost.media,
+        music: originalPost.music,
+        stickers: originalPost.stickers,
+        posted_to: 'profile',
+        shared_from: postId
+      }])
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    // Record share
+    await supabase
+      .from('post_shares')
+      .insert([{
+        post_id: postId,
+        user_id: req.user.id,
+        shared_post_id: sharedPost.id
+      }]);
+    
+    res.json({ success: true, message: 'Post shared to your profile' });
+  } catch (error) {
+    console.error('❌ Share post error:', error);
+    res.status(500).json({ error: 'Failed to share post' });
+  }
+});
+
+// Mark post as viewed
+app.post('/api/posts/:postId/view', authenticateToken, async (req, res) => {
+  try {
+    const { postId } = req.params;
+    
+    // Check if already viewed
+    const { data: existingView } = await supabase
+      .from('post_views')
+      .select('*')
+      .eq('post_id', postId)
+      .eq('user_id', req.user.id)
+      .maybeSingle();
+    
+    if (!existingView) {
+      await supabase
+        .from('post_views')
+        .insert([{
+          post_id: postId,
+          user_id: req.user.id
+        }]);
+    }
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Mark view error:', error);
+    res.status(500).json({ error: 'Failed to mark as viewed' });
+  }
+});
+
+// Get post views
+app.get('/api/posts/:postId/views', authenticateToken, async (req, res) => {
+  try {
+    const { postId } = req.params;
+    
+    const { data: views, error } = await supabase
+      .from('post_views')
+      .select(`*, users (id, username, profile_pic)`)
+      .eq('post_id', postId)
+      .order('viewed_at', { ascending: false });
+    
+    if (error) throw error;
+    
+    res.json({ 
+      success: true, 
+      views: views || [], 
+      viewCount: views?.length || 0 
+    });
+  } catch (error) {
+    console.error('❌ Get views error:', error);
+    res.status(500).json({ error: 'Failed to fetch views' });
+  }
+});
+
+// Delete post
 app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -896,6 +1185,13 @@ app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Not authorized' });
     }
     
+    // Delete related data
+    await supabase.from('post_likes').delete().eq('post_id', id);
+    await supabase.from('post_comments').delete().eq('post_id', id);
+    await supabase.from('post_shares').delete().eq('post_id', id);
+    await supabase.from('post_views').delete().eq('post_id', id);
+    
+    // Delete media files
     if (post.media && post.media.length > 0) {
       for (const media of post.media) {
         try {
@@ -924,6 +1220,9 @@ app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// ==================== END POST INTERACTIONS ====================
+
+// Get community messages
 app.get('/api/community/messages', authenticateToken, async (req, res) => {
   try {
     if (!req.user.community_joined || !req.user.college) {
@@ -948,6 +1247,7 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
   }
 });
 
+// Send community message
 app.post('/api/community/messages', authenticateToken, async (req, res) => {
   try {
     const { content } = req.body;
@@ -981,6 +1281,7 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
   }
 });
 
+// Edit message
 app.patch('/api/community/messages/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1030,6 +1331,7 @@ app.patch('/api/community/messages/:id', authenticateToken, async (req, res) => 
   }
 });
 
+// Delete message
 app.delete('/api/community/messages/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1060,6 +1362,7 @@ app.delete('/api/community/messages/:id', authenticateToken, async (req, res) =>
   }
 });
 
+// React to message
 app.post('/api/community/messages/:id/react', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1118,6 +1421,7 @@ app.post('/api/community/messages/:id/react', authenticateToken, async (req, res
   }
 });
 
+// Mark message as viewed
 app.post('/api/community/messages/:id/view', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1142,6 +1446,7 @@ app.post('/api/community/messages/:id/view', authenticateToken, async (req, res)
   }
 });
 
+// Get message views
 app.get('/api/community/messages/:id/views', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1160,6 +1465,7 @@ app.get('/api/community/messages/:id/views', authenticateToken, async (req, res)
   }
 });
 
+// Get profile
 app.get('/api/profile', authenticateToken, async (req, res) => {
   try {
     const { data: user } = await supabase
@@ -1180,6 +1486,7 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
   }
 });
 
+// Update profile
 app.patch('/api/profile', authenticateToken, upload.single('profilePic'), async (req, res) => {
   try {
     const updates = {};
@@ -1233,6 +1540,7 @@ app.patch('/api/profile', authenticateToken, upload.single('profilePic'), async 
   }
 });
 
+// Submit feedback
 app.post('/api/feedback', authenticateToken, async (req, res) => {
   try {
     const { subject, message } = req.body;
@@ -1321,4 +1629,5 @@ server.listen(PORT, () => {
   console.log(`✅ Mobile-optimized with enhanced timeout handling`);
   console.log(`✅ CORS configured for all devices`);
   console.log(`✅ Image upload support: 20MB max per file, 10 files max`);
+  console.log(`✅ Post interactions: Likes, Comments, Shares, Views`);
 });
