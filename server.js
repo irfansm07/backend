@@ -1,4 +1,4 @@
-// VIBEXPERT BACKEND - COMPLETE WITH REWARDS SYSTEM
+/ VIBEXPERT BACKEND - COMPLETE WITH LIKE/COMMENT/SHARE FUNCTIONALITY
 
 require('dotenv').config();
 const express = require('express');
@@ -77,31 +77,6 @@ const availableStickers = [
   { id: 'sticker15', name: 'Rocket', emoji: '🚀', category: 'excitement' }
 ];
 
-// REWARD SYSTEM CONFIGURATION
-const REWARD_BADGES = {
-  VIBE_GO: {
-    name: 'Vibe Go',
-    emoji: '🌟',
-    weeksRequired: 3,
-    rewards: ['Early access to new features', 'Custom profile themes', 'Priority support'],
-    color: '#4f74a3'
-  },
-  VIBE_PRO: {
-    name: 'Vibe Pro',
-    emoji: '💎',
-    weeksRequired: 5,
-    rewards: ['All Vibe Go benefits', 'Ad-free experience', 'Exclusive stickers pack', 'Profile badge'],
-    color: '#8b5cf6'
-  },
-  VIBE_X: {
-    name: 'Vibe X',
-    emoji: '👑',
-    weeksRequired: 7,
-    rewards: ['All Vibe Pro benefits', 'Monetization eligibility', 'Revenue sharing program', 'VIP community access', 'Direct creator support'],
-    color: '#f59e0b'
-  }
-};
-
 const sendEmail = async (to, subject, html) => {
   try {
     console.log(`📧 Sending email to: ${to}`);
@@ -175,63 +150,6 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// Helper function to check and award badges based on activity
-async function checkAndAwardBadges(userId) {
-  try {
-    const { data: user, error: userError } = await supabase
-      .from('users')
-      .select('created_at, reward_badge, last_active, activity_streak')
-      .eq('id', userId)
-      .single();
-    
-    if (userError || !user) return null;
-    
-    const createdDate = new Date(user.created_at);
-    const now = new Date();
-    const weeksActive = Math.floor((now - createdDate) / (7 * 24 * 60 * 60 * 1000));
-    
-    let newBadge = null;
-    let badgeAwarded = false;
-    
-    // Check for Vibe X (7 weeks)
-    if (weeksActive >= REWARD_BADGES.VIBE_X.weeksRequired && user.reward_badge !== 'VIBE_X') {
-      newBadge = 'VIBE_X';
-      badgeAwarded = true;
-    }
-    // Check for Vibe Pro (5 weeks)
-    else if (weeksActive >= REWARD_BADGES.VIBE_PRO.weeksRequired && user.reward_badge !== 'VIBE_PRO' && user.reward_badge !== 'VIBE_X') {
-      newBadge = 'VIBE_PRO';
-      badgeAwarded = true;
-    }
-    // Check for Vibe Go (3 weeks)
-    else if (weeksActive >= REWARD_BADGES.VIBE_GO.weeksRequired && !user.reward_badge) {
-      newBadge = 'VIBE_GO';
-      badgeAwarded = true;
-    }
-    
-    if (badgeAwarded && newBadge) {
-      await supabase
-        .from('users')
-        .update({ 
-          reward_badge: newBadge,
-          badge_earned_at: new Date().toISOString()
-        })
-        .eq('id', userId);
-      
-      return {
-        badge: newBadge,
-        badgeInfo: REWARD_BADGES[newBadge],
-        isNew: true
-      };
-    }
-    
-    return null;
-  } catch (error) {
-    console.error('Badge check error:', error);
-    return null;
-  }
-}
-
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
@@ -246,68 +164,6 @@ app.get('/api/music-library', (req, res) => {
 
 app.get('/api/sticker-library', (req, res) => {
   res.json({ success: true, stickers: availableStickers });
-});
-
-// NEW: Get reward badges info
-app.get('/api/rewards/badges', (req, res) => {
-  res.json({ success: true, badges: REWARD_BADGES });
-});
-
-// NEW: Get user's reward status
-app.get('/api/rewards/status', authenticateToken, async (req, res) => {
-  try {
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('created_at, reward_badge, badge_earned_at')
-      .eq('id', req.user.id)
-      .single();
-    
-    if (error) throw error;
-    
-    const createdDate = new Date(user.created_at);
-    const now = new Date();
-    const weeksActive = Math.floor((now - createdDate) / (7 * 24 * 60 * 60 * 1000));
-    
-    let currentBadge = null;
-    let nextBadge = null;
-    let weeksUntilNext = 0;
-    
-    if (user.reward_badge) {
-      currentBadge = {
-        type: user.reward_badge,
-        ...REWARD_BADGES[user.reward_badge],
-        earnedAt: user.badge_earned_at
-      };
-    }
-    
-    // Determine next badge
-    if (!user.reward_badge || user.reward_badge === 'VIBE_GO') {
-      const targetBadge = !user.reward_badge ? 'VIBE_GO' : 'VIBE_PRO';
-      nextBadge = {
-        type: targetBadge,
-        ...REWARD_BADGES[targetBadge]
-      };
-      weeksUntilNext = REWARD_BADGES[targetBadge].weeksRequired - weeksActive;
-    } else if (user.reward_badge === 'VIBE_PRO') {
-      nextBadge = {
-        type: 'VIBE_X',
-        ...REWARD_BADGES.VIBE_X
-      };
-      weeksUntilNext = REWARD_BADGES.VIBE_X.weeksRequired - weeksActive;
-    }
-    
-    res.json({
-      success: true,
-      weeksActive,
-      currentBadge,
-      nextBadge,
-      weeksUntilNext: Math.max(0, weeksUntilNext),
-      canSubmitUPI: user.reward_badge === 'VIBE_X'
-    });
-  } catch (error) {
-    console.error('Reward status error:', error);
-    res.status(500).json({ error: 'Failed to get reward status' });
-  }
 });
 
 app.get('/api/search/users', authenticateToken, async (req, res) => {
@@ -328,7 +184,7 @@ app.get('/api/search/users', authenticateToken, async (req, res) => {
     
     const searchPromise = supabase
       .from('users')
-      .select('id, username, email, registration_number, college, profile_pic, bio, reward_badge')
+      .select('id, username, email, registration_number, college, profile_pic, bio')
       .limit(100);
     
     const { data: allUsers, error } = await Promise.race([searchPromise, timeoutPromise]);
@@ -372,7 +228,7 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
     
     const { data: user, error } = await supabase
       .from('users')
-      .select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined, created_at, reward_badge, badge_earned_at')
+      .select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined, created_at')
       .eq('id', userId)
       .single();
     
@@ -431,8 +287,7 @@ app.post('/api/register', async (req, res) => {
         username,
         email,
         password_hash: passwordHash,
-        registration_number: registrationNumber,
-        last_active: new Date().toISOString()
+        registration_number: registrationNumber
       }])
       .select()
       .single();
@@ -447,7 +302,6 @@ app.post('/api/register', async (req, res) => {
       `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <h1 style="color: #4F46E5;">Welcome to VibeXpert, ${username}! 🎉</h1>
         <p style="font-size: 16px; color: #374151;">Congratulations on creating your account!</p>
-        <p style="font-size: 16px; color: #374151;">Stay active for 3 weeks to earn your first reward badge: <strong>Vibe Go 🌟</strong></p>
         <p style="font-size: 16px; color: #374151;">Ready to vibe? Let's go! 🚀</p>
       </div>`
     ).catch(err => console.error('Email send failed:', err));
@@ -486,15 +340,6 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
     
-    // Update last active
-    await supabase
-      .from('users')
-      .update({ last_active: new Date().toISOString() })
-      .eq('id', user.id);
-    
-    // Check for badge awards
-    const badgeUpdate = await checkAndAwardBadges(user.id);
-    
     const token = jwt.sign(
       { userId: user.id, email: user.email },
       process.env.JWT_SECRET,
@@ -513,11 +358,8 @@ app.post('/api/login', async (req, res) => {
         profilePic: user.profile_pic,
         registrationNumber: user.registration_number,
         badges: user.badges || [],
-        bio: user.bio || '',
-        rewardBadge: user.reward_badge,
-        badgeEarnedAt: user.badge_earned_at
-      },
-      newBadge: badgeUpdate
+        bio: user.bio || ''
+      }
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -832,7 +674,7 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
     const { data: newPost, error: postError } = await supabase
       .from('posts')
       .insert([postData])
-      .select(`*, users (id, username, profile_pic, college, registration_number, reward_badge)`)
+      .select(`*, users (id, username, profile_pic, college, registration_number)`)
       .single();
     
     if (postError) {
@@ -840,6 +682,7 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       return res.status(500).json({ error: 'Failed to create post: ' + postError.message });
     }
 
+    // Update badges
     const currentBadges = req.user.badges || [];
     const { data: userPosts } = await supabase
       .from('posts')
@@ -870,8 +713,6 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
         .eq('id', req.user.id);
     }
     
-    const rewardBadgeUpdate = await checkAndAwardBadges(req.user.id);
-    
     if (postTo === 'community' && req.user.college) {
       io.to(req.user.college).emit('new_post', newPost);
     } else {
@@ -885,8 +726,7 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       badges: currentBadges,
       badgeUpdated,
       newBadges,
-      postCount: postCount,
-      rewardBadgeUpdate
+      postCount: postCount
     });
   } catch (error) {
     console.error('❌ Post creation error:', error);
@@ -894,10 +734,13 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
   }
 });
 
+// ==================== NEW: LIKE FUNCTIONALITY ====================
+
 app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
   try {
     const { postId } = req.params;
     
+    // Check if already liked
     const { data: existingLike } = await supabase
       .from('post_likes')
       .select('*')
@@ -908,6 +751,7 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
     let liked = false;
     
     if (existingLike) {
+      // Unlike
       await supabase
         .from('post_likes')
         .delete()
@@ -915,6 +759,7 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
       
       liked = false;
     } else {
+      // Like
       await supabase
         .from('post_likes')
         .insert([{
@@ -925,6 +770,7 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
       liked = true;
     }
     
+    // Get updated like count
     const { data: likes } = await supabase
       .from('post_likes')
       .select('id')
@@ -932,6 +778,7 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
     
     const likeCount = likes?.length || 0;
     
+    // Emit real-time update
     const { data: post } = await supabase
       .from('posts')
       .select('college, posted_to')
@@ -953,13 +800,15 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
   }
 });
 
+// ==================== NEW: COMMENT FUNCTIONALITY ====================
+
 app.get('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
   try {
     const { postId } = req.params;
     
     const { data: comments, error } = await supabase
       .from('post_comments')
-      .select(`*, users (id, username, profile_pic, reward_badge)`)
+      .select(`*, users (id, username, profile_pic)`)
       .eq('post_id', postId)
       .order('created_at', { ascending: false });
     
@@ -988,11 +837,12 @@ app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
         user_id: req.user.id,
         content: content.trim()
       }])
-      .select(`*, users (id, username, profile_pic, reward_badge)`)
+      .select(`*, users (id, username, profile_pic)`)
       .single();
     
     if (error) throw error;
     
+    // Get updated comment count
     const { data: comments } = await supabase
       .from('post_comments')
       .select('id')
@@ -1000,6 +850,7 @@ app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
     
     const commentCount = comments?.length || 0;
     
+    // Emit real-time update
     const { data: post } = await supabase
       .from('posts')
       .select('college, posted_to')
@@ -1044,6 +895,7 @@ app.delete('/api/posts/:postId/comments/:commentId', authenticateToken, async (r
       .delete()
       .eq('id', commentId);
     
+    // Get updated comment count
     const { data: comments } = await supabase
       .from('post_comments')
       .select('id')
@@ -1051,6 +903,7 @@ app.delete('/api/posts/:postId/comments/:commentId', authenticateToken, async (r
     
     const commentCount = comments?.length || 0;
     
+    // Emit real-time update
     const { data: post } = await supabase
       .from('posts')
       .select('college, posted_to')
@@ -1072,10 +925,13 @@ app.delete('/api/posts/:postId/comments/:commentId', authenticateToken, async (r
   }
 });
 
+// ==================== NEW: SHARE FUNCTIONALITY ====================
+
 app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
   try {
     const { postId } = req.params;
     
+    // Increment share count
     const { data: existingShare } = await supabase
       .from('post_shares')
       .select('*')
@@ -1092,6 +948,7 @@ app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
         }]);
     }
     
+    // Get updated share count
     const { data: shares } = await supabase
       .from('post_shares')
       .select('id')
@@ -1099,6 +956,7 @@ app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
     
     const shareCount = shares?.length || 0;
     
+    // Emit real-time update
     const { data: post } = await supabase
       .from('posts')
       .select('college, posted_to')
@@ -1120,24 +978,28 @@ app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
   }
 });
 
+// ==================== UPDATED: GET POSTS WITH INTERACTION DATA ====================
+
 app.get('/api/posts', authenticateToken, async (req, res) => {
   try {
     const { limit = 20, offset = 0 } = req.query;
     
+    // Get profile posts
     const { data: profilePosts, error: profileError } = await supabase
       .from('posts')
-      .select(`*, users (id, username, profile_pic, college, registration_number, reward_badge)`)
+      .select(`*, users (id, username, profile_pic, college, registration_number)`)
       .eq('user_id', req.user.id)
       .eq('posted_to', 'profile')
       .order('created_at', { ascending: false });
     
     if (profileError) console.error('❌ Profile posts error:', profileError);
     
+    // Get community posts
     let communityPosts = [];
     if (req.user.community_joined && req.user.college) {
       const { data: commPosts, error: commError } = await supabase
         .from('posts')
-        .select(`*, users (id, username, profile_pic, college, registration_number, reward_badge)`)
+        .select(`*, users (id, username, profile_pic, college, registration_number)`)
         .eq('college', req.user.college)
         .eq('posted_to', 'community')
         .order('created_at', { ascending: false });
@@ -1149,11 +1011,14 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
       }
     }
     
+    // Combine and sort posts
     const allPosts = [...(profilePosts || []), ...communityPosts]
       .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
       .slice(parseInt(offset), parseInt(offset) + parseInt(limit));
     
+    // Add interaction data to each post
     const postsWithInteractions = await Promise.all(allPosts.map(async (post) => {
+      // Get like count and check if user liked
       const { data: likes } = await supabase
         .from('post_likes')
         .select('user_id')
@@ -1162,6 +1027,7 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
       const likeCount = likes?.length || 0;
       const isLiked = likes?.some(like => like.user_id === req.user.id) || false;
       
+      // Get comment count
       const { data: comments } = await supabase
         .from('post_comments')
         .select('id')
@@ -1169,6 +1035,7 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
       
       const commentCount = comments?.length || 0;
       
+      // Get share count
       const { data: shares } = await supabase
         .from('post_shares')
         .select('id')
@@ -1200,7 +1067,7 @@ app.get('/api/posts/profile', authenticateToken, async (req, res) => {
     
     const { data: posts, error } = await supabase
       .from('posts')
-      .select(`*, users (id, username, profile_pic, college, registration_number, reward_badge)`)
+      .select(`*, users (id, username, profile_pic, college, registration_number)`)
       .eq('user_id', req.user.id)
       .eq('posted_to', 'profile')
       .order('created_at', { ascending: false })
@@ -1208,6 +1075,7 @@ app.get('/api/posts/profile', authenticateToken, async (req, res) => {
     
     if (error) throw error;
     
+    // Add interaction data
     const postsWithInteractions = await Promise.all((posts || []).map(async (post) => {
       const { data: likes } = await supabase
         .from('post_likes')
@@ -1255,7 +1123,7 @@ app.get('/api/posts/community', authenticateToken, async (req, res) => {
     
     const { data: posts, error } = await supabase
       .from('posts')
-      .select(`*, users (id, username, profile_pic, college, registration_number, reward_badge)`)
+      .select(`*, users (id, username, profile_pic, college, registration_number)`)
       .eq('college', req.user.college)
       .eq('posted_to', 'community')
       .order('created_at', { ascending: false })
@@ -1263,6 +1131,7 @@ app.get('/api/posts/community', authenticateToken, async (req, res) => {
     
     if (error) throw error;
     
+    // Add interaction data
     const postsWithInteractions = await Promise.all((posts || []).map(async (post) => {
       const { data: likes } = await supabase
         .from('post_likes')
@@ -1304,7 +1173,7 @@ app.get('/api/posts/user/:userId', authenticateToken, async (req, res) => {
     
     const { data: posts, error } = await supabase
       .from('posts')
-      .select(`*, users (id, username, profile_pic, college, registration_number, reward_badge)`)
+      .select(`*, users (id, username, profile_pic, college, registration_number)`)
       .eq('user_id', userId)
       .eq('posted_to', 'profile')
       .order('created_at', { ascending: false })
@@ -1312,6 +1181,7 @@ app.get('/api/posts/user/:userId', authenticateToken, async (req, res) => {
     
     if (error) throw error;
     
+    // Add interaction data
     const postsWithInteractions = await Promise.all((posts || []).map(async (post) => {
       const { data: likes } = await supabase
         .from('post_likes')
@@ -1364,10 +1234,12 @@ app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Not authorized' });
     }
     
+    // Delete related data
     await supabase.from('post_likes').delete().eq('post_id', id);
     await supabase.from('post_comments').delete().eq('post_id', id);
     await supabase.from('post_shares').delete().eq('post_id', id);
     
+    // Delete media files
     if (post.media && post.media.length > 0) {
       for (const media of post.media) {
         try {
@@ -1396,6 +1268,7 @@ app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// Community messages endpoints (unchanged)
 app.get('/api/community/messages', authenticateToken, async (req, res) => {
   try {
     if (!req.user.community_joined || !req.user.college) {
@@ -1406,7 +1279,7 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
     
     const { data: messages, error } = await supabase
       .from('messages')
-      .select(`*, users (id, username, profile_pic, reward_badge), message_reactions (*)`)
+      .select(`*, users (id, username, profile_pic), message_reactions (*)`)
       .eq('college', req.user.college)
       .order('timestamp', { ascending: false })
       .limit(limit);
@@ -1439,7 +1312,7 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
         content: content.trim(),
         college: req.user.college
       }])
-      .select(`*, users (id, username, profile_pic, reward_badge)`)
+      .select(`*, users (id, username, profile_pic)`)
       .single();
     
     if (error) throw error;
@@ -1488,7 +1361,7 @@ app.patch('/api/community/messages/:id', authenticateToken, async (req, res) => 
       .from('messages')
       .update({ content: content.trim(), is_edited: true })
       .eq('id', id)
-      .select(`*, users (id, username, profile_pic, reward_badge)`)
+      .select(`*, users (id, username, profile_pic)`)
       .single();
     
     if (updateError) throw updateError;
@@ -1620,7 +1493,7 @@ app.get('/api/community/messages/:id/views', authenticateToken, async (req, res)
     
     const { data: views, error } = await supabase
       .from('message_views')
-      .select(`*, users (id, username, profile_pic, reward_badge)`)
+      .select(`*, users (id, username, profile_pic)`)
       .eq('message_id', id);
     
     if (error) throw error;
@@ -1636,7 +1509,7 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
   try {
     const { data: user } = await supabase
       .from('users')
-      .select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined, created_at, reward_badge, badge_earned_at')
+      .select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined, created_at')
       .eq('id', req.user.id)
       .single();
     
@@ -1693,7 +1566,7 @@ app.patch('/api/profile', authenticateToken, upload.single('profilePic'), async 
       .from('users')
       .update(updates)
       .eq('id', req.user.id)
-      .select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined, reward_badge, badge_earned_at')
+      .select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined')
       .single();
     
     if (error) throw error;
@@ -1707,16 +1580,10 @@ app.patch('/api/profile', authenticateToken, upload.single('profilePic'), async 
 
 app.post('/api/feedback', authenticateToken, async (req, res) => {
   try {
-    const { subject, message, upiId } = req.body;
+    const { subject, message } = req.body;
     
     if (!subject || !message) {
       return res.status(400).json({ error: 'Subject and message required' });
-    }
-    
-    if (upiId) {
-      if (req.user.reward_badge !== 'VIBE_X') {
-        return res.status(403).json({ error: 'UPI ID submission only available for Vibe X badge holders' });
-      }
     }
     
     const { error } = await supabase
@@ -1724,40 +1591,19 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
       .insert([{
         user_id: req.user.id,
         subject: subject.trim(),
-        message: message.trim(),
-        upi_id: upiId ? upiId.trim() : null
+        message: message.trim()
       }]);
     
     if (error) throw error;
     
-    if (upiId) {
-      sendEmail(
-        process.env.ADMIN_EMAIL || 'admin@vibexpert.online',
-        `🎉 Vibe X Badge Holder - UPI Submission from ${req.user.username}`,
-        `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h1 style="color: #f59e0b;">👑 Vibe X Badge Holder UPI Submission</h1>
-          <p><strong>User:</strong> ${req.user.username}</p>
-          <p><strong>Email:</strong> ${req.user.email}</p>
-          <p><strong>UPI ID:</strong> ${upiId}</p>
-          <p><strong>Subject:</strong> ${subject}</p>
-          <p><strong>Message:</strong></p>
-          <div style="background: #f3f4f6; padding: 15px; border-radius: 8px;">
-            ${message}
-          </div>
-        </div>`
-      ).catch(err => console.error('Admin email failed:', err));
-    }
-    
-    res.json({ 
-      success: true, 
-      message: upiId ? 'Feedback and UPI details submitted successfully!' : 'Feedback submitted successfully!' 
-    });
+    res.json({ success: true, message: 'Feedback submitted successfully' });
   } catch (error) {
     console.error('❌ Submit feedback error:', error);
     res.status(500).json({ error: 'Failed to submit feedback' });
   }
 });
 
+// Socket.IO connection handling
 io.on('connection', (socket) => {
   console.log('⚡ User connected:', socket.id);
   
@@ -1793,6 +1639,7 @@ io.on('connection', (socket) => {
   });
 });
 
+// Error handling middleware
 app.use((err, req, res, next) => {
   console.error('❌ Server error:', err);
   
@@ -1808,6 +1655,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: err.message || 'Internal server error' });
 });
 
+// 404 handler
 app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
 });
@@ -1819,6 +1667,5 @@ server.listen(PORT, () => {
   console.log(`✅ CORS configured for all devices`);
   console.log(`✅ Image upload support: 20MB max per file, 10 files max`);
   console.log(`✅ Like, Comment, Share functionality enabled`);
-  console.log(`✅ Reward System: Vibe Go (3w), Vibe Pro (5w), Vibe X (7w)`);
   console.log(`✅ Real-time updates via Socket.IO`);
 });
