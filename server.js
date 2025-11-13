@@ -1,4 +1,4 @@
-// VIBEXPERT BACKEND - COMPLETE UPDATED VERSION WITH LIKE/COMMENT/SHARE
+// VIBEXPERT BACKEND - COMPLETE WITH LIKE/COMMENT/SHARE FUNCTIONALITY
 
 require('dotenv').config();
 const express = require('express');
@@ -25,7 +25,6 @@ const io = socketIO(server, {
   pingInterval: 25000
 });
 
-// FIXED: Enhanced CORS for mobile devices
 app.use(cors({
   origin: '*',
   credentials: true,
@@ -35,15 +34,12 @@ app.use(cors({
   maxAge: 86400
 }));
 
-// Explicit OPTIONS handling for mobile
 app.options('*', cors());
 
-// FIXED: Increased limits for mobile uploads
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
-// Request logging for debugging
 app.use((req, res, next) => {
   console.log(`📡 ${req.method} ${req.path} - ${req.get('user-agent')}`);
   next();
@@ -154,7 +150,6 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
@@ -171,12 +166,11 @@ app.get('/api/sticker-library', (req, res) => {
   res.json({ success: true, stickers: availableStickers });
 });
 
-// FIXED: Enhanced search endpoint with better error handling for mobile
 app.get('/api/search/users', authenticateToken, async (req, res) => {
   try {
     const { query } = req.query;
     
-    console.log('🔍 Search request:', { query, userId: req.user.id, userAgent: req.get('user-agent') });
+    console.log('🔍 Search request:', { query, userId: req.user.id });
     
     if (!query || query.trim().length < 2) {
       return res.json({ success: true, users: [], count: 0 });
@@ -184,7 +178,6 @@ app.get('/api/search/users', authenticateToken, async (req, res) => {
     
     const searchTerm = query.trim().toLowerCase();
     
-    // Use timeout for Supabase query
     const timeoutPromise = new Promise((_, reject) => 
       setTimeout(() => reject(new Error('Search timeout')), 25000)
     );
@@ -303,7 +296,6 @@ app.post('/api/register', async (req, res) => {
       throw new Error('Failed to create account');
     }
     
-    // Send welcome email (don't wait for it)
     sendEmail(
       email,
       '🎉 Welcome to VibeXpert!',
@@ -586,7 +578,6 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
   }
 });
 
-// FIXED: Enhanced post creation with better error handling
 app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req, res) => {
   try {
     const { content = '', postTo = 'profile', music, stickers = '[]' } = req.body;
@@ -743,245 +734,16 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
   }
 });
 
-// Helper function to add interaction counts to posts
-async function addInteractionCounts(posts, userId) {
-  const postsWithCounts = await Promise.all(posts.map(async (post) => {
-    // Get like count
-    const { count: likeCount } = await supabase
-      .from('post_likes')
-      .select('*', { count: 'exact', head: true })
-      .eq('post_id', post.id);
-    
-    // Check if user liked
-    const { data: userLike } = await supabase
-      .from('post_likes')
-      .select('id')
-      .eq('post_id', post.id)
-      .eq('user_id', userId)
-      .maybeSingle();
-    
-    // Get comment count
-    const { count: commentCount } = await supabase
-      .from('post_comments')
-      .select('*', { count: 'exact', head: true })
-      .eq('post_id', post.id);
-    
-    // Get share count
-    const { count: shareCount } = await supabase
-      .from('post_shares')
-      .select('*', { count: 'exact', head: true })
-      .eq('post_id', post.id);
-    
-    return {
-      ...post,
-      like_count: likeCount || 0,
-      comment_count: commentCount || 0,
-      share_count: shareCount || 0,
-      user_has_liked: !!userLike
-    };
-  }));
-  
-  return postsWithCounts;
-}
+// ==================== NEW: LIKE FUNCTIONALITY ====================
 
-app.get('/api/posts', authenticateToken, async (req, res) => {
+app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
   try {
-    const { limit = 20, offset = 0 } = req.query;
-    
-    const { data: profilePosts, error: profileError } = await supabase
-      .from('posts')
-      .select(`*, users (id, username, profile_pic, college, registration_number)`)
-      .eq('user_id', req.user.id)
-      .eq('posted_to', 'profile')
-      .order('created_at', { ascending: false });
-    
-    if (profileError) console.error('❌ Profile posts error:', profileError);
-    
-    let communityPosts = [];
-    if (req.user.community_joined && req.user.college) {
-      const { data: commPosts, error: commError } = await supabase
-        .from('posts')
-        .select(`*, users (id, username, profile_pic, college, registration_number)`)
-        .eq('college', req.user.college)
-        .eq('posted_to', 'community')
-        .order('created_at', { ascending: false });
-      
-      if (commError) {
-        console.error('❌ Community posts error:', commError);
-      } else {
-        communityPosts = commPosts || [];
-      }
-    }
-    
-    const allPosts = [...(profilePosts || []), ...communityPosts]
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-      .slice(parseInt(offset), parseInt(offset) + parseInt(limit));
-    
-    // Add interaction counts
-    const postsWithCounts = await addInteractionCounts(allPosts, req.user.id);
-    
-    const formattedPosts = postsWithCounts.map(post => ({
-      ...post,
-      music: post.music || null,
-      stickers: post.stickers || []
-    }));
-    
-    res.json({ success: true, posts: formattedPosts });
-  } catch (error) {
-    console.error('❌ Get posts error:', error);
-    res.json({ success: true, posts: [] });
-  }
-});
-
-app.get('/api/posts/profile', authenticateToken, async (req, res) => {
-  try {
-    const { limit = 20, offset = 0 } = req.query;
-    
-    const { data: posts, error } = await supabase
-      .from('posts')
-      .select(`*, users (id, username, profile_pic, college, registration_number)`)
-      .eq('user_id', req.user.id)
-      .eq('posted_to', 'profile')
-      .order('created_at', { ascending: false })
-      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
-    
-    if (error) throw error;
-    
-    // Add interaction counts
-    const postsWithCounts = await addInteractionCounts(posts || [], req.user.id);
-    
-    const formattedPosts = postsWithCounts.map(post => ({
-      ...post,
-      music: post.music || null,
-      stickers: post.stickers || []
-    }));
-    
-    res.json({ success: true, posts: formattedPosts });
-  } catch (error) {
-    console.error('❌ Get profile posts error:', error);
-    res.status(500).json({ error: 'Failed to fetch profile posts' });
-  }
-});
-
-app.get('/api/posts/community', authenticateToken, async (req, res) => {
-  try {
-    if (!req.user.community_joined || !req.user.college) {
-      return res.status(403).json({
-        error: 'Please join a college community first to view community posts',
-        needsJoinCommunity: true
-      });
-    }
-    
-    const { limit = 20, offset = 0 } = req.query;
-    
-    const { data: posts, error } = await supabase
-      .from('posts')
-      .select(`*, users (id, username, profile_pic, college, registration_number)`)
-      .eq('college', req.user.college)
-      .eq('posted_to', 'community')
-      .order('created_at', { ascending: false })
-      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
-    
-    if (error) throw error;
-    
-    // Add interaction counts
-    const postsWithCounts = await addInteractionCounts(posts || [], req.user.id);
-    
-    const formattedPosts = postsWithCounts.map(post => ({
-      ...post,
-      music: post.music || null,
-      stickers: post.stickers || []
-    }));
-    
-    res.json({ success: true, posts: formattedPosts });
-  } catch (error) {
-    console.error('❌ Get community posts error:', error);
-    res.status(500).json({ error: 'Failed to fetch community posts' });
-  }
-});
-
-app.get('/api/posts/user/:userId', authenticateToken, async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { limit = 20, offset = 0 } = req.query;
-    
-    const { data: posts, error } = await supabase
-      .from('posts')
-      .select(`*, users (id, username, profile_pic, college, registration_number)`)
-      .eq('user_id', userId)
-      .eq('posted_to', 'profile')
-      .order('created_at', { ascending: false })
-      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
-    
-    if (error) throw error;
-    
-    // Add interaction counts
-    const postsWithCounts = await addInteractionCounts(posts || [], req.user.id);
-    
-    const formattedPosts = postsWithCounts.map(post => ({
-      ...post,
-      music: post.music || null,
-      stickers: post.stickers || []
-    }));
-    
-    res.json({ success: true, posts: formattedPosts });
-  } catch (error) {
-    console.error('❌ Get user profile posts error:', error);
-    res.status(500).json({ error: 'Failed to fetch user profile posts' });
-  }
-});
-
-app.get('/api/posts/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    const { data: post, error } = await supabase
-      .from('posts')
-      .select(`*, users (id, username, profile_pic, college, registration_number)`)
-      .eq('id', id)
-      .single();
-    
-    if (error || !post) {
-      return res.status(404).json({ error: 'Post not found' });
-    }
-    
-    // Add interaction counts
-    const [postWithCounts] = await addInteractionCounts([post], req.user.id);
-    
-    res.json({ 
-      success: true, 
-      post: {
-        ...postWithCounts,
-        music: postWithCounts.music || null,
-        stickers: postWithCounts.stickers || []
-      }
-    });
-  } catch (error) {
-    console.error('❌ Get post error:', error);
-    res.status(500).json({ error: 'Failed to fetch post' });
-  }
-});
-
-// NEW: Like/Unlike Post
-app.post('/api/posts/:id/like', authenticateToken, async (req, res) => {
-  try {
-    const { id: postId } = req.params;
-    
-    // Check if post exists
-    const { data: post, error: postError } = await supabase
-      .from('posts')
-      .select('id, user_id, college, posted_to')
-      .eq('id', postId)
-      .single();
-    
-    if (postError || !post) {
-      return res.status(404).json({ error: 'Post not found' });
-    }
+    const { postId } = req.params;
     
     // Check if already liked
     const { data: existingLike } = await supabase
       .from('post_likes')
-      .select('id')
+      .select('*')
       .eq('post_id', postId)
       .eq('user_id', req.user.id)
       .maybeSingle();
@@ -1009,39 +771,46 @@ app.post('/api/posts/:id/like', authenticateToken, async (req, res) => {
     }
     
     // Get updated like count
-    const { count: likeCount } = await supabase
+    const { data: likes } = await supabase
       .from('post_likes')
-      .select('*', { count: 'exact', head: true })
+      .select('id')
       .eq('post_id', postId);
     
-    // Emit socket event for real-time update
-    if (post.posted_to === 'community' && post.college) {
-      io.to(post.college).emit('post_liked', { postId, likeCount: likeCount || 0 });
-    } else {
-      io.emit('post_liked', { postId, likeCount: likeCount || 0 });
+    const likeCount = likes?.length || 0;
+    
+    // Emit real-time update
+    const { data: post } = await supabase
+      .from('posts')
+      .select('college, posted_to')
+      .eq('id', postId)
+      .single();
+    
+    if (post) {
+      if (post.posted_to === 'community' && post.college) {
+        io.to(post.college).emit('post_liked', { postId, likeCount });
+      } else {
+        io.emit('post_liked', { postId, likeCount });
+      }
     }
     
-    res.json({ 
-      success: true, 
-      liked, 
-      likeCount: likeCount || 0 
-    });
+    res.json({ success: true, liked, likeCount });
   } catch (error) {
-    console.error('❌ Like post error:', error);
+    console.error('❌ Like error:', error);
     res.status(500).json({ error: 'Failed to like post' });
   }
 });
 
-// NEW: Get Post Comments
-app.get('/api/posts/:id/comments', authenticateToken, async (req, res) => {
+// ==================== NEW: COMMENT FUNCTIONALITY ====================
+
+app.get('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
   try {
-    const { id: postId } = req.params;
+    const { postId } = req.params;
     
     const { data: comments, error } = await supabase
       .from('post_comments')
       .select(`*, users (id, username, profile_pic)`)
       .eq('post_id', postId)
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: false });
     
     if (error) throw error;
     
@@ -1052,29 +821,16 @@ app.get('/api/posts/:id/comments', authenticateToken, async (req, res) => {
   }
 });
 
-// NEW: Post Comment
-app.post('/api/posts/:id/comments', authenticateToken, async (req, res) => {
+app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
   try {
-    const { id: postId } = req.params;
+    const { postId } = req.params;
     const { content } = req.body;
     
     if (!content || !content.trim()) {
-      return res.status(400).json({ error: 'Comment cannot be empty' });
+      return res.status(400).json({ error: 'Comment content required' });
     }
     
-    // Check if post exists
-    const { data: post, error: postError } = await supabase
-      .from('posts')
-      .select('id, college, posted_to')
-      .eq('id', postId)
-      .single();
-    
-    if (postError || !post) {
-      return res.status(404).json({ error: 'Post not found' });
-    }
-    
-    // Create comment
-    const { data: newComment, error: commentError } = await supabase
+    const { data: newComment, error } = await supabase
       .from('post_comments')
       .insert([{
         post_id: postId,
@@ -1084,76 +840,82 @@ app.post('/api/posts/:id/comments', authenticateToken, async (req, res) => {
       .select(`*, users (id, username, profile_pic)`)
       .single();
     
-    if (commentError) throw commentError;
+    if (error) throw error;
     
     // Get updated comment count
-    const { count: commentCount } = await supabase
+    const { data: comments } = await supabase
       .from('post_comments')
-      .select('*', { count: 'exact', head: true })
+      .select('id')
       .eq('post_id', postId);
     
-    // Emit socket event for real-time update
-    if (post.posted_to === 'community' && post.college) {
-      io.to(post.college).emit('post_commented', { postId, commentCount: commentCount || 0 });
-    } else {
-      io.emit('post_commented', { postId, commentCount: commentCount || 0 });
+    const commentCount = comments?.length || 0;
+    
+    // Emit real-time update
+    const { data: post } = await supabase
+      .from('posts')
+      .select('college, posted_to')
+      .eq('id', postId)
+      .single();
+    
+    if (post) {
+      if (post.posted_to === 'community' && post.college) {
+        io.to(post.college).emit('post_commented', { postId, commentCount });
+      } else {
+        io.emit('post_commented', { postId, commentCount });
+      }
     }
     
-    res.status(201).json({ 
-      success: true, 
-      comment: newComment,
-      commentCount: commentCount || 0
-    });
+    res.json({ success: true, comment: newComment, commentCount });
   } catch (error) {
-    console.error('❌ Post comment error:', error);
+    console.error('❌ Comment error:', error);
     res.status(500).json({ error: 'Failed to post comment' });
   }
 });
 
-// NEW: Delete Comment
-app.delete('/api/posts/comments/:commentId', authenticateToken, async (req, res) => {
+app.delete('/api/posts/:postId/comments/:commentId', authenticateToken, async (req, res) => {
   try {
-    const { commentId } = req.params;
+    const { postId, commentId } = req.params;
     
-    // Check if comment exists and user owns it
-    const { data: comment, error } = await supabase
+    const { data: comment } = await supabase
       .from('post_comments')
-      .select('id, user_id, post_id')
+      .select('user_id')
       .eq('id', commentId)
       .single();
     
-    if (error || !comment) {
+    if (!comment) {
       return res.status(404).json({ error: 'Comment not found' });
     }
     
     if (comment.user_id !== req.user.id) {
-      return res.status(403).json({ error: 'Not authorized to delete this comment' });
+      return res.status(403).json({ error: 'Not authorized' });
     }
     
-    // Delete comment
     await supabase
       .from('post_comments')
       .delete()
       .eq('id', commentId);
     
     // Get updated comment count
-    const { count: commentCount } = await supabase
+    const { data: comments } = await supabase
       .from('post_comments')
-      .select('*', { count: 'exact', head: true })
-      .eq('post_id', comment.post_id);
+      .select('id')
+      .eq('post_id', postId);
     
-    // Get post info for socket event
+    const commentCount = comments?.length || 0;
+    
+    // Emit real-time update
     const { data: post } = await supabase
       .from('posts')
       .select('college, posted_to')
-      .eq('id', comment.post_id)
+      .eq('id', postId)
       .single();
     
-    // Emit socket event
-    if (post && post.posted_to === 'community' && post.college) {
-      io.to(post.college).emit('post_commented', { postId: comment.post_id, commentCount: commentCount || 0 });
-    } else {
-      io.emit('post_commented', { postId: comment.post_id, commentCount: commentCount || 0 });
+    if (post) {
+      if (post.posted_to === 'community' && post.college) {
+        io.to(post.college).emit('post_commented', { postId, commentCount });
+      } else {
+        io.emit('post_commented', { postId, commentCount });
+      }
     }
     
     res.json({ success: true, message: 'Comment deleted' });
@@ -1163,50 +925,294 @@ app.delete('/api/posts/comments/:commentId', authenticateToken, async (req, res)
   }
 });
 
-// NEW: Share Post
-app.post('/api/posts/:id/share', authenticateToken, async (req, res) => {
+// ==================== NEW: SHARE FUNCTIONALITY ====================
+
+app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
   try {
-    const { id: postId } = req.params;
+    const { postId } = req.params;
     
-    // Check if post exists
-    const { data: post, error: postError } = await supabase
+    // Increment share count
+    const { data: existingShare } = await supabase
+      .from('post_shares')
+      .select('*')
+      .eq('post_id', postId)
+      .eq('user_id', req.user.id)
+      .maybeSingle();
+    
+    if (!existingShare) {
+      await supabase
+        .from('post_shares')
+        .insert([{
+          post_id: postId,
+          user_id: req.user.id
+        }]);
+    }
+    
+    // Get updated share count
+    const { data: shares } = await supabase
+      .from('post_shares')
+      .select('id')
+      .eq('post_id', postId);
+    
+    const shareCount = shares?.length || 0;
+    
+    // Emit real-time update
+    const { data: post } = await supabase
       .from('posts')
-      .select('id, college, posted_to')
+      .select('college, posted_to')
       .eq('id', postId)
       .single();
     
-    if (postError || !post) {
-      return res.status(404).json({ error: 'Post not found' });
+    if (post) {
+      if (post.posted_to === 'community' && post.college) {
+        io.to(post.college).emit('post_shared', { postId, shareCount });
+      } else {
+        io.emit('post_shared', { postId, shareCount });
+      }
     }
     
-    // Record share
-    await supabase
-      .from('post_shares')
-      .insert([{
-        post_id: postId,
-        user_id: req.user.id
-      }]);
-    
-    // Get updated share count
-    const { count: shareCount } = await supabase
-      .from('post_shares')
-      .select('*', { count: 'exact', head: true })
-      .eq('post_id', postId);
-    
-    // Emit socket event for real-time update
-    if (post.posted_to === 'community' && post.college) {
-      io.to(post.college).emit('post_shared', { postId, shareCount: shareCount || 0 });
-    } else {
-      io.emit('post_shared', { postId, shareCount: shareCount || 0 });
-    }
-    
-    res.json({ 
-      success: true, 
-      shareCount: shareCount || 0 
-    });
+    res.json({ success: true, shareCount });
   } catch (error) {
-    console.error('❌ Share post error:', error);
+    console.error('❌ Share error:', error);
     res.status(500).json({ error: 'Failed to share post' });
+  }
+});
+
+// ==================== UPDATED: GET POSTS WITH INTERACTION DATA ====================
+
+app.get('/api/posts', authenticateToken, async (req, res) => {
+  try {
+    const { limit = 20, offset = 0 } = req.query;
+    
+    // Get profile posts
+    const { data: profilePosts, error: profileError } = await supabase
+      .from('posts')
+      .select(`*, users (id, username, profile_pic, college, registration_number)`)
+      .eq('user_id', req.user.id)
+      .eq('posted_to', 'profile')
+      .order('created_at', { ascending: false });
+    
+    if (profileError) console.error('❌ Profile posts error:', profileError);
+    
+    // Get community posts
+    let communityPosts = [];
+    if (req.user.community_joined && req.user.college) {
+      const { data: commPosts, error: commError } = await supabase
+        .from('posts')
+        .select(`*, users (id, username, profile_pic, college, registration_number)`)
+        .eq('college', req.user.college)
+        .eq('posted_to', 'community')
+        .order('created_at', { ascending: false });
+      
+      if (commError) {
+        console.error('❌ Community posts error:', commError);
+      } else {
+        communityPosts = commPosts || [];
+      }
+    }
+    
+    // Combine and sort posts
+    const allPosts = [...(profilePosts || []), ...communityPosts]
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .slice(parseInt(offset), parseInt(offset) + parseInt(limit));
+    
+    // Add interaction data to each post
+    const postsWithInteractions = await Promise.all(allPosts.map(async (post) => {
+      // Get like count and check if user liked
+      const { data: likes } = await supabase
+        .from('post_likes')
+        .select('user_id')
+        .eq('post_id', post.id);
+      
+      const likeCount = likes?.length || 0;
+      const isLiked = likes?.some(like => like.user_id === req.user.id) || false;
+      
+      // Get comment count
+      const { data: comments } = await supabase
+        .from('post_comments')
+        .select('id')
+        .eq('post_id', post.id);
+      
+      const commentCount = comments?.length || 0;
+      
+      // Get share count
+      const { data: shares } = await supabase
+        .from('post_shares')
+        .select('id')
+        .eq('post_id', post.id);
+      
+      const shareCount = shares?.length || 0;
+      
+      return {
+        ...post,
+        music: post.music || null,
+        stickers: post.stickers || [],
+        like_count: likeCount,
+        comment_count: commentCount,
+        share_count: shareCount,
+        is_liked: isLiked
+      };
+    }));
+    
+    res.json({ success: true, posts: postsWithInteractions });
+  } catch (error) {
+    console.error('❌ Get posts error:', error);
+    res.json({ success: true, posts: [] });
+  }
+});
+
+app.get('/api/posts/profile', authenticateToken, async (req, res) => {
+  try {
+    const { limit = 20, offset = 0 } = req.query;
+    
+    const { data: posts, error } = await supabase
+      .from('posts')
+      .select(`*, users (id, username, profile_pic, college, registration_number)`)
+      .eq('user_id', req.user.id)
+      .eq('posted_to', 'profile')
+      .order('created_at', { ascending: false })
+      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+    
+    if (error) throw error;
+    
+    // Add interaction data
+    const postsWithInteractions = await Promise.all((posts || []).map(async (post) => {
+      const { data: likes } = await supabase
+        .from('post_likes')
+        .select('user_id')
+        .eq('post_id', post.id);
+      
+      const { data: comments } = await supabase
+        .from('post_comments')
+        .select('id')
+        .eq('post_id', post.id);
+      
+      const { data: shares } = await supabase
+        .from('post_shares')
+        .select('id')
+        .eq('post_id', post.id);
+      
+      return {
+        ...post,
+        music: post.music || null,
+        stickers: post.stickers || [],
+        like_count: likes?.length || 0,
+        comment_count: comments?.length || 0,
+        share_count: shares?.length || 0,
+        is_liked: likes?.some(like => like.user_id === req.user.id) || false
+      };
+    }));
+    
+    res.json({ success: true, posts: postsWithInteractions });
+  } catch (error) {
+    console.error('❌ Get profile posts error:', error);
+    res.status(500).json({ error: 'Failed to fetch profile posts' });
+  }
+});
+
+app.get('/api/posts/community', authenticateToken, async (req, res) => {
+  try {
+    if (!req.user.community_joined || !req.user.college) {
+      return res.status(403).json({
+        error: 'Please join a college community first to view community posts',
+        needsJoinCommunity: true
+      });
+    }
+    
+    const { limit = 20, offset = 0 } = req.query;
+    
+    const { data: posts, error } = await supabase
+      .from('posts')
+      .select(`*, users (id, username, profile_pic, college, registration_number)`)
+      .eq('college', req.user.college)
+      .eq('posted_to', 'community')
+      .order('created_at', { ascending: false })
+      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+    
+    if (error) throw error;
+    
+    // Add interaction data
+    const postsWithInteractions = await Promise.all((posts || []).map(async (post) => {
+      const { data: likes } = await supabase
+        .from('post_likes')
+        .select('user_id')
+        .eq('post_id', post.id);
+      
+      const { data: comments } = await supabase
+        .from('post_comments')
+        .select('id')
+        .eq('post_id', post.id);
+      
+      const { data: shares } = await supabase
+        .from('post_shares')
+        .select('id')
+        .eq('post_id', post.id);
+      
+      return {
+        ...post,
+        music: post.music || null,
+        stickers: post.stickers || [],
+        like_count: likes?.length || 0,
+        comment_count: comments?.length || 0,
+        share_count: shares?.length || 0,
+        is_liked: likes?.some(like => like.user_id === req.user.id) || false
+      };
+    }));
+    
+    res.json({ success: true, posts: postsWithInteractions });
+  } catch (error) {
+    console.error('❌ Get community posts error:', error);
+    res.status(500).json({ error: 'Failed to fetch community posts' });
+  }
+});
+
+app.get('/api/posts/user/:userId', authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { limit = 20, offset = 0 } = req.query;
+    
+    const { data: posts, error } = await supabase
+      .from('posts')
+      .select(`*, users (id, username, profile_pic, college, registration_number)`)
+      .eq('user_id', userId)
+      .eq('posted_to', 'profile')
+      .order('created_at', { ascending: false })
+      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+    
+    if (error) throw error;
+    
+    // Add interaction data
+    const postsWithInteractions = await Promise.all((posts || []).map(async (post) => {
+      const { data: likes } = await supabase
+        .from('post_likes')
+        .select('user_id')
+        .eq('post_id', post.id);
+      
+      const { data: comments } = await supabase
+        .from('post_comments')
+        .select('id')
+        .eq('post_id', post.id);
+      
+      const { data: shares } = await supabase
+        .from('post_shares')
+        .select('id')
+        .eq('post_id', post.id);
+      
+      return {
+        ...post,
+        music: post.music || null,
+        stickers: post.stickers || [],
+        like_count: likes?.length || 0,
+        comment_count: comments?.length || 0,
+        share_count: shares?.length || 0,
+        is_liked: likes?.some(like => like.user_id === req.user.id) || false
+      };
+    }));
+    
+    res.json({ success: true, posts: postsWithInteractions });
+  } catch (error) {
+    console.error('❌ Get user profile posts error:', error);
+    res.status(500).json({ error: 'Failed to fetch user profile posts' });
   }
 });
 
@@ -1233,6 +1239,7 @@ app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
     await supabase.from('post_comments').delete().eq('post_id', id);
     await supabase.from('post_shares').delete().eq('post_id', id);
     
+    // Delete media files
     if (post.media && post.media.length > 0) {
       for (const media of post.media) {
         try {
@@ -1261,6 +1268,7 @@ app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// Community messages endpoints (unchanged)
 app.get('/api/community/messages', authenticateToken, async (req, res) => {
   try {
     if (!req.user.community_joined || !req.user.college) {
@@ -1658,6 +1666,6 @@ server.listen(PORT, () => {
   console.log(`✅ Mobile-optimized with enhanced timeout handling`);
   console.log(`✅ CORS configured for all devices`);
   console.log(`✅ Image upload support: 20MB max per file, 10 files max`);
-  console.log(`✅ Like, Comment, Share features enabled`);
+  console.log(`✅ Like, Comment, Share functionality enabled`);
   console.log(`✅ Real-time updates via Socket.IO`);
 });
