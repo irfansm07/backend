@@ -1,4 +1,4 @@
-/ VIBEXPERT BACKEND - COMPLETE WITH REWARDS SYSTEM
+// VIBEXPERT BACKEND - COMPLETE WITH LIKE/COMMENT/SHARE FUNCTIONALITY
 
 require('dotenv').config();
 const express = require('express');
@@ -150,78 +150,6 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// REWARDS HELPER FUNCTIONS
-async function awardPoints(userId, points, reason) {
-  try {
-    const { data: user } = await supabase
-      .from('users')
-      .select('reward_points, reward_level')
-      .eq('id', userId)
-      .single();
-    
-    const newPoints = (user.reward_points || 0) + points;
-    const newLevel = calculateLevel(newPoints);
-    
-    await supabase
-      .from('users')
-      .update({ 
-        reward_points: newPoints,
-        reward_level: newLevel
-      })
-      .eq('id', userId);
-    
-    await supabase
-      .from('reward_history')
-      .insert([{
-        user_id: userId,
-        points: points,
-        reason: reason,
-        timestamp: new Date().toISOString()
-      }]);
-    
-    return { points: newPoints, level: newLevel, earned: points };
-  } catch (error) {
-    console.error('Award points error:', error);
-    return null;
-  }
-}
-
-function calculateLevel(points) {
-  if (points >= 3000) return 'Platinum';
-  if (points >= 1500) return 'Gold';
-  if (points >= 500) return 'Silver';
-  return 'Bronze';
-}
-
-async function checkDailyLogin(userId) {
-  try {
-    const today = new Date().toISOString().split('T')[0];
-    
-    const { data: loginRecord } = await supabase
-      .from('daily_logins')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('login_date', today)
-      .single();
-    
-    if (!loginRecord) {
-      await supabase
-        .from('daily_logins')
-        .insert([{
-          user_id: userId,
-          login_date: today
-        }]);
-      
-      return await awardPoints(userId, 10, 'Daily Login');
-    }
-    
-    return null;
-  } catch (error) {
-    console.error('Daily login check error:', error);
-    return null;
-  }
-}
-
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
@@ -300,7 +228,7 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
     
     const { data: user, error } = await supabase
       .from('users')
-      .select('id, username, email, registration_number, college, profile_pic, bio, reward_points, reward_level, community_joined, created_at')
+      .select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined, created_at')
       .eq('id', userId)
       .single();
     
@@ -315,100 +243,11 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
     
     res.json({ 
       success: true, 
-      user: { 
-        ...user, 
-        postCount: posts?.length || 0,
-        rewardPoints: user.reward_points || 0,
-        rewardLevel: user.reward_level || 'Bronze'
-      } 
+      user: { ...user, postCount: posts?.length || 0 } 
     });
   } catch (error) {
     console.error('❌ Get profile error:', error);
     res.status(500).json({ error: 'Failed to fetch profile' });
-  }
-});
-
-// REWARDS ENDPOINTS
-app.get('/api/rewards/status', authenticateToken, async (req, res) => {
-  try {
-    const { data: user } = await supabase
-      .from('users')
-      .select('reward_points, reward_level')
-      .eq('id', req.user.id)
-      .single();
-    
-    const { data: history } = await supabase
-      .from('reward_history')
-      .select('*')
-      .eq('user_id', req.user.id)
-      .order('timestamp', { ascending: false })
-      .limit(10);
-    
-    const points = user.reward_points || 0;
-    const level = user.reward_level || 'Bronze';
-    
-    const levels = {
-      'Bronze': { min: 0, max: 500 },
-      'Silver': { min: 500, max: 1500 },
-      'Gold': { min: 1500, max: 3000 },
-      'Platinum': { min: 3000, max: Infinity }
-    };
-    
-    const currentLevel = levels[level];
-    const progress = currentLevel.max === Infinity 
-      ? 100 
-      : ((points - currentLevel.min) / (currentLevel.max - currentLevel.min)) * 100;
-    
-    res.json({
-      success: true,
-      points,
-      level,
-      progress: Math.min(progress, 100),
-      nextLevel: level === 'Platinum' ? null : Object.keys(levels)[Object.keys(levels).indexOf(level) + 1],
-      pointsToNext: level === 'Platinum' ? 0 : currentLevel.max - points,
-      history: history || []
-    });
-  } catch (error) {
-    console.error('❌ Rewards status error:', error);
-    res.status(500).json({ error: 'Failed to fetch rewards' });
-  }
-});
-
-app.post('/api/rewards/share', authenticateToken, async (req, res) => {
-  try {
-    const today = new Date().toISOString().split('T')[0];
-    
-    const { data: shareRecord } = await supabase
-      .from('share_tracking')
-      .select('*')
-      .eq('user_id', req.user.id)
-      .eq('share_date', today)
-      .single();
-    
-    if (shareRecord) {
-      return res.json({ 
-        success: false, 
-        message: 'You already earned share points today!' 
-      });
-    }
-    
-    await supabase
-      .from('share_tracking')
-      .insert([{
-        user_id: req.user.id,
-        share_date: today
-      }]);
-    
-    const result = await awardPoints(req.user.id, 50, 'Shared VibeXpert');
-    
-    res.json({
-      success: true,
-      message: '🎉 +50 points for sharing!',
-      reward: result
-    });
-  } catch (error) {
-    console.error('❌ Share reward error:', error);
-    res.status(500).json({ error: 'Failed to process share reward' });
   }
 });
 
@@ -448,9 +287,7 @@ app.post('/api/register', async (req, res) => {
         username,
         email,
         password_hash: passwordHash,
-        registration_number: registrationNumber,
-        reward_points: 0,
-        reward_level: 'Bronze'
+        registration_number: registrationNumber
       }])
       .select()
       .single();
@@ -509,9 +346,6 @@ app.post('/api/login', async (req, res) => {
       { expiresIn: '30d' }
     );
     
-    // Check and award daily login points
-    const dailyReward = await checkDailyLogin(user.id);
-    
     res.json({
       success: true,
       token,
@@ -523,11 +357,9 @@ app.post('/api/login', async (req, res) => {
         communityJoined: user.community_joined,
         profilePic: user.profile_pic,
         registrationNumber: user.registration_number,
-        rewardPoints: user.reward_points || 0,
-        rewardLevel: user.reward_level || 'Bronze',
+        badges: user.badges || [],
         bio: user.bio || ''
-      },
-      dailyReward: dailyReward
+      }
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -714,12 +546,18 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
     }
     
     const { collegeName } = codeData.meta;
+    const currentBadges = req.user.badges || [];
+    
+    if (!currentBadges.includes('🎓 Community Member')) {
+      currentBadges.push('🎓 Community Member');
+    }
     
     await supabase
       .from('users')
       .update({
         college: collegeName,
-        community_joined: true
+        community_joined: true,
+        badges: currentBadges
       })
       .eq('id', req.user.id);
     
@@ -728,14 +566,11 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
       .delete()
       .eq('id', codeData.id);
     
-    // Award points for joining community
-    const reward = await awardPoints(req.user.id, 100, 'Joined College Community');
-    
     res.json({
       success: true,
       message: `Successfully connected to ${collegeName}!`,
       college: collegeName,
-      reward: reward
+      badges: currentBadges
     });
   } catch (error) {
     console.error('College verification error:', error);
@@ -847,6 +682,8 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       return res.status(500).json({ error: 'Failed to create post: ' + postError.message });
     }
 
+    // Update badges
+    const currentBadges = req.user.badges || [];
     const { data: userPosts } = await supabase
       .from('posts')
       .select('id')
@@ -854,8 +691,27 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
     
     const postCount = userPosts?.length || 0;
     
-    // Award points for creating post
-    const reward = await awardPoints(req.user.id, 25, 'Created a Post');
+    let badgeUpdated = false;
+    const newBadges = [];
+    
+    if (postCount === 1 && !currentBadges.includes('🎨 First Post')) {
+      currentBadges.push('🎨 First Post');
+      newBadges.push('🎨 First Post');
+      badgeUpdated = true;
+    }
+    
+    if (postCount === 10 && !currentBadges.includes('⭐ Content Creator')) {
+      currentBadges.push('⭐ Content Creator');
+      newBadges.push('⭐ Content Creator');
+      badgeUpdated = true;
+    }
+    
+    if (badgeUpdated) {
+      await supabase
+        .from('users')
+        .update({ badges: currentBadges })
+        .eq('id', req.user.id);
+    }
     
     if (postTo === 'community' && req.user.college) {
       io.to(req.user.college).emit('new_post', newPost);
@@ -867,7 +723,9 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       success: true,
       post: newPost,
       message: postTo === 'community' ? 'Posted to community!' : 'Posted to profile!',
-      reward: reward,
+      badges: currentBadges,
+      badgeUpdated,
+      newBadges,
       postCount: postCount
     });
   } catch (error) {
@@ -876,10 +734,13 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
   }
 });
 
+// ==================== NEW: LIKE FUNCTIONALITY ====================
+
 app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
   try {
     const { postId } = req.params;
     
+    // Check if already liked
     const { data: existingLike } = await supabase
       .from('post_likes')
       .select('*')
@@ -890,6 +751,7 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
     let liked = false;
     
     if (existingLike) {
+      // Unlike
       await supabase
         .from('post_likes')
         .delete()
@@ -897,6 +759,7 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
       
       liked = false;
     } else {
+      // Like
       await supabase
         .from('post_likes')
         .insert([{
@@ -907,6 +770,7 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
       liked = true;
     }
     
+    // Get updated like count
     const { data: likes } = await supabase
       .from('post_likes')
       .select('id')
@@ -914,6 +778,7 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
     
     const likeCount = likes?.length || 0;
     
+    // Emit real-time update
     const { data: post } = await supabase
       .from('posts')
       .select('college, posted_to')
@@ -934,6 +799,8 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Failed to like post' });
   }
 });
+
+// ==================== NEW: COMMENT FUNCTIONALITY ====================
 
 app.get('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
   try {
@@ -975,6 +842,7 @@ app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
     
     if (error) throw error;
     
+    // Get updated comment count
     const { data: comments } = await supabase
       .from('post_comments')
       .select('id')
@@ -982,6 +850,7 @@ app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
     
     const commentCount = comments?.length || 0;
     
+    // Emit real-time update
     const { data: post } = await supabase
       .from('posts')
       .select('college, posted_to')
@@ -1026,6 +895,7 @@ app.delete('/api/posts/:postId/comments/:commentId', authenticateToken, async (r
       .delete()
       .eq('id', commentId);
     
+    // Get updated comment count
     const { data: comments } = await supabase
       .from('post_comments')
       .select('id')
@@ -1033,6 +903,7 @@ app.delete('/api/posts/:postId/comments/:commentId', authenticateToken, async (r
     
     const commentCount = comments?.length || 0;
     
+    // Emit real-time update
     const { data: post } = await supabase
       .from('posts')
       .select('college, posted_to')
@@ -1054,10 +925,13 @@ app.delete('/api/posts/:postId/comments/:commentId', authenticateToken, async (r
   }
 });
 
+// ==================== NEW: SHARE FUNCTIONALITY ====================
+
 app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
   try {
     const { postId } = req.params;
     
+    // Increment share count
     const { data: existingShare } = await supabase
       .from('post_shares')
       .select('*')
@@ -1074,6 +948,7 @@ app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
         }]);
     }
     
+    // Get updated share count
     const { data: shares } = await supabase
       .from('post_shares')
       .select('id')
@@ -1081,6 +956,7 @@ app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
     
     const shareCount = shares?.length || 0;
     
+    // Emit real-time update
     const { data: post } = await supabase
       .from('posts')
       .select('college, posted_to')
@@ -1102,10 +978,13 @@ app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
   }
 });
 
+// ==================== UPDATED: GET POSTS WITH INTERACTION DATA ====================
+
 app.get('/api/posts', authenticateToken, async (req, res) => {
   try {
     const { limit = 20, offset = 0 } = req.query;
     
+    // Get profile posts
     const { data: profilePosts, error: profileError } = await supabase
       .from('posts')
       .select(`*, users (id, username, profile_pic, college, registration_number)`)
@@ -1115,6 +994,7 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
     
     if (profileError) console.error('❌ Profile posts error:', profileError);
     
+    // Get community posts
     let communityPosts = [];
     if (req.user.community_joined && req.user.college) {
       const { data: commPosts, error: commError } = await supabase
@@ -1131,11 +1011,14 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
       }
     }
     
+    // Combine and sort posts
     const allPosts = [...(profilePosts || []), ...communityPosts]
       .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
       .slice(parseInt(offset), parseInt(offset) + parseInt(limit));
     
+    // Add interaction data to each post
     const postsWithInteractions = await Promise.all(allPosts.map(async (post) => {
+      // Get like count and check if user liked
       const { data: likes } = await supabase
         .from('post_likes')
         .select('user_id')
@@ -1144,6 +1027,7 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
       const likeCount = likes?.length || 0;
       const isLiked = likes?.some(like => like.user_id === req.user.id) || false;
       
+      // Get comment count
       const { data: comments } = await supabase
         .from('post_comments')
         .select('id')
@@ -1151,6 +1035,7 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
       
       const commentCount = comments?.length || 0;
       
+      // Get share count
       const { data: shares } = await supabase
         .from('post_shares')
         .select('id')
@@ -1190,6 +1075,7 @@ app.get('/api/posts/profile', authenticateToken, async (req, res) => {
     
     if (error) throw error;
     
+    // Add interaction data
     const postsWithInteractions = await Promise.all((posts || []).map(async (post) => {
       const { data: likes } = await supabase
         .from('post_likes')
@@ -1245,6 +1131,7 @@ app.get('/api/posts/community', authenticateToken, async (req, res) => {
     
     if (error) throw error;
     
+    // Add interaction data
     const postsWithInteractions = await Promise.all((posts || []).map(async (post) => {
       const { data: likes } = await supabase
         .from('post_likes')
@@ -1294,6 +1181,7 @@ app.get('/api/posts/user/:userId', authenticateToken, async (req, res) => {
     
     if (error) throw error;
     
+    // Add interaction data
     const postsWithInteractions = await Promise.all((posts || []).map(async (post) => {
       const { data: likes } = await supabase
         .from('post_likes')
@@ -1346,10 +1234,12 @@ app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Not authorized' });
     }
     
+    // Delete related data
     await supabase.from('post_likes').delete().eq('post_id', id);
     await supabase.from('post_comments').delete().eq('post_id', id);
     await supabase.from('post_shares').delete().eq('post_id', id);
     
+    // Delete media files
     if (post.media && post.media.length > 0) {
       for (const media of post.media) {
         try {
@@ -1378,6 +1268,7 @@ app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// Community messages endpoints (unchanged)
 app.get('/api/community/messages', authenticateToken, async (req, res) => {
   try {
     if (!req.user.community_joined || !req.user.college) {
@@ -1618,7 +1509,7 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
   try {
     const { data: user } = await supabase
       .from('users')
-      .select('id, username, email, registration_number, college, profile_pic, bio, reward_points, reward_level, community_joined, created_at')
+      .select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined, created_at')
       .eq('id', req.user.id)
       .single();
     
@@ -1627,15 +1518,7 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
       .select('id')
       .eq('user_id', req.user.id);
     
-    res.json({ 
-      success: true, 
-      user: { 
-        ...user, 
-        postCount: posts?.length || 0,
-        rewardPoints: user.reward_points || 0,
-        rewardLevel: user.reward_level || 'Bronze'
-      } 
-    });
+    res.json({ success: true, user: { ...user, postCount: posts?.length || 0 } });
   } catch (error) {
     console.error('❌ Get profile error:', error);
     res.status(500).json({ error: 'Failed to fetch profile' });
@@ -1683,7 +1566,7 @@ app.patch('/api/profile', authenticateToken, upload.single('profilePic'), async 
       .from('users')
       .update(updates)
       .eq('id', req.user.id)
-      .select('id, username, email, registration_number, college, profile_pic, bio, reward_points, reward_level, community_joined')
+      .select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined')
       .single();
     
     if (error) throw error;
@@ -1784,6 +1667,5 @@ server.listen(PORT, () => {
   console.log(`✅ CORS configured for all devices`);
   console.log(`✅ Image upload support: 20MB max per file, 10 files max`);
   console.log(`✅ Like, Comment, Share functionality enabled`);
-  console.log(`✅ Rewards System enabled`);
   console.log(`✅ Real-time updates via Socket.IO`);
 });
