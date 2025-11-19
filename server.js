@@ -226,6 +226,7 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
   try {
     const { userId } = req.params;
     
+    // Fetch user details
     const { data: user, error } = await supabase
       .from('users')
       .select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined, created_at')
@@ -236,14 +237,34 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
     
-    const { data: posts } = await supabase
+    // Fetch post count
+    const { count: postCount } = await supabase
       .from('posts')
-      .select('id')
+      .select('id', { count: 'exact', head: true })
       .eq('user_id', userId);
+
+    // Fetch Profile Likes Count
+    const { count: likeCount } = await supabase
+      .from('profile_likes')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId);
+
+    // Check if current user liked this profile
+    const { data: isLiked } = await supabase
+      .from('profile_likes')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('liker_id', req.user.id)
+      .maybeSingle();
     
     res.json({ 
       success: true, 
-      user: { ...user, postCount: posts?.length || 0 } 
+      user: { 
+        ...user, 
+        postCount: postCount || 0,
+        profileLikes: likeCount || 0,
+        isProfileLiked: !!isLiked
+      } 
     });
   } catch (error) {
     console.error('❌ Get profile error:', error);
@@ -1669,3 +1690,4 @@ server.listen(PORT, () => {
   console.log(`✅ Like, Comment, Share functionality enabled`);
   console.log(`✅ Real-time updates via Socket.IO`);
 });
+
