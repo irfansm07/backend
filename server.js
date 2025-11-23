@@ -1683,11 +1683,12 @@ app.use((req, res) => {
 
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
-  console.log(`🚀 VibeXpert Backend running on port ${PORT}`);
+  console.log(`🚀 VibeXperts Backend running on port ${PORT}`);
   console.log(`✅ Mobile-optimized with enhanced timeout handling`);
   console.log(`✅ CORS configured for all devices`);
   console.log(`✅ Image upload support: 20MB max per file, 10 files max`);
   console.log(`✅ Like, Comment, Share functionality enabled`);
   console.log(`✅ Real-time updates via Socket.IO`);
 });
+
 
