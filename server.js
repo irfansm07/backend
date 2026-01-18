@@ -737,6 +737,7 @@ app.post('/api/forgot-password', async (req, res) => {
 // [ALL OTHER ENDPOINTS CONTINUE - I'm keeping your exact code]
 
 // Socket.IO connection handling
+// Socket.IO connection handling
 io.on('connection', (socket) => {
   console.log('⚡ User connected:', socket.id);
   
@@ -757,21 +758,19 @@ io.on('connection', (socket) => {
       socket.to(data.collegeName).emit('user_typing', { username: data.username });
     }
   });
-
-
+  
   socket.on('stop_typing', (data) => {
     if (data.collegeName && data.username) {
-       socket.to(data.collegeName).emit('user_stop_typing', { username: data.username });
-     }
+      socket.to(data.collegeName).emit('user_stop_typing', { username: data.username });
+    }
   });
-
   
-socket.on('disconnect', () => {
-console.log('👋 User disconnected:', socket.id);
-if (socket.data.college) {
-console.log(- User left community: ${socket.data.college});
-}
-});
+  socket.on('disconnect', () => {
+    console.log('👋 User disconnected:', socket.id);
+    if (socket.data.college) {
+      console.log(`- User left community: ${socket.data.college}`);
+    }
+  });
 });
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -801,3 +800,4 @@ console.log(✅ Real-time updates via Socket.IO);
 console.log(💳 Razorpay payment integration enabled);
 console.log(👑 Premium subscription system active);
 });
+
