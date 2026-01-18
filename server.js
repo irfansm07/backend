@@ -791,13 +791,14 @@ res.status(404).json({ error: 'Endpoint not found' });
 });
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
-console.log(🚀 VibeXperts Backend running on port ${PORT});
-console.log(✅ Mobile-optimized with enhanced timeout handling);
-console.log(✅ CORS configured for all devices);
-console.log(✅ Image upload support: 20MB max per file, 10 files max);
-console.log(✅ Like, Comment, Share functionality enabled);
-console.log(✅ Real-time updates via Socket.IO);
-console.log(💳 Razorpay payment integration enabled);
-console.log(👑 Premium subscription system active);
+  console.log(`🚀 VibeXperts Backend running on port ${PORT}`);
+  console.log(`✅ Mobile-optimized with enhanced timeout handling`);
+  console.log(`✅ CORS configured for all devices`);
+  console.log(`✅ Image upload support: 20MB max per file, 10 files max`);
+  console.log(`✅ Like, Comment, Share functionality enabled`);
+  console.log(`✅ Real-time updates via Socket.IO`);
+  console.log(`💳 Razorpay payment integration enabled`);
+  console.log(`👑 Premium subscription system active`);
 });
+
 
