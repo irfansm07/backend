@@ -658,11 +658,14 @@ app.post('/api/login', async (req, res) => {
     if (!validPassword) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
-    
+  
     const token = jwt.sign(
-      { userId: user.id, email: user.email },
+      { 
+        userId: user.id, 
+        email: user.email 
+      },
       process.env.JWT_SECRET,
-      { expiresIn: '30d' }
+      { expiresIn: '30d' }  // Token valid for 30 days
     );
     
     res.json({
@@ -814,6 +817,7 @@ server.listen(PORT, () => {
   console.log(`💳 Razorpay payment integration enabled`);
   console.log(`👑 Premium subscription system active`);
 });
+
 
 
 
