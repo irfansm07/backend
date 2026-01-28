@@ -1201,14 +1201,19 @@ app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
 
 app.get('/api/community/messages', authenticateToken, async (req, res) => {
   try {
+    console.log('📥 GET Messages:', {
+      user: req.user.username,
+      college: req.user.college
+    });
+
     if (!req.user.community_joined || !req.user.college) {
-      return res.json({ 
+      return res.json({
         success: false,
         needsJoinCommunity: true,
-        messages: [] 
+        messages: []
       });
     }
-    
+
     const { data: messages, error } = await supabase
       .from('community_messages')
       .select(`
@@ -1217,41 +1222,48 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
           id,
           username,
           profile_pic
-        ),
-        message_reactions (
-          id,
-          emoji,
-          user_id
         )
       `)
       .eq('college_name', req.user.college)
-      .order('created_at', { ascending: false })
+      .order('created_at', { ascending: true })
       .limit(100);
-    
+
     if (error) throw error;
-    
-    res.json({ 
-      success: true, 
-      messages: (messages || []).reverse() 
+
+    console.log(`✅ Loaded ${messages?.length || 0} messages`);
+
+    res.json({
+      success: true,
+      messages: messages || []
     });
+
   } catch (error) {
     console.error('❌ Get messages error:', error);
-    res.status(500).json({ error: 'Failed to load messages' });
+    res.status(500).json({
+      error: 'Failed to load messages',
+      details: error.message
+    });
   }
 });
 
 app.post('/api/community/messages', authenticateToken, async (req, res) => {
   try {
     const { content } = req.body;
-    
+
+    console.log('📨 POST Message:', {
+      user: req.user.username,
+      college: req.user.college,
+      contentLength: content?.length
+    });
+
     if (!content || !content.trim()) {
       return res.status(400).json({ error: 'Message content required' });
     }
-    
+
     if (!req.user.community_joined || !req.user.college) {
       return res.status(400).json({ error: 'Join a college community first' });
     }
-    
+
     const { data: message, error } = await supabase
       .from('community_messages')
       .insert([{
@@ -1268,16 +1280,25 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
         )
       `)
       .single();
-    
-    if (error) throw error;
-    
-    // Emit via Socket.IO
+
+    if (error) {
+      console.error('❌ Database error:', error);
+      throw error;
+    }
+
+    console.log('✅ Message saved:', message.id);
+
+    // Broadcast via Socket.IO
     io.to(req.user.college).emit('new_message', message);
-    
+
     res.json({ success: true, message });
+
   } catch (error) {
     console.error('❌ Send message error:', error);
-    res.status(500).json({ error: 'Failed to send message' });
+    res.status(500).json({
+      error: 'Failed to send message',
+      details: error.message
+    });
   }
 });
 
@@ -1453,3 +1474,4 @@ server.listen(PORT, () => {
   console.log(`💳 Razorpay payment integration enabled`);
   console.log(`👑 Premium subscription system active`);
 });
+
