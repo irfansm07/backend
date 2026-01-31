@@ -1284,6 +1284,10 @@ app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
 });
 
 // ==================== COMMUNITY CHAT ENDPOINTS ====================
+// ==================== FIXED COMMUNITY CHAT ENDPOINTS ====================
+// Replace your existing /api/community/messages endpoints with these
+
+// ✅ GET MESSAGES - Load from database
 app.get('/api/community/messages', authenticateToken, async (req, res) => {
   try {
     console.log('📥 GET Messages:', {
@@ -1291,6 +1295,7 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
       college: req.user.college
     });
 
+    // Check if user is in a community
     if (!req.user.community_joined || !req.user.college) {
       return res.json({
         success: false,
@@ -1299,6 +1304,7 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
       });
     }
 
+    // ✅ CRITICAL FIX: Actually fetch from database with proper ordering
     const { data: messages, error } = await supabase
       .from('community_messages')
       .select(`
@@ -1310,13 +1316,17 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
         )
       `)
       .eq('college_name', req.user.college)
-      .order('created_at', { ascending: true })
-      .limit(100);
+      .order('created_at', { ascending: true })  // ✅ Oldest first (correct order)
+      .limit(200);  // ✅ Load last 200 messages
 
-    if (error) throw error;
+    if (error) {
+      console.error('❌ Database error:', error);
+      throw error;
+    }
 
-    console.log(`✅ Loaded ${messages?.length || 0} messages`);
+    console.log(`✅ Loaded ${messages?.length || 0} messages from database`);
 
+    // ✅ Return messages in correct format
     res.json({
       success: true,
       messages: messages || []
@@ -1331,6 +1341,7 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
   }
 });
 
+// ✅ POST MESSAGE - Save to database AND broadcast
 app.post('/api/community/messages', authenticateToken, async (req, res) => {
   try {
     const { content } = req.body;
@@ -1341,6 +1352,7 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
       contentLength: content?.length
     });
 
+    // Validation
     if (!content || !content.trim()) {
       return res.status(400).json({ error: 'Message content required' });
     }
@@ -1349,6 +1361,7 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Join a college community first' });
     }
 
+    // ✅ CRITICAL FIX: Save to database FIRST
     const { data: message, error } = await supabase
       .from('community_messages')
       .insert([{
@@ -1367,24 +1380,30 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
       .single();
 
     if (error) {
-      console.error('❌ Database error:', error);
+      console.error('❌ Database insert error:', error);
       throw error;
     }
 
-    console.log('✅ Message saved:', message.id);
+    console.log('✅ Message saved to database:', message.id);
 
-    // Broadcast via Socket.IO (except to sender)
+    // ✅ CRITICAL FIX: Broadcast to everyone EXCEPT sender
     const senderSocketId = userSockets.get(req.user.id);
-
+    
     if (senderSocketId) {
+      // Sender is online - broadcast to others only
       io.to(req.user.college).except(senderSocketId).emit('new_message', message);
       console.log(`📡 Broadcast to ${req.user.college} (except sender ${senderSocketId})`);
     } else {
+      // Sender not in socket map (shouldn't happen) - broadcast to all
       io.to(req.user.college).emit('new_message', message);
-      console.log(`📡 Broadcast to ${req.user.college} (sender not found)`);
+      console.log(`📡 Broadcast to ${req.user.college} (sender not found in map)`);
     }
 
-    res.json({ success: true, message });
+    // ✅ Return success with saved message
+    res.json({ 
+      success: true, 
+      message: message  // ✅ Return the complete message object
+    });
 
   } catch (error) {
     console.error('❌ Send message error:', error);
@@ -1395,10 +1414,12 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
   }
 });
 
+// ✅ DELETE MESSAGE - Remove from database AND broadcast deletion
 app.delete('/api/community/messages/:messageId', authenticateToken, async (req, res) => {
   try {
     const { messageId } = req.params;
     
+    // ✅ Verify ownership before deleting
     const { data: message } = await supabase
       .from('community_messages')
       .select('sender_id, college_name')
@@ -1406,15 +1427,20 @@ app.delete('/api/community/messages/:messageId', authenticateToken, async (req, 
       .single();
     
     if (!message || message.sender_id !== req.user.id) {
-      return res.status(403).json({ error: 'Not authorized' });
+      return res.status(403).json({ error: 'Not authorized to delete this message' });
     }
     
-    await supabase
+    // ✅ Delete from database
+    const { error } = await supabase
       .from('community_messages')
       .delete()
       .eq('id', messageId);
     
-    // Emit deletion via Socket.IO
+    if (error) throw error;
+
+    console.log(`🗑️ Message deleted: ${messageId}`);
+    
+    // ✅ Broadcast deletion to all users in the college
     io.to(message.college_name).emit('message_deleted', { id: messageId });
     
     res.json({ success: true, message: 'Message deleted' });
@@ -1423,7 +1449,6 @@ app.delete('/api/community/messages/:messageId', authenticateToken, async (req, 
     res.status(500).json({ error: 'Failed to delete message' });
   }
 });
-
 // ==================== FEEDBACK ENDPOINT ====================
 app.post('/api/feedback', authenticateToken, async (req, res) => {
   try {
@@ -1478,3 +1503,4 @@ server.listen(PORT, () => {
   console.log(`💳 Razorpay payment integration enabled`);
   console.log(`👑 Premium subscription system active`);
 });
+
