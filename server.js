@@ -39,40 +39,8 @@ const io = socketIO(server, {
 // Add at top of server.js after io initialization
 const userSockets = new Map(); // userId -> socketId
 
-// In socket.io connection handler
-io.on('connection', (socket) => {
-  console.log('⚡ User connected:', socket.id);
-  
-  socket.on('user_online', (userId) => {
-    socket.data.userId = userId;
-    userSockets.set(userId, socket.id); // Store mapping
-  });
-  
-  socket.on('join_college', (collegeName) => {
-    if (collegeName && typeof collegeName === 'string') {
-      Object.keys(socket.rooms).forEach(room => {
-        if (room !== socket.id) socket.leave(room);
-      });
-      socket.join(collegeName);
-      socket.data.college = collegeName;
-      console.log(`🧑‍🤝‍🧑 User ${socket.id} joined: ${collegeName}`);
-      
-      const roomSize = io.sockets.adapter.rooms.get(collegeName)?.size || 0;
-      io.to(collegeName).emit('online_count', roomSize);
-    }
-  });
-  
-  socket.on('disconnect', () => {
-    console.log('👋 User disconnected:', socket.id);
-    if (socket.data.userId) {
-      userSockets.delete(socket.data.userId); // Remove mapping
-    }
-    if (socket.data.college) {
-      const roomSize = io.sockets.adapter.rooms.get(socket.data.college)?.size || 0;
-      io.to(socket.data.college).emit('online_count', roomSize);
-    }
-  });
-});io.on('connection', (socket) => {
+
+  io.on('connection', (socket) => {
   console.log('⚡ User connected:', socket.id);
   
   // ✅ UPDATED: Store user socket mapping FIRST
@@ -1396,7 +1364,15 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
 
     // Broadcast via Socket.IO
 // CORRECT CODE:
-    socket.broadcast.to(req.user.college).emit('new_message', message);
+    const senderSocketId = userSockets.get(req.user.id);
+
+    if (senderSocketId) {
+      io.to(req.user.college).except(senderSocketId).emit('new_message', message);
+      console.log(`📡 Broadcast to ${req.user.college} (except sender ${senderSocketId})`);
+    } else {
+      io.to(req.user.college).emit('new_message', message);
+      console.log(`📡 Broadcast to ${req.user.college} (sender not found)`);
+    }
 
     res.json({ success: true, message });
 
@@ -1531,48 +1507,6 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
 
 // ==================== SOCKET.IO ====================
 
-io.on('connection', (socket) => {
-  console.log('⚡ User connected:', socket.id);
-  
-  socket.on('join_college', (collegeName) => {
-    if (collegeName && typeof collegeName === 'string') {
-      Object.keys(socket.rooms).forEach(room => {
-        if (room !== socket.id) socket.leave(room);
-      });
-      socket.join(collegeName);
-      socket.data.college = collegeName;
-      console.log(`🧑‍🤝‍🧑 User ${socket.id} joined: ${collegeName}`);
-      
-      // Send online count
-      const roomSize = io.sockets.adapter.rooms.get(collegeName)?.size || 0;
-      io.to(collegeName).emit('online_count', roomSize);
-    }
-  });
-  
-  socket.on('user_online', (userId) => {
-    socket.data.userId = userId;
-  });
-  
-  socket.on('typing', (data) => {
-    if (data.collegeName && data.username) {
-      socket.to(data.collegeName).emit('user_typing', { username: data.username });
-    }
-  });
-  
-  socket.on('stop_typing', (data) => {
-    if (data.collegeName && data.username) {
-      socket.to(data.collegeName).emit('user_stop_typing', { username: data.username });
-    }
-  });
-  
-  socket.on('disconnect', () => {
-    console.log('👋 User disconnected:', socket.id);
-    if (socket.data.college) {
-      const roomSize = io.sockets.adapter.rooms.get(socket.data.college)?.size || 0;
-      io.to(socket.data.college).emit('online_count', roomSize);
-    }
-  });
-});
 
 // ==================== ERROR HANDLING ====================
 
