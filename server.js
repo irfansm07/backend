@@ -28,30 +28,19 @@ const io = socketIO(server, {
   pingInterval: 25000
 });
 
-
-
-
-
-
-
-
-
-// Add at top of server.js after io initialization
+// User socket mapping
 const userSockets = new Map(); // userId -> socketId
 
-
-  io.on('connection', (socket) => {
+// ==================== SOCKET.IO SETUP ====================
+io.on('connection', (socket) => {
   console.log('⚡ User connected:', socket.id);
   
-  // ✅ UPDATED: Store user socket mapping FIRST
   socket.on('user_online', (userId) => {
     socket.data.userId = userId;
-    userSockets.set(userId, socket.id); // Store mapping
+    userSockets.set(userId, socket.id);
     console.log(`📍 User ${userId} mapped to socket ${socket.id}`);
   });
   
-  // REPLACE THIS SECTION in server.js (around line 85-95)
-
   socket.on('join_college', (collegeName) => {
     if (collegeName && typeof collegeName === 'string') {
       Object.keys(socket.rooms).forEach(room => {
@@ -64,57 +53,69 @@ const userSockets = new Map(); // userId -> socketId
       const roomSize = io.sockets.adapter.rooms.get(collegeName)?.size || 0;
       io.to(collegeName).emit('online_count', roomSize);
       
-      // ✅ NEW: Send chat history to newly joined user
+      // Send chat history
       sendChatHistory(socket, collegeName);
     }
   });
   
-  // ✅ ADD THIS NEW FUNCTION after io.on('connection') block
-  
-  async function sendChatHistory(socket, collegeName) {
-    try {
-      const { data: messages, error } = await supabase
-        .from('community_messages')
-        .select(`
-          *,
-          users:sender_id (
-            id,
-            username,
-            profile_pic
-          )
-        `)
-        .eq('college_name', collegeName)
-        .order('created_at', { ascending: true })
-        .limit(100);
-  
-      if (error) {
-        console.error('❌ Failed to load chat history:', error);
-        return;
-      }
-  
-      console.log(`📨 Sending ${messages?.length || 0} messages to socket ${socket.id}`);
-      
-      // Send history only to the requesting socket
-      socket.emit('chat_history', {
-        messages: messages || [],
-        count: messages?.length || 0
-      });
-      
-    } catch (error) {
-      console.error('❌ Chat history error:', error);
+  socket.on('typing', (data) => {
+    if (data.collegeName && data.username) {
+      socket.to(data.collegeName).emit('user_typing', { username: data.username });
     }
+  });
+  
+  socket.on('stop_typing', (data) => {
+    if (data.collegeName && data.username) {
+      socket.to(data.collegeName).emit('user_stop_typing', { username: data.username });
+    }
+  });
+  
+  socket.on('disconnect', () => {
+    console.log('👋 User disconnected:', socket.id);
+    if (socket.data.userId) {
+      userSockets.delete(socket.data.userId);
+    }
+    if (socket.data.college) {
+      const roomSize = io.sockets.adapter.rooms.get(socket.data.college)?.size || 0;
+      io.to(socket.data.college).emit('online_count', roomSize);
+    }
+  });
+});
+
+async function sendChatHistory(socket, collegeName) {
+  try {
+    const { data: messages, error } = await supabase
+      .from('community_messages')
+      .select(`
+        *,
+        users:sender_id (
+          id,
+          username,
+          profile_pic
+        )
+      `)
+      .eq('college_name', collegeName)
+      .order('created_at', { ascending: true })
+      .limit(100);
+
+    if (error) {
+      console.error('❌ Failed to load chat history:', error);
+      return;
+    }
+
+    console.log(`📨 Sending ${messages?.length || 0} messages to socket ${socket.id}`);
+    
+    socket.emit('chat_history', {
+      messages: messages || [],
+      count: messages?.length || 0
+    });
+    
+  } catch (error) {
+    console.error('❌ Chat history error:', error);
   }
+}
 
-
-
-
-
-
-
-
-
-
-
+// ==================== MIDDLEWARE ====================
 app.use(cors({
   origin: '*',
   credentials: true,
@@ -246,6 +247,7 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
+// ==================== BASIC ENDPOINTS ====================
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
@@ -263,7 +265,6 @@ app.get('/api/sticker-library', (req, res) => {
 });
 
 // ==================== PAYMENT ENDPOINTS ====================
-
 app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
   try {
     const { amount, planType, isFirstTime } = req.body;
@@ -497,7 +498,6 @@ app.get('/api/subscription/status', authenticateToken, async (req, res) => {
 });
 
 // ==================== USER & AUTH ENDPOINTS ====================
-
 app.get('/api/search/users', authenticateToken, async (req, res) => {
   try {
     const { query } = req.query;
@@ -914,7 +914,6 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
 });
 
 // ==================== POSTS ENDPOINTS ====================
-
 app.get('/api/posts', authenticateToken, async (req, res) => {
   try {
     const { data: posts, error } = await supabase
@@ -1285,7 +1284,6 @@ app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
 });
 
 // ==================== COMMUNITY CHAT ENDPOINTS ====================
-
 app.get('/api/community/messages', authenticateToken, async (req, res) => {
   try {
     console.log('📥 GET Messages:', {
@@ -1375,8 +1373,7 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
 
     console.log('✅ Message saved:', message.id);
 
-    // Broadcast via Socket.IO
-// CORRECT CODE:
+    // Broadcast via Socket.IO (except to sender)
     const senderSocketId = userSockets.get(req.user.id);
 
     if (senderSocketId) {
@@ -1427,74 +1424,7 @@ app.delete('/api/community/messages/:messageId', authenticateToken, async (req, 
   }
 });
 
-app.post('/api/community/messages', authenticateToken, async (req, res) => {
-  try {
-    const { content } = req.body;
-
-    console.log('📨 POST Message:', {
-      user: req.user.username,
-      college: req.user.college,
-      contentLength: content?.length
-    });
-
-    if (!content || !content.trim()) {
-      return res.status(400).json({ error: 'Message content required' });
-    }
-
-    if (!req.user.community_joined || !req.user.college) {
-      return res.status(400).json({ error: 'Join a college community first' });
-    }
-
-    const { data: message, error } = await supabase
-      .from('community_messages')
-      .insert([{
-        sender_id: req.user.id,
-        college_name: req.user.college,
-        content: content.trim()
-      }])
-      .select(`
-        *,
-        users:sender_id (
-          id,
-          username,
-          profile_pic
-        )
-      `)
-      .single();
-
-    if (error) {
-      console.error('❌ Database error:', error);
-      throw error;
-    }
-
-    console.log('✅ Message saved:', message.id);
-
-    // ✅ CRITICAL FIX: Broadcast to everyone EXCEPT sender
-    const senderSocketId = userSockets.get(req.user.id);
-    
-    if (senderSocketId) {
-      // Sender is connected - broadcast to others only
-      io.to(req.user.college).except(senderSocketId).emit('new_message', message);
-      console.log(`📡 Broadcast to ${req.user.college} (except sender ${senderSocketId})`);
-    } else {
-      // Sender not in map - broadcast to all (shouldn't happen normally)
-      io.to(req.user.college).emit('new_message', message);
-      console.log(`📡 Broadcast to ${req.user.college} (sender not found)`);
-    }
-
-    res.json({ success: true, message });
-
-  } catch (error) {
-    console.error('❌ Send message error:', error);
-    res.status(500).json({
-      error: 'Failed to send message',
-      details: error.message
-    });
-  }
-});
-
 // ==================== FEEDBACK ENDPOINT ====================
-
 app.post('/api/feedback', authenticateToken, async (req, res) => {
   try {
     const { subject, message } = req.body;
@@ -1518,11 +1448,7 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== SOCKET.IO ====================
-
-
 // ==================== ERROR HANDLING ====================
-
 app.use((err, req, res, next) => {
   console.error('❌ Server error:', err);
   if (err instanceof multer.MulterError) {
@@ -1541,7 +1467,6 @@ app.use((req, res) => {
 });
 
 // ==================== SERVER START ====================
-
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
   console.log(`🚀 VibeXperts Backend running on port ${PORT}`);
