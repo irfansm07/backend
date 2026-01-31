@@ -50,45 +50,60 @@ const userSockets = new Map(); // userId -> socketId
     console.log(`📍 User ${userId} mapped to socket ${socket.id}`);
   });
   
-  socket.on('join_college', (collegeName) => {
-    if (collegeName && typeof collegeName === 'string') {
-      Object.keys(socket.rooms).forEach(room => {
-        if (room !== socket.id) socket.leave(room);
-      });
-      socket.join(collegeName);
-      socket.data.college = collegeName;
-      console.log(`🧑‍🤝‍🧑 User ${socket.id} joined: ${collegeName}`);
-      
-      const roomSize = io.sockets.adapter.rooms.get(collegeName)?.size || 0;
-      io.to(collegeName).emit('online_count', roomSize);
-    }
-  });
-  
-  socket.on('typing', (data) => {
-    if (data.collegeName && data.username) {
-      socket.to(data.collegeName).emit('user_typing', { username: data.username });
-    }
-  });
-  
-  socket.on('stop_typing', (data) => {
-    if (data.collegeName && data.username) {
-      socket.to(data.collegeName).emit('user_stop_typing', { username: data.username });
-    }
-  });
-  
-  socket.on('disconnect', () => {
-    console.log('👋 User disconnected:', socket.id);
-    // ✅ UPDATED: Clean up user socket mapping
-    if (socket.data.userId) {
-      userSockets.delete(socket.data.userId);
-      console.log(`🗑️ Removed mapping for user ${socket.data.userId}`);
-    }
-    if (socket.data.college) {
-      const roomSize = io.sockets.adapter.rooms.get(socket.data.college)?.size || 0;
-      io.to(socket.data.college).emit('online_count', roomSize);
-    }
-  });
+// REPLACE THIS SECTION in server.js (around line 85-95)
+
+socket.on('join_college', (collegeName) => {
+  if (collegeName && typeof collegeName === 'string') {
+    Object.keys(socket.rooms).forEach(room => {
+      if (room !== socket.id) socket.leave(room);
+    });
+    socket.join(collegeName);
+    socket.data.college = collegeName;
+    console.log(`🧑‍🤝‍🧑 User ${socket.id} joined: ${collegeName}`);
+    
+    const roomSize = io.sockets.adapter.rooms.get(collegeName)?.size || 0;
+    io.to(collegeName).emit('online_count', roomSize);
+    
+    // ✅ NEW: Send chat history to newly joined user
+    sendChatHistory(socket, collegeName);
+  }
 });
+
+// ✅ ADD THIS NEW FUNCTION after io.on('connection') block
+
+async function sendChatHistory(socket, collegeName) {
+  try {
+    const { data: messages, error } = await supabase
+      .from('community_messages')
+      .select(`
+        *,
+        users:sender_id (
+          id,
+          username,
+          profile_pic
+        )
+      `)
+      .eq('college_name', collegeName)
+      .order('created_at', { ascending: true })
+      .limit(100);
+
+    if (error) {
+      console.error('❌ Failed to load chat history:', error);
+      return;
+    }
+
+    console.log(`📨 Sending ${messages?.length || 0} messages to socket ${socket.id}`);
+    
+    // Send history only to the requesting socket
+    socket.emit('chat_history', {
+      messages: messages || [],
+      count: messages?.length || 0
+    });
+    
+  } catch (error) {
+    console.error('❌ Chat history error:', error);
+  }
+}
 
 
 
@@ -1540,3 +1555,4 @@ server.listen(PORT, () => {
   console.log(`💳 Razorpay payment integration enabled`);
   console.log(`👑 Premium subscription system active`);
 });
+
