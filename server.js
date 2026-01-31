@@ -28,6 +28,112 @@ const io = socketIO(server, {
   pingInterval: 25000
 });
 
+
+
+
+
+
+
+
+
+// Add at top of server.js after io initialization
+const userSockets = new Map(); // userId -> socketId
+
+// In socket.io connection handler
+io.on('connection', (socket) => {
+  console.log('⚡ User connected:', socket.id);
+  
+  socket.on('user_online', (userId) => {
+    socket.data.userId = userId;
+    userSockets.set(userId, socket.id); // Store mapping
+  });
+  
+  socket.on('join_college', (collegeName) => {
+    if (collegeName && typeof collegeName === 'string') {
+      Object.keys(socket.rooms).forEach(room => {
+        if (room !== socket.id) socket.leave(room);
+      });
+      socket.join(collegeName);
+      socket.data.college = collegeName;
+      console.log(`🧑‍🤝‍🧑 User ${socket.id} joined: ${collegeName}`);
+      
+      const roomSize = io.sockets.adapter.rooms.get(collegeName)?.size || 0;
+      io.to(collegeName).emit('online_count', roomSize);
+    }
+  });
+  
+  socket.on('disconnect', () => {
+    console.log('👋 User disconnected:', socket.id);
+    if (socket.data.userId) {
+      userSockets.delete(socket.data.userId); // Remove mapping
+    }
+    if (socket.data.college) {
+      const roomSize = io.sockets.adapter.rooms.get(socket.data.college)?.size || 0;
+      io.to(socket.data.college).emit('online_count', roomSize);
+    }
+  });
+});io.on('connection', (socket) => {
+  console.log('⚡ User connected:', socket.id);
+  
+  // ✅ UPDATED: Store user socket mapping FIRST
+  socket.on('user_online', (userId) => {
+    socket.data.userId = userId;
+    userSockets.set(userId, socket.id); // Store mapping
+    console.log(`📍 User ${userId} mapped to socket ${socket.id}`);
+  });
+  
+  socket.on('join_college', (collegeName) => {
+    if (collegeName && typeof collegeName === 'string') {
+      Object.keys(socket.rooms).forEach(room => {
+        if (room !== socket.id) socket.leave(room);
+      });
+      socket.join(collegeName);
+      socket.data.college = collegeName;
+      console.log(`🧑‍🤝‍🧑 User ${socket.id} joined: ${collegeName}`);
+      
+      const roomSize = io.sockets.adapter.rooms.get(collegeName)?.size || 0;
+      io.to(collegeName).emit('online_count', roomSize);
+    }
+  });
+  
+  socket.on('typing', (data) => {
+    if (data.collegeName && data.username) {
+      socket.to(data.collegeName).emit('user_typing', { username: data.username });
+    }
+  });
+  
+  socket.on('stop_typing', (data) => {
+    if (data.collegeName && data.username) {
+      socket.to(data.collegeName).emit('user_stop_typing', { username: data.username });
+    }
+  });
+  
+  socket.on('disconnect', () => {
+    console.log('👋 User disconnected:', socket.id);
+    // ✅ UPDATED: Clean up user socket mapping
+    if (socket.data.userId) {
+      userSockets.delete(socket.data.userId);
+      console.log(`🗑️ Removed mapping for user ${socket.data.userId}`);
+    }
+    if (socket.data.college) {
+      const roomSize = io.sockets.adapter.rooms.get(socket.data.college)?.size || 0;
+      io.to(socket.data.college).emit('online_count', roomSize);
+    }
+  });
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
 app.use(cors({
   origin: '*',
   credentials: true,
@@ -1289,7 +1395,8 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
     console.log('✅ Message saved:', message.id);
 
     // Broadcast via Socket.IO
-    io.to(req.user.college).emit('new_message', message);
+// CORRECT CODE:
+    socket.broadcast.to(req.user.college).emit('new_message', message);
 
     res.json({ success: true, message });
 
@@ -1331,44 +1438,69 @@ app.delete('/api/community/messages/:messageId', authenticateToken, async (req, 
   }
 });
 
-app.post('/api/community/messages/:messageId/react', authenticateToken, async (req, res) => {
+app.post('/api/community/messages', authenticateToken, async (req, res) => {
   try {
-    const { messageId } = req.params;
-    const { emoji } = req.body;
-    
-    if (!emoji) {
-      return res.status(400).json({ error: 'Emoji required' });
+    const { content } = req.body;
+
+    console.log('📨 POST Message:', {
+      user: req.user.username,
+      college: req.user.college,
+      contentLength: content?.length
+    });
+
+    if (!content || !content.trim()) {
+      return res.status(400).json({ error: 'Message content required' });
     }
-    
-    const { data: existingReaction } = await supabase
-      .from('message_reactions')
-      .select('id')
-      .eq('message_id', messageId)
-      .eq('user_id', req.user.id)
-      .eq('emoji', emoji)
-      .maybeSingle();
-    
-    if (existingReaction) {
-      await supabase
-        .from('message_reactions')
-        .delete()
-        .eq('id', existingReaction.id);
-      
-      return res.json({ success: true, action: 'removed' });
+
+    if (!req.user.community_joined || !req.user.college) {
+      return res.status(400).json({ error: 'Join a college community first' });
     }
-    
-    await supabase
-      .from('message_reactions')
+
+    const { data: message, error } = await supabase
+      .from('community_messages')
       .insert([{
-        message_id: messageId,
-        user_id: req.user.id,
-        emoji
-      }]);
+        sender_id: req.user.id,
+        college_name: req.user.college,
+        content: content.trim()
+      }])
+      .select(`
+        *,
+        users:sender_id (
+          id,
+          username,
+          profile_pic
+        )
+      `)
+      .single();
+
+    if (error) {
+      console.error('❌ Database error:', error);
+      throw error;
+    }
+
+    console.log('✅ Message saved:', message.id);
+
+    // ✅ CRITICAL FIX: Broadcast to everyone EXCEPT sender
+    const senderSocketId = userSockets.get(req.user.id);
     
-    res.json({ success: true, action: 'added' });
+    if (senderSocketId) {
+      // Sender is connected - broadcast to others only
+      io.to(req.user.college).except(senderSocketId).emit('new_message', message);
+      console.log(`📡 Broadcast to ${req.user.college} (except sender ${senderSocketId})`);
+    } else {
+      // Sender not in map - broadcast to all (shouldn't happen normally)
+      io.to(req.user.college).emit('new_message', message);
+      console.log(`📡 Broadcast to ${req.user.college} (sender not found)`);
+    }
+
+    res.json({ success: true, message });
+
   } catch (error) {
-    console.error('❌ React error:', error);
-    res.status(500).json({ error: 'Failed to add reaction' });
+    console.error('❌ Send message error:', error);
+    res.status(500).json({
+      error: 'Failed to send message',
+      details: error.message
+    });
   }
 });
 
@@ -1474,3 +1606,4 @@ server.listen(PORT, () => {
   console.log(`💳 Razorpay payment integration enabled`);
   console.log(`👑 Premium subscription system active`);
 });
+
