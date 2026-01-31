@@ -37,26 +37,35 @@ const io = socketIO(server, {
 
 
 // Add at top of server.js after io initialization
+// ==================== SOCKET.IO SETUP ====================
 const userSockets = new Map(); // userId -> socketId
+const userColleges = new Map(); // userId -> collegeName
 
-
-  io.on('connection', (socket) => {
+io.on('connection', (socket) => {
   console.log('⚡ User connected:', socket.id);
   
-  // ✅ UPDATED: Store user socket mapping FIRST
+  // Store user mapping
   socket.on('user_online', (userId) => {
     socket.data.userId = userId;
-    userSockets.set(userId, socket.id); // Store mapping
+    userSockets.set(userId, socket.id);
     console.log(`📍 User ${userId} mapped to socket ${socket.id}`);
   });
   
+  // Join college room
   socket.on('join_college', (collegeName) => {
     if (collegeName && typeof collegeName === 'string') {
+      // Leave all previous rooms
       Object.keys(socket.rooms).forEach(room => {
         if (room !== socket.id) socket.leave(room);
       });
+      
       socket.join(collegeName);
       socket.data.college = collegeName;
+      
+      if (socket.data.userId) {
+        userColleges.set(socket.data.userId, collegeName);
+      }
+      
       console.log(`🧑‍🤝‍🧑 User ${socket.id} joined: ${collegeName}`);
       
       const roomSize = io.sockets.adapter.rooms.get(collegeName)?.size || 0;
@@ -64,6 +73,7 @@ const userSockets = new Map(); // userId -> socketId
     }
   });
   
+  // Typing - broadcast to others only
   socket.on('typing', (data) => {
     if (data.collegeName && data.username) {
       socket.to(data.collegeName).emit('user_typing', { username: data.username });
@@ -76,13 +86,15 @@ const userSockets = new Map(); // userId -> socketId
     }
   });
   
+  // Disconnect cleanup
   socket.on('disconnect', () => {
     console.log('👋 User disconnected:', socket.id);
-    // ✅ UPDATED: Clean up user socket mapping
+    
     if (socket.data.userId) {
       userSockets.delete(socket.data.userId);
-      console.log(`🗑️ Removed mapping for user ${socket.data.userId}`);
+      userColleges.delete(socket.data.userId);
     }
+    
     if (socket.data.college) {
       const roomSize = io.sockets.adapter.rooms.get(socket.data.college)?.size || 0;
       io.to(socket.data.college).emit('online_count', roomSize);
@@ -1540,4 +1552,5 @@ server.listen(PORT, () => {
   console.log(`💳 Razorpay payment integration enabled`);
   console.log(`👑 Premium subscription system active`);
 });
+
 
