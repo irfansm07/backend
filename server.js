@@ -28,35 +28,35 @@ const io = socketIO(server, {
   pingInterval: 25000
 });
 
-// ==================== SOCKET.IO SETUP ====================
-const userSockets = new Map(); // userId -> socketId
-const userColleges = new Map(); // userId -> collegeName
 
-io.on('connection', (socket) => {
+
+
+
+
+
+
+
+// Add at top of server.js after io initialization
+const userSockets = new Map(); // userId -> socketId
+
+
+  io.on('connection', (socket) => {
   console.log('⚡ User connected:', socket.id);
   
-  // Store user mapping
+  // ✅ UPDATED: Store user socket mapping FIRST
   socket.on('user_online', (userId) => {
     socket.data.userId = userId;
-    userSockets.set(userId, socket.id);
+    userSockets.set(userId, socket.id); // Store mapping
     console.log(`📍 User ${userId} mapped to socket ${socket.id}`);
   });
   
-  // Join college room
   socket.on('join_college', (collegeName) => {
     if (collegeName && typeof collegeName === 'string') {
-      // Leave all previous rooms
       Object.keys(socket.rooms).forEach(room => {
         if (room !== socket.id) socket.leave(room);
       });
-      
       socket.join(collegeName);
       socket.data.college = collegeName;
-      
-      if (socket.data.userId) {
-        userColleges.set(socket.data.userId, collegeName);
-      }
-      
       console.log(`🧑‍🤝‍🧑 User ${socket.id} joined: ${collegeName}`);
       
       const roomSize = io.sockets.adapter.rooms.get(collegeName)?.size || 0;
@@ -64,7 +64,6 @@ io.on('connection', (socket) => {
     }
   });
   
-  // Typing - broadcast to others only
   socket.on('typing', (data) => {
     if (data.collegeName && data.username) {
       socket.to(data.collegeName).emit('user_typing', { username: data.username });
@@ -77,21 +76,31 @@ io.on('connection', (socket) => {
     }
   });
   
-  // Disconnect cleanup
   socket.on('disconnect', () => {
     console.log('👋 User disconnected:', socket.id);
-    
+    // ✅ UPDATED: Clean up user socket mapping
     if (socket.data.userId) {
       userSockets.delete(socket.data.userId);
-      userColleges.delete(socket.data.userId);
+      console.log(`🗑️ Removed mapping for user ${socket.data.userId}`);
     }
-    
     if (socket.data.college) {
       const roomSize = io.sockets.adapter.rooms.get(socket.data.college)?.size || 0;
       io.to(socket.data.college).emit('online_count', roomSize);
     }
   });
 });
+
+
+
+
+
+
+
+
+
+
+
+
 
 app.use(cors({
   origin: '*',
@@ -1311,7 +1320,6 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
   }
 });
 
-// ✅ FIXED: Single message POST endpoint with proper sender exclusion
 app.post('/api/community/messages', authenticateToken, async (req, res) => {
   try {
     const { content } = req.body;
@@ -1330,7 +1338,6 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Join a college community first' });
     }
 
-    // 1. Save to database
     const { data: message, error } = await supabase
       .from('community_messages')
       .insert([{
@@ -1355,20 +1362,18 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
 
     console.log('✅ Message saved:', message.id);
 
-    // 2. ✅ CRITICAL FIX: Broadcast via Socket.IO EXCEPT to sender
+    // Broadcast via Socket.IO
+// CORRECT CODE:
     const senderSocketId = userSockets.get(req.user.id);
 
     if (senderSocketId) {
-      // Sender is connected - broadcast to others only
       io.to(req.user.college).except(senderSocketId).emit('new_message', message);
       console.log(`📡 Broadcast to ${req.user.college} (except sender ${senderSocketId})`);
     } else {
-      // Sender not in map (shouldn't happen normally) - broadcast to all
       io.to(req.user.college).emit('new_message', message);
-      console.log(`📡 Broadcast to ${req.user.college} (sender not found in map)`);
+      console.log(`📡 Broadcast to ${req.user.college} (sender not found)`);
     }
 
-    // 3. Return success to sender
     res.json({ success: true, message });
 
   } catch (error) {
@@ -1409,6 +1414,72 @@ app.delete('/api/community/messages/:messageId', authenticateToken, async (req, 
   }
 });
 
+app.post('/api/community/messages', authenticateToken, async (req, res) => {
+  try {
+    const { content } = req.body;
+
+    console.log('📨 POST Message:', {
+      user: req.user.username,
+      college: req.user.college,
+      contentLength: content?.length
+    });
+
+    if (!content || !content.trim()) {
+      return res.status(400).json({ error: 'Message content required' });
+    }
+
+    if (!req.user.community_joined || !req.user.college) {
+      return res.status(400).json({ error: 'Join a college community first' });
+    }
+
+    const { data: message, error } = await supabase
+      .from('community_messages')
+      .insert([{
+        sender_id: req.user.id,
+        college_name: req.user.college,
+        content: content.trim()
+      }])
+      .select(`
+        *,
+        users:sender_id (
+          id,
+          username,
+          profile_pic
+        )
+      `)
+      .single();
+
+    if (error) {
+      console.error('❌ Database error:', error);
+      throw error;
+    }
+
+    console.log('✅ Message saved:', message.id);
+
+    // ✅ CRITICAL FIX: Broadcast to everyone EXCEPT sender
+    const senderSocketId = userSockets.get(req.user.id);
+    
+    if (senderSocketId) {
+      // Sender is connected - broadcast to others only
+      io.to(req.user.college).except(senderSocketId).emit('new_message', message);
+      console.log(`📡 Broadcast to ${req.user.college} (except sender ${senderSocketId})`);
+    } else {
+      // Sender not in map - broadcast to all (shouldn't happen normally)
+      io.to(req.user.college).emit('new_message', message);
+      console.log(`📡 Broadcast to ${req.user.college} (sender not found)`);
+    }
+
+    res.json({ success: true, message });
+
+  } catch (error) {
+    console.error('❌ Send message error:', error);
+    res.status(500).json({
+      error: 'Failed to send message',
+      details: error.message
+    });
+  }
+});
+
 // ==================== FEEDBACK ENDPOINT ====================
 
 app.post('/api/feedback', authenticateToken, async (req, res) => {
@@ -1433,6 +1504,9 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Failed to submit feedback' });
   }
 });
+
+// ==================== SOCKET.IO ====================
+
 
 // ==================== ERROR HANDLING ====================
 
@@ -1465,5 +1539,4 @@ server.listen(PORT, () => {
   console.log(`✅ Real-time updates via Socket.IO`);
   console.log(`💳 Razorpay payment integration enabled`);
   console.log(`👑 Premium subscription system active`);
-  console.log(`💬 Community chat with sender exclusion FIXED`);
 });
