@@ -1273,8 +1273,6 @@ app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
 
 // ==================== COMMUNITY CHAT ENDPOINTS ====================
 
-// ==================== COMMUNITY CHAT ENDPOINTS ====================
-
 app.get('/api/community/messages', authenticateToken, async (req, res) => {
   try {
     console.log('📥 GET Messages:', {
@@ -1322,6 +1320,37 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
   }
 });
 
+// Duplicate endpoint removed
+
+app.delete('/api/community/messages/:messageId', authenticateToken, async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    
+    const { data: message } = await supabase
+      .from('community_messages')
+      .select('sender_id, college_name')
+      .eq('id', messageId)
+      .single();
+    
+    if (!message || message.sender_id !== req.user.id) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    
+    await supabase
+      .from('community_messages')
+      .delete()
+      .eq('id', messageId);
+    
+    // Emit deletion via Socket.IO
+    io.to(message.college_name).emit('message_deleted', { id: messageId });
+    
+    res.json({ success: true, message: 'Message deleted' });
+  } catch (error) {
+    console.error('❌ Delete message error:', error);
+    res.status(500).json({ error: 'Failed to delete message' });
+  }
+});
+
 app.post('/api/community/messages', authenticateToken, async (req, res) => {
   try {
     const { content } = req.body;
@@ -1364,8 +1393,7 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
 
     console.log('✅ Message saved:', message.id);
 
-    // ✅ CORRECT BROADCAST - EXCLUDE SENDER
-    // ✅ CORRECT CODE - EXCLUDE SENDER FROM BROADCAST
+    // ✅ CRITICAL FIX: Broadcast to everyone EXCEPT sender
     const senderSocketId = userSockets.get(req.user.id);
     
     if (senderSocketId) {
@@ -1388,37 +1416,6 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
     });
   }
 });
-
-app.delete('/api/community/messages/:messageId', authenticateToken, async (req, res) => {
-  try {
-    const { messageId } = req.params;
-    
-    const { data: message } = await supabase
-      .from('community_messages')
-      .select('sender_id, college_name')
-      .eq('id', messageId)
-      .single();
-    
-    if (!message || message.sender_id !== req.user.id) {
-      return res.status(403).json({ error: 'Not authorized' });
-    }
-    
-    await supabase
-      .from('community_messages')
-      .delete()
-      .eq('id', messageId);
-    
-    // Emit deletion via Socket.IO
-    io.to(message.college_name).emit('message_deleted', { id: messageId });
-    
-    res.json({ success: true, message: 'Message deleted' });
-  } catch (error) {
-    console.error('❌ Delete message error:', error);
-    res.status(500).json({ error: 'Failed to delete message' });
-  }
-});
-
-
 
 // ==================== FEEDBACK ENDPOINT ====================
 
@@ -1444,6 +1441,32 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Failed to submit feedback' });
   }
 });
+
+// ==================== AUTO-DELETE OLD MESSAGES ====================
+const cleanupOldMessages = async () => {
+  try {
+    console.log('🧹 Running chat cleanup...');
+    const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    
+    // Delete messages older than 48 hours
+    const { error } = await supabase
+      .from('community_messages')
+      .delete()
+      .lt('created_at', twoDaysAgo);
+    
+    if (error) throw error;
+    
+    console.log('✅ Old messages cleaned up');
+  } catch (error) {
+    console.error('❌ Cleanup error:', error.message);
+  }
+};
+
+// Run cleanup every hour
+setInterval(cleanupOldMessages, 60 * 60 * 1000);
+
+// Run once on startup
+cleanupOldMessages();
 
 // ==================== SOCKET.IO ====================
 
@@ -1480,4 +1503,3 @@ server.listen(PORT, () => {
   console.log(`💳 Razorpay payment integration enabled`);
   console.log(`👑 Premium subscription system active`);
 });
-
