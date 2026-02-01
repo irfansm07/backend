@@ -1273,6 +1273,8 @@ app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
 
 // ==================== COMMUNITY CHAT ENDPOINTS ====================
 
+// ==================== COMMUNITY CHAT ENDPOINTS ====================
+
 app.get('/api/community/messages', authenticateToken, async (req, res) => {
   try {
     console.log('📥 GET Messages:', {
@@ -1362,14 +1364,16 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
 
     console.log('✅ Message saved:', message.id);
 
-    // Broadcast via Socket.IO
-// CORRECT CODE:
+    // ✅ CORRECT BROADCAST - EXCLUDE SENDER
+    // ✅ CORRECT CODE - EXCLUDE SENDER FROM BROADCAST
     const senderSocketId = userSockets.get(req.user.id);
-
+    
     if (senderSocketId) {
+      // Sender is connected - broadcast to others only
       io.to(req.user.college).except(senderSocketId).emit('new_message', message);
       console.log(`📡 Broadcast to ${req.user.college} (except sender ${senderSocketId})`);
     } else {
+      // Sender not in map - broadcast to all (shouldn't happen normally)
       io.to(req.user.college).emit('new_message', message);
       console.log(`📡 Broadcast to ${req.user.college} (sender not found)`);
     }
@@ -1414,71 +1418,7 @@ app.delete('/api/community/messages/:messageId', authenticateToken, async (req, 
   }
 });
 
-app.post('/api/community/messages', authenticateToken, async (req, res) => {
-  try {
-    const { content } = req.body;
 
-    console.log('📨 POST Message:', {
-      user: req.user.username,
-      college: req.user.college,
-      contentLength: content?.length
-    });
-
-    if (!content || !content.trim()) {
-      return res.status(400).json({ error: 'Message content required' });
-    }
-
-    if (!req.user.community_joined || !req.user.college) {
-      return res.status(400).json({ error: 'Join a college community first' });
-    }
-
-    const { data: message, error } = await supabase
-      .from('community_messages')
-      .insert([{
-        sender_id: req.user.id,
-        college_name: req.user.college,
-        content: content.trim()
-      }])
-      .select(`
-        *,
-        users:sender_id (
-          id,
-          username,
-          profile_pic
-        )
-      `)
-      .single();
-
-    if (error) {
-      console.error('❌ Database error:', error);
-      throw error;
-    }
-
-    console.log('✅ Message saved:', message.id);
-
-    // ✅ CRITICAL FIX: Broadcast to everyone EXCEPT sender
-    const senderSocketId = userSockets.get(req.user.id);
-    
-    if (senderSocketId) {
-      // Sender is connected - broadcast to others only
-      io.to(req.user.college).except(senderSocketId).emit('new_message', message);
-      console.log(`📡 Broadcast to ${req.user.college} (except sender ${senderSocketId})`);
-    } else {
-      // Sender not in map - broadcast to all (shouldn't happen normally)
-      io.to(req.user.college).emit('new_message', message);
-      console.log(`📡 Broadcast to ${req.user.college} (sender not found)`);
-    }
-
-    res.json({ success: true, message });
-
-  } catch (error) {
-    console.error('❌ Send message error:', error);
-    res.status(500).json({
-      error: 'Failed to send message',
-      details: error.message
-    });
-  }
-});
 
 // ==================== FEEDBACK ENDPOINT ====================
 
@@ -1540,3 +1480,4 @@ server.listen(PORT, () => {
   console.log(`💳 Razorpay payment integration enabled`);
   console.log(`👑 Premium subscription system active`);
 });
+
