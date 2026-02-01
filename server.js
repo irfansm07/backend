@@ -1288,6 +1288,10 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
       });
     }
 
+    // ✅ FIXED: Only get messages from last 3 days
+    const threeDaysAgo = new Date();
+    threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+
     const { data: messages, error } = await supabase
       .from('community_messages')
       .select(`
@@ -1299,12 +1303,13 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
         )
       `)
       .eq('college_name', req.user.college)
+      .gte('created_at', threeDaysAgo.toISOString())
       .order('created_at', { ascending: true })
       .limit(100);
 
     if (error) throw error;
 
-    console.log(`✅ Loaded ${messages?.length || 0} messages`);
+    console.log(`✅ Loaded ${messages?.length || 0} messages (last 3 days)`);
 
     res.json({
       success: true,
@@ -1320,6 +1325,45 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
   }
 });
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ✅ NEW: Automatic cleanup of messages older than 3 days
+async function cleanupOldMessages() {
+  try {
+    const threeDaysAgo = new Date();
+    threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+    
+    const { data, error } = await supabase
+      .from('community_messages')
+      .delete()
+      .lt('created_at', threeDaysAgo.toISOString());
+    
+    if (error) throw error;
+    
+    console.log('🗑️ Cleaned up old messages (>3 days)');
+  } catch (error) {
+    console.error('❌ Cleanup error:', error);
+  }
+}
+
+// Run cleanup every hour
+setInterval(cleanupOldMessages, 60 * 60 * 1000);
+
+// Run cleanup on server start
+cleanupOldMessages();
 // Duplicate endpoint removed
 
 app.delete('/api/community/messages/:messageId', authenticateToken, async (req, res) => {
@@ -1489,6 +1533,18 @@ setInterval(cleanupOldMessages, 60 * 60 * 1000);
 // Run once on startup
 cleanupOldMessages();
 
+
+
+
+
+
+
+
+
+
+
+
+
 // ==================== SOCKET.IO ====================
 
 
@@ -1524,3 +1580,4 @@ server.listen(PORT, () => {
   console.log(`💳 Razorpay payment integration enabled`);
   console.log(`👑 Premium subscription system active`);
 });
+
