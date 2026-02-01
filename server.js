@@ -1351,20 +1351,33 @@ async function cleanupOldMessages() {
       .delete()
       .lt('created_at', threeDaysAgo.toISOString());
     
-    if (error) throw error;
+    if (error) {
+      console.error('❌ Cleanup error:', error);
+      return;
+    }
     
-    console.log('🗑️ Cleaned up old messages (>3 days)');
+    console.log(`🗑️ Cleaned up messages older than ${threeDaysAgo.toISOString()}`);
   } catch (error) {
-    console.error('❌ Cleanup error:', error);
+    console.error('❌ Cleanup exception:', error);
   }
 }
 
-// Run cleanup every hour
+// Run cleanup every hour (3600000 ms = 1 hour)
 setInterval(cleanupOldMessages, 60 * 60 * 1000);
 
-// Run cleanup on server start
+// Run cleanup immediately on server start
 cleanupOldMessages();
-// Duplicate endpoint removed
+
+console.log('✅ Message cleanup scheduler initialized (3-day retention)');
+
+
+
+
+
+
+
+
+
 
 app.delete('/api/community/messages/:messageId', authenticateToken, async (req, res) => {
   try {
@@ -1580,5 +1593,6 @@ server.listen(PORT, () => {
   console.log(`💳 Razorpay payment integration enabled`);
   console.log(`👑 Premium subscription system active`);
 });
+
 
 
