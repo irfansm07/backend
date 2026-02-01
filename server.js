@@ -40,16 +40,16 @@ const io = socketIO(server, {
 const userSockets = new Map(); // userId -> socketId
 
 
-  io.on('connection', (socket) => {
+io.on('connection', (socket) => {
   console.log('⚡ User connected:', socket.id);
-  
+
   // ✅ UPDATED: Store user socket mapping FIRST
   socket.on('user_online', (userId) => {
     socket.data.userId = userId;
     userSockets.set(userId, socket.id); // Store mapping
     console.log(`📍 User ${userId} mapped to socket ${socket.id}`);
   });
-  
+
   socket.on('join_college', (collegeName) => {
     if (collegeName && typeof collegeName === 'string') {
       Object.keys(socket.rooms).forEach(room => {
@@ -58,24 +58,24 @@ const userSockets = new Map(); // userId -> socketId
       socket.join(collegeName);
       socket.data.college = collegeName;
       console.log(`🧑‍🤝‍🧑 User ${socket.id} joined: ${collegeName}`);
-      
+
       const roomSize = io.sockets.adapter.rooms.get(collegeName)?.size || 0;
       io.to(collegeName).emit('online_count', roomSize);
     }
   });
-  
+
   socket.on('typing', (data) => {
     if (data.collegeName && data.username) {
       socket.to(data.collegeName).emit('user_typing', { username: data.username });
     }
   });
-  
+
   socket.on('stop_typing', (data) => {
     if (data.collegeName && data.username) {
       socket.to(data.collegeName).emit('user_stop_typing', { username: data.username });
     }
   });
-  
+
   socket.on('disconnect', () => {
     console.log('👋 User disconnected:', socket.id);
     // ✅ UPDATED: Clean up user socket mapping
@@ -192,9 +192,9 @@ const sendEmail = async (to, subject, html) => {
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { 
+  limits: {
     fileSize: 20 * 1024 * 1024,
-    files: 10 
+    files: 10
   },
   fileFilter: (req, file, cb) => {
     const allowedTypes = /jpeg|jpg|png|gif|webp|mp4|mov|avi|mp3|wav/;
@@ -209,11 +209,11 @@ const generateCode = () => Math.floor(100000 + Math.random() * 900000).toString(
 const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
-  
+
   if (!token) {
     return res.status(401).json({ error: 'Access token required' });
   }
-  
+
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const { data: user, error } = await supabase
@@ -221,11 +221,11 @@ const authenticateToken = async (req, res, next) => {
       .select('*')
       .eq('id', decoded.userId)
       .single();
-    
+
     if (error || !user) {
       return res.status(403).json({ error: 'Invalid token' });
     }
-    
+
     req.user = user;
     next();
   } catch (error) {
@@ -254,15 +254,15 @@ app.get('/api/sticker-library', (req, res) => {
 app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
   try {
     const { amount, planType, isFirstTime } = req.body;
-    
+
     if (!amount || !planType) {
       return res.status(400).json({ error: 'Amount and plan type required' });
     }
-    
+
     if (amount < 1 || amount > 10000) {
       return res.status(400).json({ error: 'Invalid amount' });
     }
-    
+
     const options = {
       amount: amount * 100,
       currency: 'INR',
@@ -274,9 +274,9 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
         isFirstTime: isFirstTime
       }
     };
-    
+
     const order = await razorpay.orders.create(options);
-    
+
     await supabase.from('payment_orders').insert([{
       user_id: req.user.id,
       order_id: order.id,
@@ -284,16 +284,16 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
       plan_type: planType,
       status: 'created'
     }]);
-    
+
     console.log(`💳 Payment order created: ${order.id} for user ${req.user.username}`);
-    
+
     res.json({
       success: true,
       orderId: order.id,
       amount: amount,
       razorpayKeyId: process.env.RAZORPAY_KEY_ID
     });
-    
+
   } catch (error) {
     console.error('❌ Create order error:', error);
     res.status(500).json({ error: 'Failed to create payment order' });
@@ -302,44 +302,44 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
 
 app.post('/api/payment/verify', authenticateToken, async (req, res) => {
   try {
-    const { 
-      razorpay_order_id, 
-      razorpay_payment_id, 
+    const {
+      razorpay_order_id,
+      razorpay_payment_id,
       razorpay_signature,
-      planType 
+      planType
     } = req.body;
-    
+
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
       return res.status(400).json({ error: 'Missing payment details' });
     }
-    
+
     const generated_signature = crypto
       .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
       .update(razorpay_order_id + '|' + razorpay_payment_id)
       .digest('hex');
-    
+
     if (generated_signature !== razorpay_signature) {
       console.error('❌ Invalid payment signature');
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Invalid payment signature' 
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid payment signature'
       });
     }
-    
+
     console.log(`✅ Payment verified: ${razorpay_payment_id}`);
-    
+
     const plans = {
       noble: { posters: 5, videos: 1, days: 15 },
       royal: { posters: 5, videos: 3, days: 23 }
     };
-    
+
     const plan = plans[planType];
     if (!plan) {
       return res.status(400).json({ error: 'Invalid plan type' });
     }
-    
+
     const endDate = new Date(Date.now() + plan.days * 24 * 60 * 60 * 1000);
-    
+
     await supabase
       .from('users')
       .update({
@@ -352,7 +352,7 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
         videos_quota: plan.videos
       })
       .eq('id', req.user.id);
-    
+
     await supabase
       .from('payment_orders')
       .update({
@@ -362,7 +362,7 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
         updated_at: new Date()
       })
       .eq('order_id', razorpay_order_id);
-    
+
     sendEmail(
       req.user.email,
       '🎉 Subscription Activated - VibeXpert',
@@ -395,9 +395,9 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
         </div>
       `
     );
-    
+
     console.log(`🎉 Subscription activated for user ${req.user.username} - Plan: ${planType}`);
-    
+
     res.json({
       success: true,
       message: 'Payment verified and subscription activated',
@@ -408,7 +408,7 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
         videos: plan.videos
       }
     });
-    
+
   } catch (error) {
     console.error('❌ Payment verification error:', error);
     res.status(500).json({ error: 'Payment verification failed' });
@@ -422,7 +422,7 @@ app.get('/api/payment/history', authenticateToken, async (req, res) => {
       .select('*')
       .eq('user_id', req.user.id)
       .order('created_at', { ascending: false });
-    
+
     res.json({ success: true, payments: payments || [] });
   } catch (error) {
     console.error('❌ Payment history error:', error);
@@ -437,18 +437,18 @@ app.get('/api/subscription/status', authenticateToken, async (req, res) => {
       .select('subscription_plan, subscription_start, subscription_end, is_premium, posters_quota, videos_quota')
       .eq('id', req.user.id)
       .single();
-    
+
     if (!user || !user.is_premium) {
-      return res.json({ 
-        success: true, 
+      return res.json({
+        success: true,
         subscription: null,
         message: 'No active subscription'
       });
     }
-    
+
     const now = new Date();
     const endDate = new Date(user.subscription_end);
-    
+
     if (now > endDate) {
       await supabase
         .from('users')
@@ -457,14 +457,14 @@ app.get('/api/subscription/status', authenticateToken, async (req, res) => {
           subscription_plan: null
         })
         .eq('id', req.user.id);
-      
-      return res.json({ 
-        success: true, 
+
+      return res.json({
+        success: true,
         subscription: null,
         message: 'Subscription expired'
       });
     }
-    
+
     res.json({
       success: true,
       subscription: {
@@ -476,7 +476,7 @@ app.get('/api/subscription/status', authenticateToken, async (req, res) => {
         daysRemaining: Math.ceil((endDate - now) / (1000 * 60 * 60 * 24))
       }
     });
-    
+
   } catch (error) {
     console.error('❌ Subscription status error:', error);
     res.status(500).json({ error: 'Failed to fetch subscription status' });
@@ -488,40 +488,40 @@ app.get('/api/subscription/status', authenticateToken, async (req, res) => {
 app.get('/api/search/users', authenticateToken, async (req, res) => {
   try {
     const { query } = req.query;
-    
+
     if (!query || query.trim().length < 2) {
       return res.json({ success: true, users: [], count: 0 });
     }
-    
+
     const searchTerm = query.trim().toLowerCase();
-    
+
     const { data: allUsers, error } = await supabase
       .from('users')
       .select('id, username, email, registration_number, college, profile_pic, bio')
       .limit(100);
-    
+
     if (error) throw error;
-    
+
     const matchedUsers = (allUsers || []).filter(user => {
       if (user.id === req.user.id) return false;
-      
+
       const usernameMatch = user.username?.toLowerCase().includes(searchTerm);
       const emailMatch = user.email?.toLowerCase().includes(searchTerm);
       const regMatch = user.registration_number?.toLowerCase().includes(searchTerm);
-      
+
       return usernameMatch || emailMatch || regMatch;
     });
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       users: matchedUsers.slice(0, 20),
       count: matchedUsers.length
     });
   } catch (error) {
     console.error('❌ User search error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Search failed',
-      success: false, 
+      success: false,
       users: [],
       count: 0
     });
@@ -531,17 +531,17 @@ app.get('/api/search/users', authenticateToken, async (req, res) => {
 app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
   try {
     const { userId } = req.params;
-    
+
     const { data: user, error } = await supabase
       .from('users')
       .select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined, created_at')
       .eq('id', userId)
       .single();
-    
+
     if (error || !user) {
       return res.status(404).json({ error: 'User not found' });
     }
-    
+
     const { count: postCount } = await supabase
       .from('posts')
       .select('id', { count: 'exact', head: true })
@@ -558,15 +558,15 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
       .eq('user_id', userId)
       .eq('liker_id', req.user.id)
       .maybeSingle();
-    
-    res.json({ 
-      success: true, 
-      user: { 
-        ...user, 
+
+    res.json({
+      success: true,
+      user: {
+        ...user,
         postCount: postCount || 0,
         profileLikes: likeCount || 0,
         isProfileLiked: !!isLiked
-      } 
+      }
     });
   } catch (error) {
     console.error('❌ Get profile error:', error);
@@ -577,22 +577,22 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
 app.post('/api/register', async (req, res) => {
   try {
     const { username, email, password, registrationNumber } = req.body;
-    
+
     if (!username || !email || !password || !registrationNumber) {
       return res.status(400).json({ error: 'All fields are required' });
     }
-    
+
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
       return res.status(400).json({ error: 'Invalid email format' });
     }
-    
+
     const { data: existingUser } = await supabase
       .from('users')
       .select('email, registration_number')
       .or(`email.eq.${email},registration_number.eq.${registrationNumber}`)
       .maybeSingle();
-    
+
     if (existingUser) {
       if (existingUser.email === email) {
         return res.status(400).json({ error: 'Email already registered' });
@@ -601,9 +601,9 @@ app.post('/api/register', async (req, res) => {
         return res.status(400).json({ error: 'Registration number already registered' });
       }
     }
-    
+
     const passwordHash = await bcrypt.hash(password, 10);
-    
+
     const { data: newUser, error } = await supabase
       .from('users')
       .insert([{
@@ -614,11 +614,11 @@ app.post('/api/register', async (req, res) => {
       }])
       .select()
       .single();
-    
+
     if (error) {
       throw new Error('Failed to create account');
     }
-    
+
     sendEmail(
       email,
       '🎉 Welcome to VibeXpert!',
@@ -628,7 +628,7 @@ app.post('/api/register', async (req, res) => {
         <p style="font-size: 16px; color: #374151;">Ready to vibe? Let's go! 🚀</p>
       </div>`
     ).catch(err => console.error('Email send failed:', err));
-    
+
     res.status(201).json({
       success: true,
       message: 'Account created successfully! Please log in.',
@@ -643,32 +643,32 @@ app.post('/api/register', async (req, res) => {
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    
+
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
     }
-    
+
     const { data: user, error } = await supabase
       .from('users')
       .select('*')
       .eq('email', email)
       .maybeSingle();
-    
+
     if (error || !user) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
-    
+
     const validPassword = await bcrypt.compare(password, user.password_hash);
     if (!validPassword) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
-    
+
     const token = jwt.sign(
       { userId: user.id, email: user.email },
       process.env.JWT_SECRET,
       { expiresIn: '30d' }
     );
-    
+
     res.json({
       success: true,
       token,
@@ -695,27 +695,27 @@ app.post('/api/login', async (req, res) => {
 app.post('/api/forgot-password', async (req, res) => {
   try {
     const { email } = req.body;
-    
+
     if (!email) {
       return res.status(400).json({ error: 'Email required' });
     }
-    
+
     const { data: user, error } = await supabase
       .from('users')
       .select('id, username, email')
       .eq('email', email)
       .maybeSingle();
-    
+
     if (error || !user) {
-      return res.json({ 
-        success: true, 
-        message: 'If this email exists, you will receive a reset code.' 
+      return res.json({
+        success: true,
+        message: 'If this email exists, you will receive a reset code.'
       });
     }
-    
+
     const code = generateCode();
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
-    
+
     const { error: codeError } = await supabase
       .from('codes')
       .insert([{
@@ -724,11 +724,11 @@ app.post('/api/forgot-password', async (req, res) => {
         type: 'reset',
         expires_at: expiresAt.toISOString()
       }]);
-    
+
     if (codeError) {
       throw new Error('Failed to generate reset code');
     }
-    
+
     sendEmail(
       email,
       '🔐 Password Reset Code - VibeXpert',
@@ -741,7 +741,7 @@ app.post('/api/forgot-password', async (req, res) => {
         <p style="font-size: 14px; color: #6B7280;">This code expires in 15 minutes.</p>
       </div>`
     ).catch(err => console.error('Email failed:', err));
-    
+
     res.json({ success: true, message: 'Reset code sent to your email' });
   } catch (error) {
     console.error('Forgot password error:', error);
@@ -752,21 +752,21 @@ app.post('/api/forgot-password', async (req, res) => {
 app.post('/api/reset-password', async (req, res) => {
   try {
     const { email, code, newPassword } = req.body;
-    
+
     if (!email || !code || !newPassword) {
       return res.status(400).json({ error: 'All fields required' });
     }
-    
+
     const { data: user } = await supabase
       .from('users')
       .select('id')
       .eq('email', email)
       .maybeSingle();
-    
+
     if (!user) {
       return res.status(400).json({ error: 'Invalid email' });
     }
-    
+
     const { data: codeData } = await supabase
       .from('codes')
       .select('*')
@@ -775,23 +775,23 @@ app.post('/api/reset-password', async (req, res) => {
       .eq('type', 'reset')
       .gte('expires_at', new Date().toISOString())
       .maybeSingle();
-    
+
     if (!codeData) {
       return res.status(400).json({ error: 'Invalid or expired code' });
     }
-    
+
     const passwordHash = await bcrypt.hash(newPassword, 10);
-    
+
     await supabase
       .from('users')
       .update({ password_hash: passwordHash })
       .eq('id', user.id);
-    
+
     await supabase
       .from('codes')
       .delete()
       .eq('id', codeData.id);
-    
+
     res.json({ success: true, message: 'Password reset successful' });
   } catch (error) {
     console.error('Reset password error:', error);
@@ -802,18 +802,18 @@ app.post('/api/reset-password', async (req, res) => {
 app.post('/api/college/request-verification', authenticateToken, async (req, res) => {
   try {
     const { collegeName, collegeEmail } = req.body;
-    
+
     if (!collegeName || !collegeEmail) {
       return res.status(400).json({ error: 'College name and email required' });
     }
-    
+
     if (req.user.college) {
       return res.status(400).json({ error: 'You are already connected to a college community' });
     }
-    
+
     const code = generateCode();
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
-    
+
     const { error: codeError } = await supabase
       .from('codes')
       .insert([{
@@ -823,11 +823,11 @@ app.post('/api/college/request-verification', authenticateToken, async (req, res
         meta: { collegeName, collegeEmail },
         expires_at: expiresAt.toISOString()
       }]);
-    
+
     if (codeError) {
       throw new Error('Failed to generate verification code');
     }
-    
+
     sendEmail(
       collegeEmail,
       `🎓 College Verification Code - VibeXpert`,
@@ -841,7 +841,7 @@ app.post('/api/college/request-verification', authenticateToken, async (req, res
         <p style="font-size: 14px; color: #6B7280;">This code expires in 15 minutes.</p>
       </div>`
     ).catch(err => console.error('Email failed:', err));
-    
+
     res.json({ success: true, message: 'Verification code sent' });
   } catch (error) {
     console.error('College verification request error:', error);
@@ -852,11 +852,11 @@ app.post('/api/college/request-verification', authenticateToken, async (req, res
 app.post('/api/college/verify', authenticateToken, async (req, res) => {
   try {
     const { code } = req.body;
-    
+
     if (!code) {
       return res.status(400).json({ error: 'Verification code required' });
     }
-    
+
     const { data: codeData } = await supabase
       .from('codes')
       .select('*')
@@ -865,15 +865,15 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
       .eq('type', 'college')
       .gte('expires_at', new Date().toISOString())
       .maybeSingle();
-    
+
     if (!codeData) {
       return res.status(400).json({ error: 'Invalid or expired code' });
     }
-    
+
     const { collegeName } = codeData.meta;
-    
+
     const newBadges = [...(req.user.badges || []), 'verified_student'];
-    
+
     await supabase
       .from('users')
       .update({
@@ -882,12 +882,12 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
         badges: newBadges
       })
       .eq('id', req.user.id);
-    
+
     await supabase
       .from('codes')
       .delete()
       .eq('id', codeData.id);
-    
+
     res.json({
       success: true,
       message: 'College verification successful',
@@ -917,33 +917,33 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
       `)
       .order('created_at', { ascending: false })
       .limit(50);
-    
+
     if (error) throw error;
-    
+
     const postsWithCounts = await Promise.all(
       (posts || []).map(async (post) => {
         const { count: likeCount } = await supabase
           .from('post_likes')
           .select('id', { count: 'exact', head: true })
           .eq('post_id', post.id);
-        
+
         const { count: commentCount } = await supabase
           .from('post_comments')
           .select('id', { count: 'exact', head: true })
           .eq('post_id', post.id);
-        
+
         const { count: shareCount } = await supabase
           .from('post_shares')
           .select('id', { count: 'exact', head: true })
           .eq('post_id', post.id);
-        
+
         const { data: isLiked } = await supabase
           .from('post_likes')
           .select('id')
           .eq('post_id', post.id)
           .eq('user_id', req.user.id)
           .maybeSingle();
-        
+
         return {
           ...post,
           like_count: likeCount || 0,
@@ -953,7 +953,7 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
         };
       })
     );
-    
+
     res.json({ success: true, posts: postsWithCounts });
   } catch (error) {
     console.error('❌ Load posts error:', error);
@@ -964,13 +964,13 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
 app.get('/api/posts/community', authenticateToken, async (req, res) => {
   try {
     if (!req.user.community_joined || !req.user.college) {
-      return res.json({ 
-        success: false, 
+      return res.json({
+        success: false,
         needsJoinCommunity: true,
-        message: 'Join a college community first' 
+        message: 'Join a college community first'
       });
     }
-    
+
     const { data: posts, error } = await supabase
       .from('posts')
       .select(`
@@ -985,32 +985,32 @@ app.get('/api/posts/community', authenticateToken, async (req, res) => {
       .eq('posted_to', 'community')
       .order('created_at', { ascending: false })
       .limit(50);
-    
+
     if (error) throw error;
-    
+
     const communityPosts = (posts || []).filter(
       post => post.users?.college === req.user.college
     );
-    
+
     const postsWithCounts = await Promise.all(
       communityPosts.map(async (post) => {
         const { count: likeCount } = await supabase
           .from('post_likes')
           .select('id', { count: 'exact', head: true })
           .eq('post_id', post.id);
-        
+
         const { count: commentCount } = await supabase
           .from('post_comments')
           .select('id', { count: 'exact', head: true })
           .eq('post_id', post.id);
-        
+
         const { data: isLiked } = await supabase
           .from('post_likes')
           .select('id')
           .eq('post_id', post.id)
           .eq('user_id', req.user.id)
           .maybeSingle();
-        
+
         return {
           ...post,
           like_count: likeCount || 0,
@@ -1019,7 +1019,7 @@ app.get('/api/posts/community', authenticateToken, async (req, res) => {
         };
       })
     );
-    
+
     res.json({ success: true, posts: postsWithCounts });
   } catch (error) {
     console.error('❌ Community posts error:', error);
@@ -1030,17 +1030,17 @@ app.get('/api/posts/community', authenticateToken, async (req, res) => {
 app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req, res) => {
   try {
     const { content, postTo, music, stickers } = req.body;
-    
+
     if (!content && (!req.files || req.files.length === 0)) {
       return res.status(400).json({ error: 'Post content or media required' });
     }
-    
+
     if (postTo === 'community' && (!req.user.community_joined || !req.user.college)) {
       return res.status(400).json({ error: 'Join a university community first' });
     }
-    
+
     let mediaUrls = [];
-    
+
     if (req.files && req.files.length > 0) {
       mediaUrls = await Promise.all(
         req.files.map(async (file) => {
@@ -1050,22 +1050,22 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
             .upload(fileName, file.buffer, {
               contentType: file.mimetype
             });
-          
+
           if (error) throw error;
-          
+
           const { data: { publicUrl } } = supabase.storage
             .from('posts')
             .getPublicUrl(fileName);
-          
+
           return {
             url: publicUrl,
-            type: file.mimetype.startsWith('video/') ? 'video' : 
-                  file.mimetype.startsWith('audio/') ? 'audio' : 'image'
+            type: file.mimetype.startsWith('video/') ? 'video' :
+              file.mimetype.startsWith('audio/') ? 'audio' : 'image'
           };
         })
       );
     }
-    
+
     const { data: post, error } = await supabase
       .from('posts')
       .insert([{
@@ -1078,14 +1078,14 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
       }])
       .select()
       .single();
-    
+
     if (error) throw error;
-    
+
     const { count: postCount } = await supabase
       .from('posts')
       .select('id', { count: 'exact', head: true })
       .eq('user_id', req.user.id);
-    
+
     res.json({
       success: true,
       post,
@@ -1101,22 +1101,22 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
 app.delete('/api/posts/:postId', authenticateToken, async (req, res) => {
   try {
     const { postId } = req.params;
-    
+
     const { data: post } = await supabase
       .from('posts')
       .select('user_id')
       .eq('id', postId)
       .single();
-    
+
     if (!post || post.user_id !== req.user.id) {
       return res.status(403).json({ error: 'Not authorized' });
     }
-    
+
     await supabase
       .from('posts')
       .delete()
       .eq('id', postId);
-    
+
     res.json({ success: true, message: 'Post deleted' });
   } catch (error) {
     console.error('❌ Delete post error:', error);
@@ -1127,40 +1127,40 @@ app.delete('/api/posts/:postId', authenticateToken, async (req, res) => {
 app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
   try {
     const { postId } = req.params;
-    
+
     const { data: existingLike } = await supabase
       .from('post_likes')
       .select('id')
       .eq('post_id', postId)
       .eq('user_id', req.user.id)
       .maybeSingle();
-    
+
     if (existingLike) {
       await supabase
         .from('post_likes')
         .delete()
         .eq('id', existingLike.id);
-      
+
       const { count: likeCount } = await supabase
         .from('post_likes')
         .select('id', { count: 'exact', head: true })
         .eq('post_id', postId);
-      
+
       return res.json({ success: true, liked: false, likeCount: likeCount || 0 });
     }
-    
+
     await supabase
       .from('post_likes')
       .insert([{
         post_id: postId,
         user_id: req.user.id
       }]);
-    
+
     const { count: likeCount } = await supabase
       .from('post_likes')
       .select('id', { count: 'exact', head: true })
       .eq('post_id', postId);
-    
+
     res.json({ success: true, liked: true, likeCount: likeCount || 0 });
   } catch (error) {
     console.error('❌ Like post error:', error);
@@ -1171,7 +1171,7 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
 app.get('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
   try {
     const { postId } = req.params;
-    
+
     const { data: comments, error } = await supabase
       .from('post_comments')
       .select(`
@@ -1184,9 +1184,9 @@ app.get('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
       `)
       .eq('post_id', postId)
       .order('created_at', { ascending: false });
-    
+
     if (error) throw error;
-    
+
     res.json({ success: true, comments: comments || [] });
   } catch (error) {
     console.error('❌ Get comments error:', error);
@@ -1198,11 +1198,11 @@ app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
   try {
     const { postId } = req.params;
     const { content } = req.body;
-    
+
     if (!content || !content.trim()) {
       return res.status(400).json({ error: 'Comment content required' });
     }
-    
+
     const { data: comment, error } = await supabase
       .from('post_comments')
       .insert([{
@@ -1212,9 +1212,9 @@ app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
       }])
       .select()
       .single();
-    
+
     if (error) throw error;
-    
+
     res.json({ success: true, comment });
   } catch (error) {
     console.error('❌ Comment error:', error);
@@ -1225,22 +1225,22 @@ app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
 app.delete('/api/posts/:postId/comments/:commentId', authenticateToken, async (req, res) => {
   try {
     const { commentId } = req.params;
-    
+
     const { data: comment } = await supabase
       .from('post_comments')
       .select('user_id')
       .eq('id', commentId)
       .single();
-    
+
     if (!comment || comment.user_id !== req.user.id) {
       return res.status(403).json({ error: 'Not authorized' });
     }
-    
+
     await supabase
       .from('post_comments')
       .delete()
       .eq('id', commentId);
-    
+
     res.json({ success: true, message: 'Comment deleted' });
   } catch (error) {
     console.error('❌ Delete comment error:', error);
@@ -1251,19 +1251,19 @@ app.delete('/api/posts/:postId/comments/:commentId', authenticateToken, async (r
 app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
   try {
     const { postId } = req.params;
-    
+
     await supabase
       .from('post_shares')
       .insert([{
         post_id: postId,
         user_id: req.user.id
       }]);
-    
+
     const { count: shareCount } = await supabase
       .from('post_shares')
       .select('id', { count: 'exact', head: true })
       .eq('post_id', postId);
-    
+
     res.json({ success: true, shareCount: shareCount || 0 });
   } catch (error) {
     console.error('❌ Share error:', error);
@@ -1325,25 +1325,25 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
 app.delete('/api/community/messages/:messageId', authenticateToken, async (req, res) => {
   try {
     const { messageId } = req.params;
-    
+
     const { data: message } = await supabase
       .from('community_messages')
       .select('sender_id, college_name')
       .eq('id', messageId)
       .single();
-    
+
     if (!message || message.sender_id !== req.user.id) {
       return res.status(403).json({ error: 'Not authorized' });
     }
-    
+
     await supabase
       .from('community_messages')
       .delete()
       .eq('id', messageId);
-    
+
     // Emit deletion via Socket.IO
     io.to(message.college_name).emit('message_deleted', { id: messageId });
-    
+
     res.json({ success: true, message: 'Message deleted' });
   } catch (error) {
     console.error('❌ Delete message error:', error);
@@ -1351,22 +1351,45 @@ app.delete('/api/community/messages/:messageId', authenticateToken, async (req, 
   }
 });
 
-app.post('/api/community/messages', authenticateToken, async (req, res) => {
+app.post('/api/community/messages', authenticateToken, upload.single('media'), async (req, res) => {
   try {
     const { content } = req.body;
+    const media = req.file;
 
     console.log('📨 POST Message:', {
       user: req.user.username,
       college: req.user.college,
-      contentLength: content?.length
+      contentLength: content?.length,
+      hasMedia: !!media
     });
 
-    if (!content || !content.trim()) {
-      return res.status(400).json({ error: 'Message content required' });
+    if (!content && !media) {
+      return res.status(400).json({ error: 'Message content or media required' });
     }
 
     if (!req.user.community_joined || !req.user.college) {
       return res.status(400).json({ error: 'Join a college community first' });
+    }
+
+    let mediaUrl = null;
+    let mediaType = null;
+
+    if (media) {
+      const fileName = `chat_${Date.now()}_${media.originalname}`;
+      const { data, error: uploadError } = await supabase.storage
+        .from('posts') // Reusing posts bucket
+        .upload(fileName, media.buffer, {
+          contentType: media.mimetype
+        });
+
+      if (uploadError) throw uploadError;
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('posts')
+        .getPublicUrl(fileName);
+
+      mediaUrl = publicUrl;
+      mediaType = media.mimetype.startsWith('video/') ? 'video' : 'image';
     }
 
     const { data: message, error } = await supabase
@@ -1374,7 +1397,9 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
       .insert([{
         sender_id: req.user.id,
         college_name: req.user.college,
-        content: content.trim()
+        content: content?.trim() || '',
+        media_url: mediaUrl,
+        media_type: mediaType
       }])
       .select(`
         *,
@@ -1393,17 +1418,12 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
 
     console.log('✅ Message saved:', message.id);
 
-    // ✅ CRITICAL FIX: Broadcast to everyone EXCEPT sender
+    // Broadcast to college room
     const senderSocketId = userSockets.get(req.user.id);
-    
     if (senderSocketId) {
-      // Sender is connected - broadcast to others only
       io.to(req.user.college).except(senderSocketId).emit('new_message', message);
-      console.log(`📡 Broadcast to ${req.user.college} (except sender ${senderSocketId})`);
     } else {
-      // Sender not in map - broadcast to all (shouldn't happen normally)
       io.to(req.user.college).emit('new_message', message);
-      console.log(`📡 Broadcast to ${req.user.college} (sender not found)`);
     }
 
     res.json({ success: true, message });
@@ -1417,16 +1437,17 @@ app.post('/api/community/messages', authenticateToken, async (req, res) => {
   }
 });
 
+
 // ==================== FEEDBACK ENDPOINT ====================
 
 app.post('/api/feedback', authenticateToken, async (req, res) => {
   try {
     const { subject, message } = req.body;
-    
+
     if (!subject || !message) {
       return res.status(400).json({ error: 'Subject and message required' });
     }
-    
+
     await supabase
       .from('feedback')
       .insert([{
@@ -1434,7 +1455,7 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
         subject,
         message
       }]);
-    
+
     res.json({ success: true, message: 'Feedback submitted' });
   } catch (error) {
     console.error('❌ Feedback error:', error);
@@ -1447,15 +1468,15 @@ const cleanupOldMessages = async () => {
   try {
     console.log('🧹 Running chat cleanup...');
     const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-    
+
     // Delete messages older than 48 hours
     const { error } = await supabase
       .from('community_messages')
       .delete()
       .lt('created_at', twoDaysAgo);
-    
+
     if (error) throw error;
-    
+
     console.log('✅ Old messages cleaned up');
   } catch (error) {
     console.error('❌ Cleanup error:', error.message);
