@@ -1508,30 +1508,30 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
 });
 
 // ==================== AUTO-DELETE OLD MESSAGES ====================
-const cleanupOldMessages = async () => {
-  try {
-    console.log('🧹 Running chat cleanup...');
-    const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-
-    // Delete messages older than 48 hours
-    const { error } = await supabase
-      .from('community_messages')
-      .delete()
-      .lt('created_at', twoDaysAgo);
-
-    if (error) throw error;
-
-    console.log('✅ Old messages cleaned up');
-  } catch (error) {
-    console.error('❌ Cleanup error:', error.message);
+// ✅ NEW: Automatic cleanup of messages older than 3 days
+  async function cleanupOldMessages() {
+    try {
+      const threeDaysAgo = new Date();
+      threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+      
+      const { data, error } = await supabase
+        .from('community_messages')
+        .delete()
+        .lt('created_at', threeDaysAgo.toISOString());
+      
+      if (error) throw error;
+      
+      console.log('🗑️ Cleaned up old messages (>3 days)');
+    } catch (error) {
+      console.error('❌ Cleanup error:', error);
+    }
   }
-};
-
-// Run cleanup every hour
-setInterval(cleanupOldMessages, 60 * 60 * 1000);
-
-// Run once on startup
-cleanupOldMessages();
+  
+  // Run cleanup every hour
+  setInterval(cleanupOldMessages, 60 * 60 * 1000);
+  
+  // Run cleanup on server start
+  cleanupOldMessages();
 
 
 
@@ -1580,4 +1580,5 @@ server.listen(PORT, () => {
   console.log(`💳 Razorpay payment integration enabled`);
   console.log(`👑 Premium subscription system active`);
 });
+
 
