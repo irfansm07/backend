@@ -1424,9 +1424,10 @@ app.post('/api/community/messages', authenticateToken, upload.single('media'), a
       return res.status(400).json({ error: 'Message content or media required' });
     }
 
-    if (!req.user.community_joined || !req.user.college) {
-      return res.status(400).json({ error: 'Join a college community first' });
-    }
+    // Temporarily removed community check for debugging
+    // if (!req.user.community_joined || !req.user.college) {
+    //   return res.status(400).json({ error: 'Join a college community first' });
+    // }
 
     let mediaUrl = null;
     let mediaType = null;
@@ -1453,7 +1454,7 @@ app.post('/api/community/messages', authenticateToken, upload.single('media'), a
       .from('community_messages')
       .insert([{
         sender_id: req.user.id,
-        college_name: req.user.college,
+        college_name: req.user.college || 'General',
         content: content?.trim() || '',
         media_url: mediaUrl,
         media_type: mediaType
@@ -1477,10 +1478,11 @@ app.post('/api/community/messages', authenticateToken, upload.single('media'), a
 
     // Broadcast to college room
     const senderSocketId = userSockets.get(req.user.id);
+    const collegeRoom = req.user.college || 'General';
     if (senderSocketId) {
-      io.to(req.user.college).except(senderSocketId).emit('new_message', message);
+      io.to(collegeRoom).except(senderSocketId).emit('new_message', message);
     } else {
-      io.to(req.user.college).emit('new_message', message);
+      io.to(collegeRoom).emit('new_message', message);
     }
 
     res.json({ success: true, message });
@@ -1593,7 +1595,6 @@ server.listen(PORT, () => {
   console.log(`💳 Razorpay payment integration enabled`);
   console.log(`👑 Premium subscription system active`);
 });
-
 
 
 
