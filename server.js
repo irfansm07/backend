@@ -1288,6 +1288,10 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
       });
     }
 
+    // ✅ FIXED: Only get messages from last 3 days
+    const threeDaysAgo = new Date();
+    threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+
     const { data: messages, error } = await supabase
       .from('community_messages')
       .select(`
@@ -1299,12 +1303,13 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
         )
       `)
       .eq('college_name', req.user.college)
+      .gte('created_at', threeDaysAgo.toISOString())
       .order('created_at', { ascending: true })
       .limit(100);
 
     if (error) throw error;
 
-    console.log(`✅ Loaded ${messages?.length || 0} messages`);
+    console.log(`✅ Loaded ${messages?.length || 0} messages (last 3 days)`);
 
     res.json({
       success: true,
@@ -1320,7 +1325,59 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
   }
 });
 
-// Duplicate endpoint removed
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ✅ NEW: Automatic cleanup of messages older than 3 days
+async function cleanupOldMessages() {
+  try {
+    const threeDaysAgo = new Date();
+    threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+    
+    const { data, error } = await supabase
+      .from('community_messages')
+      .delete()
+      .lt('created_at', threeDaysAgo.toISOString());
+    
+    if (error) {
+      console.error('❌ Cleanup error:', error);
+      return;
+    }
+    
+    console.log(`🗑️ Cleaned up messages older than ${threeDaysAgo.toISOString()}`);
+  } catch (error) {
+    console.error('❌ Cleanup exception:', error);
+  }
+}
+
+// Run cleanup every hour (3600000 ms = 1 hour)
+setInterval(cleanupOldMessages, 60 * 60 * 1000);
+
+// Run cleanup immediately on server start
+cleanupOldMessages();
+
+console.log('✅ Message cleanup scheduler initialized (3-day retention)');
+
+
+
+
+
+
+
+
+
 
 app.delete('/api/community/messages/:messageId', authenticateToken, async (req, res) => {
   try {
@@ -1372,6 +1429,7 @@ app.post('/api/community/messages', authenticateToken, upload.single('media'), a
     }
 
     let mediaUrl = null;
+    let mediaType = null;
 
     if (media) {
       const fileName = `chat_${Date.now()}_${media.originalname}`;
@@ -1388,6 +1446,7 @@ app.post('/api/community/messages', authenticateToken, upload.single('media'), a
         .getPublicUrl(fileName);
 
       mediaUrl = publicUrl;
+      mediaType = media.mimetype.startsWith('video/') ? 'video' : 'image';
     }
 
     const { data: message, error } = await supabase
@@ -1396,7 +1455,8 @@ app.post('/api/community/messages', authenticateToken, upload.single('media'), a
         sender_id: req.user.id,
         college_name: req.user.college,
         content: content?.trim() || '',
-        media_url: mediaUrl
+        media_url: mediaUrl,
+        media_type: mediaType
       }])
       .select(`
         *,
@@ -1461,30 +1521,42 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
 });
 
 // ==================== AUTO-DELETE OLD MESSAGES ====================
-const cleanupOldMessages = async () => {
-  try {
-    console.log('🧹 Running chat cleanup...');
-    const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-
-    // Delete messages older than 48 hours
-    const { error } = await supabase
-      .from('community_messages')
-      .delete()
-      .lt('created_at', twoDaysAgo);
-
-    if (error) throw error;
-
-    console.log('✅ Old messages cleaned up');
-  } catch (error) {
-    console.error('❌ Cleanup error:', error.message);
+// ✅ NEW: Automatic cleanup of messages older than 3 days
+  async function cleanupOldMessages() {
+    try {
+      const threeDaysAgo = new Date();
+      threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+      
+      const { data, error } = await supabase
+        .from('community_messages')
+        .delete()
+        .lt('created_at', threeDaysAgo.toISOString());
+      
+      if (error) throw error;
+      
+      console.log('🗑️ Cleaned up old messages (>3 days)');
+    } catch (error) {
+      console.error('❌ Cleanup error:', error);
+    }
   }
-};
+  
+  // Run cleanup every hour
+  setInterval(cleanupOldMessages, 60 * 60 * 1000);
+  
+  // Run cleanup on server start
+  cleanupOldMessages();
 
-// Run cleanup every hour
-setInterval(cleanupOldMessages, 60 * 60 * 1000);
 
-// Run once on startup
-cleanupOldMessages();
+
+
+
+
+
+
+
+
+
+
 
 // ==================== SOCKET.IO ====================
 
@@ -1521,3 +1593,16 @@ server.listen(PORT, () => {
   console.log(`💳 Razorpay payment integration enabled`);
   console.log(`👑 Premium subscription system active`);
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
