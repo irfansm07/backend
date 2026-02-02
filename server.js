@@ -1476,10 +1476,23 @@ app.post('/api/community/messages', authenticateToken, upload.single('media'), a
     console.log('✅ Message saved:', message.id);
 
     // Broadcast to college room
+// ✅ CRITICAL: Broadcast to college room EXCLUDING sender
     const senderSocketId = userSockets.get(req.user.id);
+    
+    console.log('📡 Broadcasting message:', {
+      messageId: message.id,
+      senderId: req.user.id,
+      senderSocketId: senderSocketId,
+      college: req.user.college
+    });
+
     if (senderSocketId) {
+      // Exclude sender from broadcast
       io.to(req.user.college).except(senderSocketId).emit('new_message', message);
+      console.log(`✅ Broadcasted to ${req.user.college} (excluding ${senderSocketId})`);
     } else {
+      // Sender socket not found, broadcast to all (rare case)
+      console.warn('⚠️ Sender socket not found, broadcasting to all');
       io.to(req.user.college).emit('new_message', message);
     }
 
@@ -1593,6 +1606,7 @@ server.listen(PORT, () => {
   console.log(`💳 Razorpay payment integration enabled`);
   console.log(`👑 Premium subscription system active`);
 });
+
 
 
 
