@@ -1372,7 +1372,6 @@ app.post('/api/community/messages', authenticateToken, upload.single('media'), a
     }
 
     let mediaUrl = null;
-    let mediaType = null;
 
     if (media) {
       const fileName = `chat_${Date.now()}_${media.originalname}`;
@@ -1389,7 +1388,6 @@ app.post('/api/community/messages', authenticateToken, upload.single('media'), a
         .getPublicUrl(fileName);
 
       mediaUrl = publicUrl;
-      mediaType = media.mimetype.startsWith('video/') ? 'video' : 'image';
     }
 
     const { data: message, error } = await supabase
@@ -1398,8 +1396,7 @@ app.post('/api/community/messages', authenticateToken, upload.single('media'), a
         sender_id: req.user.id,
         college_name: req.user.college,
         content: content?.trim() || '',
-        media_url: mediaUrl,
-        media_type: mediaType
+        media_url: mediaUrl
       }])
       .select(`
         *,
