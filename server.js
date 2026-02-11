@@ -1288,9 +1288,9 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
       });
     }
 
-    // ✅ FIXED: Only get messages from last 3 days
-    const threeDaysAgo = new Date();
-    threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+    // ✅ FIXED: Only get messages from last 5 days
+    const fiveDaysAgo = new Date();
+    fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
 
     const { data: messages, error } = await supabase
       .from('community_messages')
@@ -1303,13 +1303,13 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
         )
       `)
       .eq('college_name', req.user.college)
-      .gte('created_at', threeDaysAgo.toISOString())
+      .gte('created_at', fiveDaysAgo.toISOString())
       .order('created_at', { ascending: true })
       .limit(100);
 
     if (error) throw error;
 
-    console.log(`✅ Loaded ${messages?.length || 0} messages (last 3 days)`);
+    console.log(`✅ Loaded ${messages?.length || 0} messages (last 5 days)`);
 
     res.json({
       success: true,
@@ -1340,35 +1340,7 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
 
 
 
-// ✅ NEW: Automatic cleanup of messages older than 3 days
-async function cleanupOldMessages() {
-  try {
-    const threeDaysAgo = new Date();
-    threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
-    
-    const { data, error } = await supabase
-      .from('community_messages')
-      .delete()
-      .lt('created_at', threeDaysAgo.toISOString());
-    
-    if (error) {
-      console.error('❌ Cleanup error:', error);
-      return;
-    }
-    
-    console.log(`🗑️ Cleaned up messages older than ${threeDaysAgo.toISOString()}`);
-  } catch (error) {
-    console.error('❌ Cleanup exception:', error);
-  }
-}
 
-// Run cleanup every hour (3600000 ms = 1 hour)
-setInterval(cleanupOldMessages, 60 * 60 * 1000);
-
-// Run cleanup immediately on server start
-cleanupOldMessages();
-
-console.log('✅ Message cleanup scheduler initialized (3-day retention)');
 
 
 
@@ -1521,30 +1493,30 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
 });
 
 // ==================== AUTO-DELETE OLD MESSAGES ====================
-// ✅ NEW: Automatic cleanup of messages older than 3 days
-  async function cleanupOldMessages() {
-    try {
-      const threeDaysAgo = new Date();
-      threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
-      
-      const { data, error } = await supabase
-        .from('community_messages')
-        .delete()
-        .lt('created_at', threeDaysAgo.toISOString());
-      
-      if (error) throw error;
-      
-      console.log('🗑️ Cleaned up old messages (>3 days)');
-    } catch (error) {
-      console.error('❌ Cleanup error:', error);
-    }
+// ✅ NEW: Automatic cleanup of messages older than 5 days
+async function cleanupOldMessages() {
+  try {
+    const fiveDaysAgo = new Date();
+    fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
+
+    const { data, error } = await supabase
+      .from('community_messages')
+      .delete()
+      .lt('created_at', fiveDaysAgo.toISOString());
+
+    if (error) throw error;
+
+    console.log('🗑️ Cleaned up old messages (>5 days)');
+  } catch (error) {
+    console.error('❌ Cleanup error:', error);
   }
-  
-  // Run cleanup every hour
-  setInterval(cleanupOldMessages, 60 * 60 * 1000);
-  
-  // Run cleanup on server start
-  cleanupOldMessages();
+}
+
+// Run cleanup every hour
+setInterval(cleanupOldMessages, 60 * 60 * 1000);
+
+// Run cleanup on server start
+cleanupOldMessages();
 
 
 
@@ -1593,15 +1565,3 @@ server.listen(PORT, () => {
   console.log(`💳 Razorpay payment integration enabled`);
   console.log(`👑 Premium subscription system active`);
 });
-
-
-
-
-
-
-
-
-
-
-
-
