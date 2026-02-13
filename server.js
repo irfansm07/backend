@@ -559,18 +559,123 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
       .eq('liker_id', req.user.id)
       .maybeSingle();
 
+    // ✅ ADDED: Fetch Follow Counts
+    const { count: followersCount } = await supabase
+      .from('followers')
+      .select('id', { count: 'exact', head: true })
+      .eq('following_id', userId);
+
+    const { count: followingCount } = await supabase
+      .from('followers')
+      .select('id', { count: 'exact', head: true })
+      .eq('follower_id', userId);
+
+    const { data: isFollowing } = await supabase
+      .from('followers')
+      .select('id')
+      .eq('follower_id', req.user.id)
+      .eq('following_id', userId)
+      .maybeSingle();
+
     res.json({
       success: true,
       user: {
         ...user,
         postCount: postCount || 0,
+        followersCount: followersCount || 0,
+        followingCount: followingCount || 0,
         profileLikes: likeCount || 0,
-        isProfileLiked: !!isLiked
+        isProfileLiked: !!isLiked,
+        isFollowing: !!isFollowing
       }
     });
   } catch (error) {
     console.error('❌ Get profile error:', error);
     res.status(500).json({ error: 'Failed to fetch profile' });
+  }
+});
+
+// ✅ ADDED: Update User Profile
+app.put('/api/profile/update', authenticateToken, async (req, res) => {
+  try {
+    const { username, bio, college, registration_number } = req.body;
+
+    const updates = {};
+    if (username) updates.username = username;
+    if (bio !== undefined) updates.bio = bio;
+    if (college) updates.college = college;
+    if (registration_number) updates.registration_number = registration_number;
+
+    const { data: updatedUser, error } = await supabase
+      .from('users')
+      .update(updates)
+      .eq('id', req.user.id)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      message: 'Profile updated successfully',
+      user: updatedUser
+    });
+
+  } catch (error) {
+    console.error('❌ Update profile error:', error);
+    res.status(500).json({ error: 'Failed to update profile' });
+  }
+});
+
+// ✅ ADDED: Follow User
+app.post('/api/follow/:userId', authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (userId === req.user.id) {
+      return res.status(400).json({ error: 'Cannot follow yourself' });
+    }
+
+    const { error } = await supabase
+      .from('followers')
+      .insert([{
+        follower_id: req.user.id,
+        following_id: userId
+      }]);
+
+    if (error) {
+      if (error.code === '23505') { // Unique violation
+        return res.json({ success: true, message: 'Already following' });
+      }
+      throw error;
+    }
+
+    res.json({ success: true, message: 'Followed successfully' });
+
+  } catch (error) {
+    console.error('❌ Follow error:', error);
+    res.status(500).json({ error: 'Failed to follow user' });
+  }
+});
+
+// ✅ ADDED: Unfollow User
+app.post('/api/unfollow/:userId', authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const { error } = await supabase
+      .from('followers')
+      .delete()
+      .eq('follower_id', req.user.id)
+      .eq('following_id', userId);
+
+    if (error) throw error;
+
+    res.json({ success: true, message: 'Unfollowed successfully' });
+
+  } catch (error) {
+    console.error('❌ Unfollow error:', error);
+    res.status(500).json({ error: 'Failed to unfollow user' });
   }
 });
 
@@ -669,6 +774,22 @@ app.post('/api/login', async (req, res) => {
       { expiresIn: '30d' }
     );
 
+    // Fetch counts
+    const { count: followersCount } = await supabase
+      .from('followers')
+      .select('id', { count: 'exact', head: true })
+      .eq('following_id', user.id);
+
+    const { count: followingCount } = await supabase
+      .from('followers')
+      .select('id', { count: 'exact', head: true })
+      .eq('follower_id', user.id);
+
+    const { count: postCount } = await supabase
+      .from('posts')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id);
+
     res.json({
       success: true,
       token,
@@ -683,7 +804,10 @@ app.post('/api/login', async (req, res) => {
         badges: user.badges || [],
         bio: user.bio || '',
         isPremium: user.is_premium || false,
-        subscriptionPlan: user.subscription_plan || null
+        subscriptionPlan: user.subscription_plan || null,
+        followersCount: followersCount || 0,
+        followingCount: followingCount || 0,
+        postCount: postCount || 0
       }
     });
   } catch (error) {
