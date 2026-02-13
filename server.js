@@ -1380,7 +1380,15 @@ app.delete('/api/community/messages/:messageId', authenticateToken, async (req, 
   }
 });
 
-app.post('/api/community/messages', authenticateToken, upload.single('media'), async (req, res) => {
+// Replace line 1383 with this:
+app.post('/api/community/messages', authenticateToken, (req, res, next) => {
+  // Only use multer if there's a file
+  if (req.headers['content-type']?.includes('multipart/form-data')) {
+    upload.single('media')(req, res, next);
+  } else {
+    next();
+  }
+}, async (req, res) => {
   try {
     const { content } = req.body;
     const media = req.file;
@@ -1565,3 +1573,14 @@ server.listen(PORT, () => {
   console.log(`💳 Razorpay payment integration enabled`);
   console.log(`👑 Premium subscription system active`);
 });
+
+
+
+
+
+
+
+
+
+
+
