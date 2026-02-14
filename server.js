@@ -681,10 +681,15 @@ app.post('/api/unfollow/:userId', authenticateToken, async (req, res) => {
 
 app.post('/api/register', async (req, res) => {
   try {
-    const { username, email, password, registrationNumber } = req.body;
+    const { username, email, password, registrationNumber, gender } = req.body;
 
     if (!username || !email || !password || !registrationNumber) {
       return res.status(400).json({ error: 'All fields are required' });
+    }
+
+    // Validate gender if provided
+    if (gender && !['Male', 'Female', 'Other'].includes(gender)) {
+      return res.status(400).json({ error: 'Invalid gender value' });
     }
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -715,13 +720,21 @@ app.post('/api/register', async (req, res) => {
         username,
         email,
         password_hash: passwordHash,
-        registration_number: registrationNumber
+        registration_number: registrationNumber,
+        gender: gender || null
       }])
       .select()
       .single();
 
     if (error) {
-      throw new Error('Failed to create account');
+      console.error('Database error during user creation:', error);
+      if (error.code === '23505') {
+        return res.status(400).json({ error: 'User already exists with this email or registration number' });
+      }
+      if (error.message.includes('column') && error.message.includes('does not exist')) {
+        return res.status(500).json({ error: 'Database schema error. Please contact support.' });
+      }
+      throw new Error('Failed to create account: ' + error.message);
     }
 
     sendEmail(
