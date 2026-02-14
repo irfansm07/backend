@@ -266,7 +266,7 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
     const options = {
       amount: amount * 100,
       currency: 'INR',
-      receipt: `order_${req.user.id}_${Date.now()}`,
+      receipt: `rcpt_${req.user.id.slice(-8)}_${Date.now()}`,
       notes: {
         userId: req.user.id,
         username: req.user.username,
