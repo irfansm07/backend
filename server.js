@@ -662,16 +662,14 @@ app.post('/api/unfollow/:userId', authenticateToken, async (req, res) => {
 // ✅ FIXED: Changed registrationNumber to phoneNumber to match frontend
 app.post('/api/register', async (req, res) => {
     try {
-        const { username, email, password, phoneNumber, gender } = req.body;
+        const { username, email, password, registrationNumber, phoneNumber } = req.body;
+        const regNumber = registrationNumber || phoneNumber || `auto_${Date.now()}`;
 
-        if (!username || !email || !password || !phoneNumber) {
+        if (!username || !email || !password) {
             return res.status(400).json({ error: 'All fields are required' });
         }
 
-        // Validate gender if provided
-        if (gender && !['Male', 'Female', 'Other'].includes(gender)) {
-            return res.status(400).json({ error: 'Invalid gender value' });
-        }
+
 
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (!emailRegex.test(email)) {
@@ -680,17 +678,12 @@ app.post('/api/register', async (req, res) => {
 
         const { data: existingUser } = await supabase
             .from('users')
-            .select('email, registration_number')
-            .or(`email.eq.${email},registration_number.eq.${phoneNumber}`)
+            .select('email')
+            .eq('email', email)
             .maybeSingle();
 
         if (existingUser) {
-            if (existingUser.email === email) {
-                return res.status(400).json({ error: 'Email already registered' });
-            }
-            if (existingUser.registration_number === phoneNumber) {
-                return res.status(400).json({ error: 'Phone number already registered' });
-            }
+            return res.status(400).json({ error: 'Email already registered' });
         }
 
         const passwordHash = await bcrypt.hash(password, 10);
@@ -701,8 +694,7 @@ app.post('/api/register', async (req, res) => {
                 username,
                 email,
                 password_hash: passwordHash,
-                registration_number: phoneNumber,
-                gender: gender || null
+                registration_number: regNumber
             }])
             .select()
             .single();
