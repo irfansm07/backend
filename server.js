@@ -9,7 +9,6 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
 const http = require('http');
-const socketIO = require('socket.io');
 const axios = require('axios');
 const path = require('path');
 const Razorpay = require('razorpay');
@@ -17,70 +16,6 @@ const crypto = require('crypto');
 
 const app = express();
 const server = http.createServer(app);
-
-const io = socketIO(server, {
-    cors: {
-        origin: '*',
-        methods: ['GET', 'POST'],
-        credentials: true
-    },
-    pingTimeout: 60000,
-    pingInterval: 25000
-});
-
-// Add at top of server.js after io initialization
-const userSockets = new Map(); // userId -> socketId
-
-
-io.on('connection', (socket) => {
-    console.log('⚡ User connected:', socket.id);
-
-    // ✅ UPDATED: Store user socket mapping FIRST
-    socket.on('user_online', (userId) => {
-        socket.data.userId = userId;
-        userSockets.set(userId, socket.id); // Store mapping
-        console.log(`📍 User ${userId} mapped to socket ${socket.id}`);
-    });
-
-    socket.on('join_college', (collegeName) => {
-        if (collegeName && typeof collegeName === 'string') {
-            Object.keys(socket.rooms).forEach(room => {
-                if (room !== socket.id) socket.leave(room);
-            });
-            socket.join(collegeName);
-            socket.data.college = collegeName;
-            console.log(`🧑‍🤝‍🧑 User ${socket.id} joined: ${collegeName}`);
-
-            const roomSize = io.sockets.adapter.rooms.get(collegeName)?.size || 0;
-            io.to(collegeName).emit('online_count', roomSize);
-        }
-    });
-
-    socket.on('typing', (data) => {
-        if (data.collegeName && data.username) {
-            socket.to(data.collegeName).emit('user_typing', { username: data.username });
-        }
-    });
-
-    socket.on('stop_typing', (data) => {
-        if (data.collegeName && data.username) {
-            socket.to(data.collegeName).emit('user_stop_typing', { username: data.username });
-        }
-    });
-
-    socket.on('disconnect', () => {
-        console.log('👋 User disconnected:', socket.id);
-        // ✅ UPDATED: Clean up user socket mapping
-        if (socket.data.userId) {
-            userSockets.delete(socket.data.userId);
-            console.log(`🗑️ Removed mapping for user ${socket.data.userId}`);
-        }
-        if (socket.data.college) {
-            const roomSize = io.sockets.adapter.rooms.get(socket.data.college)?.size || 0;
-            io.to(socket.data.college).emit('online_count', roomSize);
-        }
-    });
-});
 
 app.use(cors({
     origin: '*',
@@ -1169,8 +1104,7 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
 
                     return {
                         url: publicUrl,
-                        type: file.mimetype.startsWith('video/') ? 'video' :
-                            file.mimetype.startsWith('audio/') ? 'audio' : 'image'
+                        type: file.mimetype.startsWith('video/') ? 'video' : 'image'
                     };
                 })
             );
@@ -1180,57 +1114,27 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
             .from('posts')
             .insert([{
                 user_id: req.user.id,
-                content: content || '',
+                content: content?.trim() || '',
                 media: mediaUrls,
-                posted_to: postTo || 'profile',
-                music: music ? JSON.parse(music) : null,
-                stickers: stickers ? JSON.parse(stickers) : []
+                posted_to: postTo
             }])
-            .select()
+            .select(`
+        *,
+        users:user_id (
+          id,
+          username,
+          profile_pic,
+          college
+        )
+      `)
             .single();
 
         if (error) throw error;
 
-        const { count: postCount } = await supabase
-            .from('posts')
-            .select('id', { count: 'exact', head: true })
-            .eq('user_id', req.user.id);
-
-        res.json({
-            success: true,
-            post,
-            postCount: postCount || 1,
-            message: 'Post created successfully'
-        });
+        res.json({ success: true, post });
     } catch (error) {
         console.error('❌ Create post error:', error);
         res.status(500).json({ error: 'Failed to create post' });
-    }
-});
-
-app.delete('/api/posts/:postId', authenticateToken, async (req, res) => {
-    try {
-        const { postId } = req.params;
-
-        const { data: post } = await supabase
-            .from('posts')
-            .select('user_id')
-            .eq('id', postId)
-            .single();
-
-        if (!post || post.user_id !== req.user.id) {
-            return res.status(403).json({ error: 'Not authorized' });
-        }
-
-        await supabase
-            .from('posts')
-            .delete()
-            .eq('id', postId);
-
-        res.json({ success: true, message: 'Post deleted' });
-    } catch (error) {
-        console.error('❌ Delete post error:', error);
-        res.status(500).json({ error: 'Failed to delete post' });
     }
 });
 
@@ -1238,33 +1142,21 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
     try {
         const { postId } = req.params;
 
-        const { data: existingLike } = await supabase
-            .from('post_likes')
-            .select('id')
-            .eq('post_id', postId)
-            .eq('user_id', req.user.id)
-            .maybeSingle();
-
-        if (existingLike) {
-            await supabase
-                .from('post_likes')
-                .delete()
-                .eq('id', existingLike.id);
-
-            const { count: likeCount } = await supabase
-                .from('post_likes')
-                .select('id', { count: 'exact', head: true })
-                .eq('post_id', postId);
-
-            return res.json({ success: true, liked: false, likeCount: likeCount || 0 });
-        }
-
-        await supabase
+        const { data: like, error } = await supabase
             .from('post_likes')
             .insert([{
                 post_id: postId,
                 user_id: req.user.id
-            }]);
+            }])
+            .select('id')
+            .single();
+
+        if (error) {
+            if (error.code === '23505') {
+                return res.json({ success: true, liked: false });
+            }
+            throw error;
+        }
 
         const { count: likeCount } = await supabase
             .from('post_likes')
@@ -1304,260 +1196,6 @@ app.get('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
     }
 });
 
-app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
-    try {
-        const { postId } = req.params;
-        const { content } = req.body;
-
-        if (!content || !content.trim()) {
-            return res.status(400).json({ error: 'Comment content required' });
-        }
-
-        const { data: comment, error } = await supabase
-            .from('post_comments')
-            .insert([{
-                post_id: postId,
-                user_id: req.user.id,
-                content: content.trim()
-            }])
-            .select()
-            .single();
-
-        if (error) throw error;
-
-        res.json({ success: true, comment });
-    } catch (error) {
-        console.error('❌ Comment error:', error);
-        res.status(500).json({ error: 'Failed to post comment' });
-    }
-});
-
-app.delete('/api/posts/:postId/comments/:commentId', authenticateToken, async (req, res) => {
-    try {
-        const { commentId } = req.params;
-
-        const { data: comment } = await supabase
-            .from('post_comments')
-            .select('user_id')
-            .eq('id', commentId)
-            .single();
-
-        if (!comment || comment.user_id !== req.user.id) {
-            return res.status(403).json({ error: 'Not authorized' });
-        }
-
-        await supabase
-            .from('post_comments')
-            .delete()
-            .eq('id', commentId);
-
-        res.json({ success: true, message: 'Comment deleted' });
-    } catch (error) {
-        console.error('❌ Delete comment error:', error);
-        res.status(500).json({ error: 'Failed to delete comment' });
-    }
-});
-
-app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
-    try {
-        const { postId } = req.params;
-
-        await supabase
-            .from('post_shares')
-            .insert([{
-                post_id: postId,
-                user_id: req.user.id
-            }]);
-
-        const { count: shareCount } = await supabase
-            .from('post_shares')
-            .select('id', { count: 'exact', head: true })
-            .eq('post_id', postId);
-
-        res.json({ success: true, shareCount: shareCount || 0 });
-    } catch (error) {
-        console.error('❌ Share error:', error);
-        res.status(500).json({ error: 'Failed to share post' });
-    }
-});
-
-// ==================== COMMUNITY CHAT ENDPOINTS ====================
-
-app.get('/api/community/messages', authenticateToken, async (req, res) => {
-    try {
-        console.log('📥 GET Messages:', {
-            user: req.user.username,
-            college: req.user.college
-        });
-
-        if (!req.user.community_joined || !req.user.college) {
-            return res.json({
-                success: false,
-                needsJoinCommunity: true,
-                messages: []
-            });
-        }
-
-        // ✅ FIXED: Only get messages from last 5 days
-        const fiveDaysAgo = new Date();
-        fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
-
-        const { data: messages, error } = await supabase
-            .from('community_messages')
-            .select(`
-        *,
-        users:sender_id (
-          id,
-          username,
-          profile_pic
-        )
-      `)
-            .eq('college_name', req.user.college)
-            .gte('created_at', fiveDaysAgo.toISOString())
-            .order('created_at', { ascending: true })
-            .limit(100);
-
-        if (error) throw error;
-
-        console.log(`✅ Loaded ${messages?.length || 0} messages (last 5 days)`);
-
-        res.json({
-            success: true,
-            messages: messages || []
-        });
-
-    } catch (error) {
-        console.error('❌ Get messages error:', error);
-        res.status(500).json({
-            error: 'Failed to load messages',
-            details: error.message
-        });
-    }
-});
-
-app.delete('/api/community/messages/:messageId', authenticateToken, async (req, res) => {
-    try {
-        const { messageId } = req.params;
-
-        const { data: message } = await supabase
-            .from('community_messages')
-            .select('sender_id, college_name')
-            .eq('id', messageId)
-            .single();
-
-        if (!message || message.sender_id !== req.user.id) {
-            return res.status(403).json({ error: 'Not authorized' });
-        }
-
-        await supabase
-            .from('community_messages')
-            .delete()
-            .eq('id', messageId);
-
-        // Emit deletion via Socket.IO
-        io.to(message.college_name).emit('message_deleted', { id: messageId });
-
-        res.json({ success: true, message: 'Message deleted' });
-    } catch (error) {
-        console.error('❌ Delete message error:', error);
-        res.status(500).json({ error: 'Failed to delete message' });
-    }
-});
-
-app.post('/api/community/messages', authenticateToken, (req, res, next) => {
-    // Only use multer if there's a file
-    if (req.headers['content-type']?.includes('multipart/form-data')) {
-        upload.single('media')(req, res, next);
-    } else {
-        next();
-    }
-}, async (req, res) => {
-    try {
-        const { content } = req.body;
-        const media = req.file;
-
-        console.log('📨 POST Message:', {
-            user: req.user.username,
-            college: req.user.college,
-            contentLength: content?.length,
-            hasMedia: !!media
-        });
-
-        if (!content && !media) {
-            return res.status(400).json({ error: 'Message content or media required' });
-        }
-
-        if (!req.user.community_joined || !req.user.college) {
-            return res.status(400).json({ error: 'Join a college community first' });
-        }
-
-        let mediaUrl = null;
-        let mediaType = null;
-
-        if (media) {
-            const fileName = `chat_${Date.now()}_${media.originalname}`;
-            const { data, error: uploadError } = await supabase.storage
-                .from('posts') // Reusing posts bucket
-                .upload(fileName, media.buffer, {
-                    contentType: media.mimetype
-                });
-
-            if (uploadError) throw uploadError;
-
-            const { data: { publicUrl } } = supabase.storage
-                .from('posts')
-                .getPublicUrl(fileName);
-
-            mediaUrl = publicUrl;
-            mediaType = media.mimetype.startsWith('video/') ? 'video' : 'image';
-        }
-
-        const { data: message, error } = await supabase
-            .from('community_messages')
-            .insert([{
-                sender_id: req.user.id,
-                college_name: req.user.college,
-                content: content?.trim() || '',
-                media_url: mediaUrl,
-                media_type: mediaType
-            }])
-            .select(`
-        *,
-        users:sender_id (
-          id,
-          username,
-          profile_pic
-        )
-      `)
-            .single();
-
-        if (error) {
-            console.error('❌ Database error:', error);
-            throw error;
-        }
-
-        console.log('✅ Message saved:', message.id);
-
-        // Broadcast to college room
-        const senderSocketId = userSockets.get(req.user.id);
-        if (senderSocketId) {
-            io.to(req.user.college).except(senderSocketId).emit('new_message', message);
-        } else {
-            io.to(req.user.college).emit('new_message', message);
-        }
-
-        res.json({ success: true, message });
-
-    } catch (error) {
-        console.error('❌ Send message error:', error);
-        res.status(500).json({
-            error: 'Failed to send message',
-            details: error.message
-        });
-    }
-});
-
-
 // ==================== FEEDBACK ENDPOINT ====================
 
 app.post('/api/feedback', authenticateToken, async (req, res) => {
@@ -1582,32 +1220,6 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
         res.status(500).json({ error: 'Failed to submit feedback' });
     }
 });
-
-// ==================== AUTO-DELETE OLD MESSAGES ====================
-// ✅ NEW: Automatic cleanup of messages older than 5 days
-async function cleanupOldMessages() {
-    try {
-        const fiveDaysAgo = new Date();
-        fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
-
-        const { data, error } = await supabase
-            .from('community_messages')
-            .delete()
-            .lt('created_at', fiveDaysAgo.toISOString());
-
-        if (error) throw error;
-
-        console.log('🗑️ Cleaned up old messages (>5 days)');
-    } catch (error) {
-        console.error('❌ Cleanup error:', error);
-    }
-}
-
-// Run cleanup every hour
-setInterval(cleanupOldMessages, 60 * 60 * 1000);
-
-// Run cleanup on server start
-cleanupOldMessages();
 
 // ==================== ERROR HANDLING ====================
 
@@ -1637,7 +1249,6 @@ server.listen(PORT, () => {
     console.log(`✅ CORS configured for all devices`);
     console.log(`✅ Image upload support: 20MB max per file, 10 files max`);
     console.log(`✅ Like, Comment, Share functionality enabled`);
-    console.log(`✅ Real-time updates via Socket.IO`);
     console.log(`💳 Razorpay payment integration enabled`);
     console.log(`👑 Premium subscription system active`);
 });
