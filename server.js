@@ -44,7 +44,7 @@ io.on('connection', (socket) => {
 
     socket.on('join_college', (collegeName) => {
         if (collegeName && typeof collegeName === 'string') {
-            Object.keys(socket.rooms).forEach(room => {
+            [...socket.rooms].forEach(room => {
                 if (room !== socket.id) socket.leave(room);
             });
             socket.join(collegeName);
@@ -1402,28 +1402,44 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
         const fiveDaysAgo = new Date();
         fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
 
+        // STEP 1: Get messages (no join - avoids FK relationship errors)
         const { data: messages, error } = await supabase
             .from('community_messages')
-            .select(`
-        *,
-        users:sender_id (
-          id,
-          username,
-          profile_pic
-        )
-      `)
+            .select('*')
             .eq('college_name', req.user.college)
             .gte('created_at', fiveDaysAgo.toISOString())
             .order('created_at', { ascending: true })
             .limit(100);
 
-        if (error) throw error;
+        if (error) {
+            console.error('❌ GET messages error code:', error.code);
+            console.error('❌ GET messages error:', error.message);
+            throw error;
+        }
 
-        console.log(`✅ Loaded ${messages?.length || 0} messages (last 5 days)`);
+        // STEP 2: Enrich with sender info
+        let enrichedMessages = messages || [];
+        if (enrichedMessages.length > 0) {
+            const senderIds = [...new Set(enrichedMessages.map(m => m.sender_id))];
+            const { data: users } = await supabase
+                .from('users')
+                .select('id, username, profile_pic')
+                .in('id', senderIds);
+
+            const userMap = {};
+            (users || []).forEach(u => { userMap[u.id] = u; });
+
+            enrichedMessages = enrichedMessages.map(msg => ({
+                ...msg,
+                users: userMap[msg.sender_id] || { id: msg.sender_id, username: 'User', profile_pic: null }
+            }));
+        }
+
+        console.log(`✅ Loaded ${enrichedMessages.length} messages (last 5 days)`);
 
         res.json({
             success: true,
-            messages: messages || []
+            messages: enrichedMessages
         });
 
     } catch (error) {
@@ -1512,7 +1528,8 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
             mediaType = media.mimetype.startsWith('video/') ? 'video' : 'image';
         }
 
-        const { data: message, error } = await supabase
+        // STEP 1: Insert the message first (no join - simpler, less failure points)
+        const { data: insertedMsg, error: insertError } = await supabase
             .from('community_messages')
             .insert([{
                 sender_id: req.user.id,
@@ -1521,22 +1538,36 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
                 media_url: mediaUrl,
                 media_type: mediaType
             }])
-            .select(`
-        *,
-        users:sender_id (
-          id,
-          username,
-          profile_pic
-        )
-      `)
+            .select('*')
             .single();
 
-        if (error) {
-            console.error('❌ Database error:', error);
-            throw error;
+        if (insertError) {
+            // Log the FULL error so you can see it in Render logs
+            console.error('❌ INSERT error code:', insertError.code);
+            console.error('❌ INSERT error message:', insertError.message);
+            console.error('❌ INSERT error details:', insertError.details);
+            console.error('❌ INSERT error hint:', insertError.hint);
+            throw insertError;
         }
 
-        console.log('✅ Message saved:', message.id);
+        console.log('✅ Message saved:', insertedMsg.id);
+
+        // STEP 2: Fetch user info separately (join done as a second query)
+        const { data: senderInfo } = await supabase
+            .from('users')
+            .select('id, username, profile_pic')
+            .eq('id', req.user.id)
+            .single();
+
+        // Build final message object with user info attached
+        const message = {
+            ...insertedMsg,
+            users: senderInfo || {
+                id: req.user.id,
+                username: req.user.username,
+                profile_pic: req.user.profile_pic || null
+            }
+        };
 
         // Broadcast to college room
         const senderSocketId = userSockets.get(req.user.id);
@@ -1552,7 +1583,10 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
         console.error('❌ Send message error:', error);
         res.status(500).json({
             error: 'Failed to send message',
-            details: error.message
+            details: error.message,
+            // Include Supabase-specific error info for easier debugging
+            code: error.code || null,
+            hint: error.hint || null
         });
     }
 });
