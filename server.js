@@ -62,6 +62,20 @@ io.on('connection', (socket) => {
         }
     });
 
+    // ✅ NEW: Track which users have seen which messages
+    socket.on('mark_seen', ({ collegeName, userId, messageIds }) => {
+      if (!global.seenMap) global.seenMap = {};
+      messageIds.forEach(msgId => {
+        if (!global.seenMap[msgId]) global.seenMap[msgId] = new Set();
+        global.seenMap[msgId].add(userId);
+      });
+      const counts = {};
+      messageIds.forEach(msgId => {
+        counts[msgId] = global.seenMap[msgId].size;
+      });
+      io.to(collegeName).emit('seen_update', counts);
+    });
+
     socket.on('stop_typing', (data) => {
         if (data.collegeName && data.username) {
             socket.to(data.collegeName).emit('user_stop_typing', { username: data.username });
@@ -173,14 +187,22 @@ const sendEmail = async (to, subject, html) => {
 const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
-        fileSize: 20 * 1024 * 1024,
+        fileSize: 50 * 1024 * 1024, // 50MB to support videos
         files: 10
     },
     fileFilter: (req, file, cb) => {
-        const allowedTypes = /jpeg|jpg|png|gif|webp|mp4|mov|avi|mp3|wav/;
-        const mimetype = allowedTypes.test(file.mimetype);
-        if (mimetype) return cb(null, true);
-        cb(new Error('Only image, video, and audio files allowed'));
+        // Support: jpg/png/gif/webp images, mp4/mov/avi videos (incl. iOS quicktime), heic, audio
+        const allowedMime = [
+            'image/jpeg','image/jpg','image/png','image/gif','image/webp',
+            'image/heic','image/heif',
+            'video/mp4','video/quicktime','video/avi','video/mov',
+            'video/3gpp','video/x-msvideo',
+            'audio/mpeg','audio/wav','audio/mp3'
+        ];
+        if (allowedMime.includes(file.mimetype)) return cb(null, true);
+        // Fallback: allow by extension (handles edge-case mime mismatches)
+        if (/\.(jpg|jpeg|png|gif|webp|heic|heif|mp4|mov|avi|3gp|mp3|wav)$/i.test(file.originalname)) return cb(null, true);
+        cb(new Error('File type not supported: ' + file.mimetype));
     }
 });
 
@@ -1480,14 +1502,23 @@ app.delete('/api/community/messages/:messageId', authenticateToken, async (req, 
     }
 });
 
-app.post('/api/community/messages', authenticateToken, (req, res, next) => {
-    // Only use multer if there's a file
-    if (req.headers['content-type']?.includes('multipart/form-data')) {
-        upload.single('media')(req, res, next);
-    } else {
-        next();
-    }
-}, async (req, res) => {
+app.post('/api/community/messages', authenticateToken,
+    // ✅ FIX: Always run multer — handles both multipart (with file) and JSON (text only)
+    (req, res, next) => {
+        const ct = req.headers['content-type'] || '';
+        if (ct.includes('multipart/form-data')) {
+            upload.single('media')(req, res, (err) => {
+                if (err) {
+                    console.error('❌ Multer error:', err.message);
+                    return res.status(400).json({ error: err.message });
+                }
+                next();
+            });
+        } else {
+            next();
+        }
+    },
+async (req, res) => {
     try {
         const { content } = req.body;
         const media = req.file;
@@ -1496,7 +1527,10 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
             user: req.user.username,
             college: req.user.college,
             contentLength: content?.length,
-            hasMedia: !!media
+            hasMedia: !!media,
+            mediaName: media?.originalname,
+            mediaMime: media?.mimetype,
+            mediaSize: media?.size
         });
 
         if (!content && !media) {
@@ -1511,14 +1545,23 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
         let mediaType = null;
 
         if (media) {
-            const fileName = `chat_${Date.now()}_${media.originalname}`;
+            // ✅ FIX: Sanitize filename — remove spaces/special chars that break Supabase paths
+            const ext = media.originalname.split('.').pop().toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+            const safeName = `chat_${req.user.id}_${Date.now()}.${ext}`;
+            console.log('📤 Uploading to Supabase:', safeName, media.mimetype, media.size + ' bytes');
+
             const { data, error: uploadError } = await supabase.storage
-                .from('posts') // Reusing posts bucket
-                .upload(fileName, media.buffer, {
-                    contentType: media.mimetype
+                .from('posts')
+                .upload(safeName, media.buffer, {
+                    contentType: media.mimetype,
+                    upsert: false
                 });
 
-            if (uploadError) throw uploadError;
+            if (uploadError) {
+                console.error('❌ Supabase upload error:', uploadError);
+                throw uploadError;
+            }
+            console.log('✅ Supabase upload success:', data?.path);
 
             const { data: { publicUrl } } = supabase.storage
                 .from('posts')
