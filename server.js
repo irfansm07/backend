@@ -68,6 +68,19 @@ io.on('connection', (socket) => {
         }
     });
 
+    // ✅ SEEN BY — when a user views the chat, broadcast to the room
+    socket.on('mark_seen', (data) => {
+        if (data.collegeName && data.username && data.lastMsgId) {
+            socket.data.username = data.username;
+            // Broadcast to everyone ELSE in the room so sender sees blue ticks
+            socket.to(data.collegeName).emit('messages_seen', {
+                username: data.username,
+                avatar: data.avatar || '👤',
+                lastMsgId: data.lastMsgId
+            });
+        }
+    });
+
     socket.on('disconnect', () => {
         console.log('👋 User disconnected:', socket.id);
         // ✅ UPDATED: Clean up user socket mapping
@@ -173,14 +186,34 @@ const sendEmail = async (to, subject, html) => {
 const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
-        fileSize: 20 * 1024 * 1024,
+        fileSize: 100 * 1024 * 1024, // 100 MB (matches Supabase bucket limit)
         files: 10
     },
     fileFilter: (req, file, cb) => {
-        const allowedTypes = /jpeg|jpg|png|gif|webp|mp4|mov|avi|mp3|wav/;
-        const mimetype = allowedTypes.test(file.mimetype);
-        if (mimetype) return cb(null, true);
-        cb(new Error('Only image, video, and audio files allowed'));
+        const allowedMimeTypes = [
+            // Images
+            'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
+            'image/svg+xml', 'image/bmp', 'image/tiff', 'image/heic',
+            // Videos
+            'video/mp4', 'video/webm', 'video/ogg', 'video/quicktime',
+            'video/x-msvideo', 'video/x-matroska', 'video/mov',
+            // Audio
+            'audio/mpeg', 'audio/mp3', 'audio/ogg', 'audio/wav', 'audio/webm',
+            'audio/aac', 'audio/flac', 'audio/mp4', 'audio/x-wav',
+            // Documents
+            'application/pdf',
+            'application/msword',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'application/vnd.ms-excel',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'application/vnd.ms-powerpoint',
+            'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            'text/plain', 'text/csv',
+            // Archives
+            'application/zip', 'application/x-rar-compressed', 'application/x-7z-compressed'
+        ];
+        if (allowedMimeTypes.includes(file.mimetype)) return cb(null, true);
+        cb(new Error(`File type "${file.mimetype}" is not allowed. Supported: images, videos, audio, PDFs, documents, archives.`));
     }
 });
 
@@ -1409,7 +1442,7 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
             .eq('college_name', req.user.college)
             .gte('created_at', fiveDaysAgo.toISOString())
             .order('created_at', { ascending: true })
-            .limit(100);
+            .limit(500);  // Show last 500 messages (10,000/day limit enforced by DB)
 
         if (error) {
             console.error('❌ GET messages error code:', error.code);
@@ -1511,21 +1544,37 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
         let mediaType = null;
 
         if (media) {
-            const fileName = `chat_${Date.now()}_${media.originalname}`;
-            const { data, error: uploadError } = await supabase.storage
-                .from('posts') // Reusing posts bucket
+            // Sanitize filename — remove spaces/special chars that break Supabase URLs
+            const safeName = media.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+            const fileName = `chat/${Date.now()}_${safeName}`;
+
+            const { data: uploadData, error: uploadError } = await supabase.storage
+                .from('chat-media')
                 .upload(fileName, media.buffer, {
-                    contentType: media.mimetype
+                    contentType: media.mimetype,
+                    upsert: false
                 });
 
-            if (uploadError) throw uploadError;
+            if (uploadError) {
+                console.error('❌ Media upload error:', uploadError);
+                return res.status(500).json({
+                    error: 'Media upload failed: ' + uploadError.message,
+                    hint: 'Make sure the chat-media bucket exists in Supabase Storage and is set to Public.'
+                });
+            }
 
             const { data: { publicUrl } } = supabase.storage
-                .from('posts')
+                .from('chat-media')
                 .getPublicUrl(fileName);
 
             mediaUrl = publicUrl;
-            mediaType = media.mimetype.startsWith('video/') ? 'video' : 'image';
+            // media_type: used for rendering (can be 'pdf', 'image', 'video', 'audio', 'document')
+            if (media.mimetype.startsWith('video/')) mediaType = 'video';
+            else if (media.mimetype.startsWith('audio/')) mediaType = 'audio';
+            else if (media.mimetype === 'application/pdf') mediaType = 'pdf';
+            else if (media.mimetype.startsWith('application/') || media.mimetype.startsWith('text/')) mediaType = 'document';
+            else mediaType = 'image';
+            console.log('✅ Media uploaded to chat-media bucket:', mediaUrl, '| type:', mediaType);
         }
 
         // STEP 1: Insert the message first (no join - simpler, less failure points)
@@ -1536,17 +1585,42 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
                 college_name: req.user.college,
                 content: content?.trim() || '',
                 media_url: mediaUrl,
-                media_type: mediaType
+                media_type: mediaType,
+                // message_type must match DB CHECK: 'text','image','video','audio','document',...
+                // 'pdf' maps to 'document' for the CHECK constraint
+                message_type: mediaUrl
+                    ? (mediaType === 'video' ? 'video'
+                        : mediaType === 'audio' ? 'audio'
+                        : mediaType === 'image' ? 'image'
+                        : 'document')  // pdf, doc, xlsx, etc. all → 'document'
+                    : 'text',
+                media_name: media ? media.originalname : null,
+                media_size: media ? media.size : null
             }])
             .select('*')
             .single();
 
         if (insertError) {
-            // Log the FULL error so you can see it in Render logs
             console.error('❌ INSERT error code:', insertError.code);
             console.error('❌ INSERT error message:', insertError.message);
             console.error('❌ INSERT error details:', insertError.details);
             console.error('❌ INSERT error hint:', insertError.hint);
+
+            // Daily limit hit — trigger raises ERRCODE 'check_violation' (23514)
+            // or the message contains our custom text
+            const isLimitError =
+                insertError.code === '23514' ||
+                (insertError.message || '').toLowerCase().includes('daily message limit');
+
+            if (isLimitError) {
+                return res.status(429).json({
+                    error: '🚫 Daily limit reached! Your college has sent 10,000 messages today. Chat resets at midnight (UTC). Come back tomorrow! 🌙',
+                    code: 'DAILY_LIMIT_REACHED',
+                    limit: 10000,
+                    resets: 'midnight UTC'
+                });
+            }
+
             throw insertError;
         }
 
