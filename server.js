@@ -1229,9 +1229,27 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
             .select('id', { count: 'exact', head: true })
             .eq('user_id', req.user.id);
 
+        // ── Real-time: build enriched post and broadcast to EVERY connected user ──
+        const enrichedPost = {
+            ...post,
+            like_count: 0,
+            comment_count: 0,
+            share_count: 0,
+            is_liked: false,
+            users: {
+                id: req.user.id,
+                username: req.user.username,
+                profile_pic: req.user.profile_pic || null,
+                college: req.user.college || null
+            }
+        };
+        // Emit to ALL sockets — posts are visible to everyone regardless of college
+        io.emit('new_post', enrichedPost);
+        console.log(`📢 [new_post] broadcast by ${req.user.username}`);
+
         res.json({
             success: true,
-            post,
+            post: enrichedPost,
             postCount: postCount || 1,
             message: 'Post created successfully'
         });
@@ -1289,6 +1307,7 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
                 .select('id', { count: 'exact', head: true })
                 .eq('post_id', postId);
 
+            io.emit('post_liked', { postId, likeCount: likeCount || 0, liked: false });
             return res.json({ success: true, liked: false, likeCount: likeCount || 0 });
         }
 
@@ -1304,6 +1323,7 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
             .select('id', { count: 'exact', head: true })
             .eq('post_id', postId);
 
+        io.emit('post_liked', { postId, likeCount: likeCount || 0, liked: true });
         res.json({ success: true, liked: true, likeCount: likeCount || 0 });
     } catch (error) {
         console.error('❌ Like post error:', error);
@@ -1358,6 +1378,13 @@ app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
 
         if (error) throw error;
 
+        // Broadcast updated comment count to all users
+        const { count: commentCount } = await supabase
+            .from('post_comments')
+            .select('id', { count: 'exact', head: true })
+            .eq('post_id', postId);
+        io.emit('post_commented', { postId, commentCount: commentCount || 0 });
+
         res.json({ success: true, comment });
     } catch (error) {
         console.error('❌ Comment error:', error);
@@ -1407,6 +1434,7 @@ app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
             .select('id', { count: 'exact', head: true })
             .eq('post_id', postId);
 
+        io.emit('post_shared', { postId, shareCount: shareCount || 0 });
         res.json({ success: true, shareCount: shareCount || 0 });
     } catch (error) {
         console.error('❌ Share error:', error);
@@ -1691,31 +1719,55 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
     }
 });
 
-// ==================== AUTO-DELETE OLD MESSAGES ====================
-// ✅ NEW: Automatic cleanup of messages older than 5 days
+// =====================================================================
+// AUTO-DELETE: Chats older than 5 days  (day 1 is deleted ON day 6)
+// Schedule: runs every hour
+// =====================================================================
 async function cleanupOldMessages() {
     try {
-        const fiveDaysAgo = new Date();
-        fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - 5);          // 5 full days retention
 
-        const { data, error } = await supabase
+        const { error } = await supabase
             .from('community_messages')
             .delete()
-            .lt('created_at', fiveDaysAgo.toISOString());
+            .lt('created_at', cutoff.toISOString());
 
         if (error) throw error;
-
-        console.log('🗑️ Cleaned up old messages (>5 days)');
-    } catch (error) {
-        console.error('❌ Cleanup error:', error);
+        console.log('🗑️  Chat cleanup: messages older than 5 days removed');
+    } catch (err) {
+        console.error('❌ Chat cleanup error:', err.message);
     }
 }
 
-// Run cleanup every hour
-setInterval(cleanupOldMessages, 60 * 60 * 1000);
+// =====================================================================
+// AUTO-DELETE: Posts older than 100 days  (deleted ON the 100th day)
+// Schedule: runs every 6 hours (separate from chat cleanup)
+// =====================================================================
+async function cleanupOldPosts() {
+    try {
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - 100);        // 100 full days retention
 
-// Run cleanup on server start
-cleanupOldMessages();
+        const { error } = await supabase
+            .from('posts')
+            .delete()
+            .lt('created_at', cutoff.toISOString());
+
+        if (error) throw error;
+        console.log('🗑️  Post cleanup: posts older than 100 days removed');
+    } catch (err) {
+        console.error('❌ Post cleanup error:', err.message);
+    }
+}
+
+// Chat cleanup — every 1 hour
+setInterval(cleanupOldMessages, 60 * 60 * 1000);
+cleanupOldMessages();                              // also run immediately on boot
+
+// Post cleanup — every 6 hours (intentionally offset from chat cleanup)
+setInterval(cleanupOldPosts, 6 * 60 * 60 * 1000);
+setTimeout(() => cleanupOldPosts(), 5 * 60 * 1000); // first run 5 min after boot
 
 // ==================== ERROR HANDLING ====================
 
