@@ -1045,6 +1045,110 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
 
 // ==================== POSTS ENDPOINTS ====================
 
+// ── My Vibes: current user's posts only ───────────────────────
+app.get('/api/posts/my', authenticateToken, async (req, res) => {
+    try {
+        const { data: posts, error } = await supabase
+            .from('posts')
+            .select(`
+                *,
+                users:user_id (
+                  id, username, profile_pic, college
+                )
+            `)
+            .eq('user_id', req.user.id)
+            .order('created_at', { ascending: false });
+
+        if (error) throw error;
+
+        const postsWithCounts = await Promise.all(
+            (posts || []).map(async (post) => {
+                const [{ count: likeCount }, { count: commentCount }, { count: shareCount }] =
+                    await Promise.all([
+                        supabase.from('post_likes').select('id', { count: 'exact', head: true }).eq('post_id', post.id),
+                        supabase.from('post_comments').select('id', { count: 'exact', head: true }).eq('post_id', post.id),
+                        supabase.from('post_shares').select('id', { count: 'exact', head: true }).eq('post_id', post.id),
+                    ]);
+                return { ...post, like_count: likeCount || 0, comment_count: commentCount || 0, share_count: shareCount || 0, is_liked: false };
+            })
+        );
+
+        res.json({ success: true, posts: postsWithCounts });
+    } catch (error) {
+        console.error('❌ My posts error:', error);
+        res.status(500).json({ error: 'Failed to load your posts' });
+    }
+});
+
+// ── Get posts by any user ID (for viewing other profiles) ──────
+app.get('/api/posts/user/:userId', authenticateToken, async (req, res) => {
+    try {
+        const { userId } = req.params;
+
+        const { data: posts, error } = await supabase
+            .from('posts')
+            .select(`
+                *,
+                users:user_id (
+                  id, username, profile_pic, college
+                )
+            `)
+            .eq('user_id', userId)
+            .order('created_at', { ascending: false });
+
+        if (error) throw error;
+
+        const postsWithCounts = await Promise.all(
+            (posts || []).map(async (post) => {
+                const [{ count: likeCount }, { count: commentCount }, { count: shareCount }] =
+                    await Promise.all([
+                        supabase.from('post_likes').select('id', { count: 'exact', head: true }).eq('post_id', post.id),
+                        supabase.from('post_comments').select('id', { count: 'exact', head: true }).eq('post_id', post.id),
+                        supabase.from('post_shares').select('id', { count: 'exact', head: true }).eq('post_id', post.id),
+                    ]);
+                const { data: isLiked } = await supabase
+                    .from('post_likes').select('id')
+                    .eq('post_id', post.id).eq('user_id', req.user.id).maybeSingle();
+                return { ...post, like_count: likeCount || 0, comment_count: commentCount || 0, share_count: shareCount || 0, is_liked: !!isLiked };
+            })
+        );
+
+        res.json({ success: true, posts: postsWithCounts });
+    } catch (error) {
+        console.error('❌ User posts error:', error);
+        res.status(500).json({ error: 'Failed to load user posts' });
+    }
+});
+
+// ── Edit post caption ──────────────────────────────────────────
+app.patch('/api/posts/:postId', authenticateToken, async (req, res) => {
+    try {
+        const { postId } = req.params;
+        const { content } = req.body;
+
+        // Verify ownership
+        const { data: existing } = await supabase
+            .from('posts').select('user_id').eq('id', postId).single();
+
+        if (!existing || existing.user_id !== req.user.id) {
+            return res.status(403).json({ error: 'Not authorized' });
+        }
+
+        const { data: updated, error } = await supabase
+            .from('posts')
+            .update({ content: content ?? '' })
+            .eq('id', postId)
+            .select()
+            .single();
+
+        if (error) throw error;
+        res.json({ success: true, post: updated });
+    } catch (error) {
+        console.error('❌ Edit post error:', error);
+        res.status(500).json({ error: 'Failed to update post' });
+    }
+});
+
 app.get('/api/posts', authenticateToken, async (req, res) => {
     try {
         const { data: posts, error } = await supabase
@@ -1496,6 +1600,38 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
             }));
         }
 
+        // STEP 3: Enrich reply_to data for messages that are replies
+        const replyToIds = [...new Set(enrichedMessages.filter(m => m.reply_to_id).map(m => m.reply_to_id))];
+        if (replyToIds.length > 0) {
+            const { data: replyMsgs } = await supabase
+                .from('community_messages')
+                .select('id, content, sender_id, media_type, media_url')
+                .in('id', replyToIds);
+
+            // Build a sender name map for reply senders
+            const replyMsgMap = {};
+            if (replyMsgs && replyMsgs.length > 0) {
+                const replySenderIds = [...new Set(replyMsgs.map(m => m.sender_id))];
+                const { data: replyUsers } = await supabase
+                    .from('users')
+                    .select('id, username')
+                    .in('id', replySenderIds);
+                const replyUserMap = {};
+                (replyUsers || []).forEach(u => { replyUserMap[u.id] = u; });
+                replyMsgs.forEach(m => {
+                    replyMsgMap[m.id] = {
+                        ...m,
+                        sender_username: (replyUserMap[m.sender_id] && replyUserMap[m.sender_id].username) || 'User'
+                    };
+                });
+            }
+
+            enrichedMessages = enrichedMessages.map(msg => ({
+                ...msg,
+                reply_to: msg.reply_to_id ? (replyMsgMap[msg.reply_to_id] || null) : null
+            }));
+        }
+
         console.log(`✅ Loaded ${enrichedMessages.length} messages (last 5 days)`);
 
         res.json({
@@ -1623,7 +1759,9 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
                         : 'document')  // pdf, doc, xlsx, etc. all → 'document'
                     : 'text',
                 media_name: media ? media.originalname : null,
-                media_size: media ? media.size : null
+                media_size: media ? media.size : null,
+                reply_to_id: (req.body.reply_to_id && req.body.reply_to_id !== 'null' && req.body.reply_to_id !== 'undefined')
+                    ? req.body.reply_to_id : null
             }])
             .select('*')
             .single();
@@ -1661,6 +1799,24 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
             .eq('id', req.user.id)
             .single();
 
+        // Fetch reply_to data if this message is a reply
+        let replyToData = null;
+        if (insertedMsg.reply_to_id) {
+            const { data: replyMsg } = await supabase
+                .from('community_messages')
+                .select('id, content, sender_id, media_type, media_url')
+                .eq('id', insertedMsg.reply_to_id)
+                .single();
+            if (replyMsg) {
+                const { data: replyUser } = await supabase
+                    .from('users')
+                    .select('username')
+                    .eq('id', replyMsg.sender_id)
+                    .single();
+                replyToData = { ...replyMsg, sender_username: replyUser ? replyUser.username : 'User' };
+            }
+        }
+
         // Build final message object with user info attached
         const message = {
             ...insertedMsg,
@@ -1668,7 +1824,8 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
                 id: req.user.id,
                 username: req.user.username,
                 profile_pic: req.user.profile_pic || null
-            }
+            },
+            reply_to: replyToData
         };
 
         // Broadcast to college room
@@ -1720,6 +1877,210 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
 });
 
 // =====================================================================
+// ==================== REAL VIBES ENDPOINTS ====================
+
+// GET all RealVibes (anyone can view, newest first, not expired)
+app.get('/api/realvibes', authenticateToken, async (req, res) => {
+    try {
+        const now = new Date().toISOString();
+
+        const { data: vibes, error } = await supabase
+            .from('real_vibes')
+            .select(`*, users:user_id (id, username, profile_pic, college)`)
+            .gt('expires_at', now)
+            .order('created_at', { ascending: false })
+            .limit(50);
+
+        // Table doesn't exist yet — return empty list so UI shows "No RealVibes" not an error
+        if (error) {
+            const isTableMissing = error.code === '42P01' || (error.message || '').includes('does not exist');
+            if (isTableMissing) {
+                console.warn('⚠️  real_vibes table not found — run database.sql to create it');
+                return res.json({ success: true, vibes: [] });
+            }
+            throw error;
+        }
+
+        const vibesWithCounts = await Promise.all((vibes || []).map(async (vibe) => {
+            const [{ count: likeCount }, { count: commentCount }, { data: isLiked }] = await Promise.all([
+                supabase.from('real_vibe_likes').select('id', { count: 'exact', head: true }).eq('vibe_id', vibe.id),
+                supabase.from('real_vibe_comments').select('id', { count: 'exact', head: true }).eq('vibe_id', vibe.id),
+                supabase.from('real_vibe_likes').select('id').eq('vibe_id', vibe.id).eq('user_id', req.user.id).maybeSingle()
+            ]);
+            const expiresAt = new Date(vibe.expires_at);
+            const msDiff = expiresAt - new Date();
+            const hoursLeft = Math.max(0, Math.ceil(msDiff / (1000 * 60 * 60)));
+            return { ...vibe, like_count: likeCount || 0, comment_count: commentCount || 0, is_liked: !!isLiked, hours_left: hoursLeft };
+        }));
+
+        res.json({ success: true, vibes: vibesWithCounts });
+    } catch (error) {
+        console.error('❌ Get real vibes error:', error);
+        res.status(500).json({ error: 'Failed to load RealVibes' });
+    }
+});
+
+// POST create a new RealVibe (premium only)
+app.post('/api/realvibes', authenticateToken, upload.single('media'), async (req, res) => {
+    try {
+        // Check premium status
+        if (!req.user.is_premium || !req.user.subscription_plan) {
+            return res.status(403).json({ error: 'Premium subscription required', code: 'PREMIUM_REQUIRED' });
+        }
+
+        // Check subscription still active
+        const now = new Date();
+        if (req.user.subscription_end && new Date(req.user.subscription_end) < now) {
+            return res.status(403).json({ error: 'Subscription expired', code: 'SUBSCRIPTION_EXPIRED' });
+        }
+
+        if (!req.file) {
+            return res.status(400).json({ error: 'Media file required' });
+        }
+
+        const { caption = '', visibility = 'public' } = req.body;
+        const plan = req.user.subscription_plan; // 'noble' | 'royal'
+
+        // Plan quota check for videos
+        const isVideo = req.file.mimetype.startsWith('video/');
+        if (isVideo) {
+            const videoQuota = plan === 'royal' ? 3 : 1;
+            // Count videos posted this plan cycle
+            const { count: videoCount } = await supabase
+                .from('real_vibes')
+                .select('id', { count: 'exact', head: true })
+                .eq('user_id', req.user.id)
+                .eq('media_type', 'video');
+
+            if ((videoCount || 0) >= videoQuota) {
+                return res.status(403).json({
+                    error: `Video quota reached (${videoQuota} video${videoQuota > 1 ? 's' : ''} for ${plan} plan)`,
+                    code: 'QUOTA_EXCEEDED'
+                });
+            }
+        }
+
+        // Upload to Supabase storage
+        const ext = req.file.originalname.split('.').pop();
+        const fileName = `${req.user.id}_${Date.now()}.${ext}`;
+        const { error: uploadError } = await supabase.storage
+            .from('realvibes')
+            .upload(fileName, req.file.buffer, { contentType: req.file.mimetype });
+
+        if (uploadError) throw uploadError;
+
+        const { data: { publicUrl } } = supabase.storage.from('realvibes').getPublicUrl(fileName);
+
+        // Set expiry: noble=15 days, royal=25 days
+        const daysToExpire = plan === 'royal' ? 25 : 15;
+        const expiresAt = new Date(Date.now() + daysToExpire * 24 * 60 * 60 * 1000);
+
+        const { data: vibe, error: insertError } = await supabase
+            .from('real_vibes')
+            .insert([{
+                user_id: req.user.id,
+                caption: caption.trim(),
+                media_url: publicUrl,
+                media_type: isVideo ? 'video' : 'image',
+                plan_type: plan,
+                visibility,
+                expires_at: expiresAt.toISOString()
+            }])
+            .select()
+            .single();
+
+        if (insertError) throw insertError;
+
+        const enriched = {
+            ...vibe,
+            like_count: 0, comment_count: 0, is_liked: false,
+            hours_left: daysToExpire * 24,
+            users: { id: req.user.id, username: req.user.username, profile_pic: req.user.profile_pic, college: req.user.college }
+        };
+
+        io.emit('new_realvibe', enriched);
+        console.log(`✨ RealVibe posted by ${req.user.username} (${plan})`);
+        res.json({ success: true, vibe: enriched });
+
+    } catch (error) {
+        console.error('❌ Create real vibe error:', error);
+        res.status(500).json({ error: 'Failed to create RealVibe' });
+    }
+});
+
+// DELETE a RealVibe
+app.delete('/api/realvibes/:vibeId', authenticateToken, async (req, res) => {
+    try {
+        const { vibeId } = req.params;
+        const { data: vibe } = await supabase.from('real_vibes').select('user_id').eq('id', vibeId).single();
+        if (!vibe || vibe.user_id !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
+        await supabase.from('real_vibes').delete().eq('id', vibeId);
+        io.emit('delete_realvibe', { id: vibeId });
+        res.json({ success: true });
+    } catch (error) {
+        console.error('❌ Delete real vibe error:', error);
+        res.status(500).json({ error: 'Failed to delete RealVibe' });
+    }
+});
+
+// LIKE / UNLIKE a RealVibe
+app.post('/api/realvibes/:vibeId/like', authenticateToken, async (req, res) => {
+    try {
+        const { vibeId } = req.params;
+        const { data: existing } = await supabase.from('real_vibe_likes').select('id').eq('vibe_id', vibeId).eq('user_id', req.user.id).maybeSingle();
+
+        if (existing) {
+            await supabase.from('real_vibe_likes').delete().eq('id', existing.id);
+        } else {
+            await supabase.from('real_vibe_likes').insert([{ vibe_id: vibeId, user_id: req.user.id }]);
+        }
+        const { count: likeCount } = await supabase.from('real_vibe_likes').select('id', { count: 'exact', head: true }).eq('vibe_id', vibeId);
+        io.emit('realvibe_liked', { vibeId, likeCount: likeCount || 0, liked: !existing });
+        res.json({ success: true, liked: !existing, likeCount: likeCount || 0 });
+    } catch (error) {
+        console.error('❌ Like real vibe error:', error);
+        res.status(500).json({ error: 'Failed to like RealVibe' });
+    }
+});
+
+// GET comments for a RealVibe
+app.get('/api/realvibes/:vibeId/comments', authenticateToken, async (req, res) => {
+    try {
+        const { vibeId } = req.params;
+        const { data: comments, error } = await supabase
+            .from('real_vibe_comments')
+            .select(`*, users:user_id (id, username, profile_pic)`)
+            .eq('vibe_id', vibeId)
+            .order('created_at', { ascending: true });
+        if (error) throw error;
+        res.json({ success: true, comments: comments || [] });
+    } catch (error) {
+        console.error('❌ Get comments error:', error);
+        res.status(500).json({ error: 'Failed to load comments' });
+    }
+});
+
+// POST comment on a RealVibe
+app.post('/api/realvibes/:vibeId/comments', authenticateToken, async (req, res) => {
+    try {
+        const { vibeId } = req.params;
+        const { content } = req.body;
+        if (!content?.trim()) return res.status(400).json({ error: 'Comment required' });
+        const { data: comment, error } = await supabase
+            .from('real_vibe_comments')
+            .insert([{ vibe_id: vibeId, user_id: req.user.id, content: content.trim() }])
+            .select()
+            .single();
+        if (error) throw error;
+        const { count: commentCount } = await supabase.from('real_vibe_comments').select('id', { count: 'exact', head: true }).eq('vibe_id', vibeId);
+        io.emit('realvibe_commented', { vibeId, commentCount: commentCount || 0 });
+        res.json({ success: true, comment });
+    } catch (error) {
+        console.error('❌ Comment real vibe error:', error);
+        res.status(500).json({ error: 'Failed to comment' });
+    }
+});
+
 // AUTO-DELETE: Chats older than 5 days  (day 1 is deleted ON day 6)
 // Schedule: runs every hour
 // =====================================================================
@@ -1768,6 +2129,19 @@ cleanupOldMessages();                              // also run immediately on bo
 // Post cleanup — every 6 hours (intentionally offset from chat cleanup)
 setInterval(cleanupOldPosts, 6 * 60 * 60 * 1000);
 setTimeout(() => cleanupOldPosts(), 5 * 60 * 1000); // first run 5 min after boot
+
+// RealVibes cleanup — every 6 hours (delete expired vibes based on plan expiry)
+async function cleanupExpiredRealVibes() {
+    try {
+        const { error } = await supabase.from('real_vibes').delete().lt('expires_at', new Date().toISOString());
+        if (error) throw error;
+        console.log('🗑️  RealVibes cleanup: expired vibes removed');
+    } catch (err) {
+        console.error('❌ RealVibes cleanup error:', err.message);
+    }
+}
+setInterval(cleanupExpiredRealVibes, 6 * 60 * 60 * 1000);
+setTimeout(() => cleanupExpiredRealVibes(), 10 * 60 * 1000);
 
 // ==================== ERROR HANDLING ====================
 
