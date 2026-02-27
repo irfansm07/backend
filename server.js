@@ -1937,6 +1937,311 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
 });
 
 
+
+// ── Ghost name uniqueness check ─────────────────────────────────────────────
+// Returns whether a ghost name is already claimed in a college.
+// "Claimed" = appears in community_messages sent within the last 7 days
+// by a DIFFERENT user (same user can keep their own name).
+app.post('/api/community/check-ghost-name', authenticateToken, async (req, res) => {
+    try {
+        const { ghost_name } = req.body;
+        if (!ghost_name || ghost_name.trim().length < 2) {
+            return res.status(400).json({ error: 'Invalid ghost name' });
+        }
+        if (!req.user.college) {
+            return res.status(400).json({ error: 'Not in a college community' });
+        }
+
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+        // Check if this name was used by ANOTHER user in this college recently
+        const { data: existing } = await supabase
+            .from('community_messages')
+            .select('sender_id')
+            .eq('college_name', req.user.college)
+            .ilike('anon_name', ghost_name.trim())
+            .gte('created_at', sevenDaysAgo.toISOString())
+            .neq('sender_id', req.user.id)
+            .limit(1);
+
+        const taken = !!(existing && existing.length > 0);
+        console.log(`👻 Ghost name check: "${ghost_name}" in ${req.user.college} → ${taken ? 'TAKEN' : 'AVAILABLE'}`);
+        res.json({ available: !taken, taken });
+    } catch (error) {
+        console.error('❌ Ghost name check error:', error);
+        // On error, allow the name (fail open so chat isn't blocked)
+        res.json({ available: true, taken: false });
+    }
+});
+
+
+// ==================== EXECUTIVE CHAT ENDPOINTS ====================
+// Official college chat — real names + profile pics shown
+// Family-word filter: shows 10% of letters, rest replaced with ***
+
+// ── Family-word sanitizer ────────────────────────────────────────
+// Matches family slur patterns across EN/HI/TA/TE/KA/ML/BN/MR/PA
+const FAMILY_SLUR_PATTERNS = [
+    // English
+    /\b(your\s+mother|ur\s+mother|yo\s+mama|your\s+mama|your\s+mom|ur\s+mom)\b/gi,
+    /\b(your\s+father|ur\s+father|your\s+dad|ur\s+dad)\b/gi,
+    /\b(your\s+sister|ur\s+sister|your\s+sis)\b/gi,
+    /\b(motherfucker|motherfucking|son\s+of\s+a\s+bitch)\b/gi,
+    // Hindi / Urdu (roman)
+    /\b(madarchod|madar\s+chod|maa\s+ki|maa\s+ka|maa\s+ko|teri\s+maa|teri\s+ma)\b/gi,
+    /\b(behenchod|bhen\s*chod|behen\s*chod|teri\s*behan|teri\s*behen)\b/gi,
+    /\b(baap\s+chod|bap\s+chod|tera\s+baap|tera\s+bap)\b/gi,
+    /\b(maa\s+chod|teri\s+maa\s+ki|teri\s+behan\s+ko|teri\s+maa\s+ko)\b/gi,
+    // Punjabi
+    /\b(teri\s+maa\s+di|teri\s+pen\s+di|pen\s+di\s+lun|penchod|pen\s+chod|teri\s+pen)\b/gi,
+    /\b(tera\s+pyo|tere\s+pyo)\b/gi,
+    // Tamil (roman)
+    /\b(ommala|omala|nee\s+amma|nee\s+amma\s+ki|nee\s+amma\s+tho)\b/gi,
+    /\b(thevidiya\s+punda|otha\s+amma)\b/gi,
+    // Telugu (roman)
+    /\b(nee\s+amma|nee\s+amma\s+ki|nee\s+amma\s+tho|lanja\s+amma)\b/gi,
+    // Kannada (roman)
+    /\b(ninna\s+amma|nin\s+taayi|nin\s+thaayi|sule\s+magane)\b/gi,
+    // Malayalam (roman)
+    /\b(ammayude|ammaye|achan|chechi\s+da|ammachi)\b/gi,
+    // Bengali (roman)
+    /\b(tor\s+ma|tor\s+baap|tor\s+bon|tor\s+didi|maa\s+ke)\b/gi,
+    // Marathi (roman)
+    /\b(aai\s+zava|aai\s+zhav|aai\s+ga|aai\s+chi|bai\s+cha|bai\s+chi)\b/gi,
+];
+
+/**
+ * Sanitize text: replace family slurs with 10%-reveal masking.
+ * e.g. "madarchod" (9 chars) → "m★★★★★★★★"
+ */
+function sanitizeExecutiveMessage(text) {
+    if (!text) return text;
+    let sanitized = text;
+    for (const pattern of FAMILY_SLUR_PATTERNS) {
+        sanitized = sanitized.replace(pattern, (match) => {
+            const chars = [...match]; // unicode-safe
+            const showCount = Math.max(1, Math.ceil(chars.length * 0.1));
+            const visible = chars.slice(0, showCount).join('');
+            const hidden = '★'.repeat(chars.length - showCount);
+            return visible + hidden;
+        });
+    }
+    return sanitized;
+}
+
+// GET /api/executive/messages
+app.get('/api/executive/messages', authenticateToken, async (req, res) => {
+    try {
+        if (!req.user.community_joined || !req.user.college) {
+            return res.json({ success: false, needsJoinCommunity: true, messages: [] });
+        }
+
+        const fiveDaysAgo = new Date();
+        fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
+
+        const { data: messages, error } = await supabase
+            .from('executive_messages')
+            .select('*')
+            .eq('college_name', req.user.college)
+            .gte('created_at', fiveDaysAgo.toISOString())
+            .order('created_at', { ascending: true })
+            .limit(500);
+
+        if (error) throw error;
+
+        let enrichedMessages = messages || [];
+
+        if (enrichedMessages.length > 0) {
+            const senderIds = [...new Set(enrichedMessages.map(m => m.sender_id))];
+            const { data: users } = await supabase
+                .from('users')
+                .select('id, username, profile_pic')
+                .in('id', senderIds);
+
+            const userMap = {};
+            (users || []).forEach(u => { userMap[u.id] = u; });
+
+            enrichedMessages = enrichedMessages.map(msg => ({
+                ...msg,
+                users: userMap[msg.sender_id] || { id: msg.sender_id, username: 'Member', profile_pic: null }
+            }));
+        }
+
+        // Enrich reply_to data
+        const replyToIds = [...new Set(enrichedMessages.filter(m => m.reply_to_id).map(m => m.reply_to_id))];
+        if (replyToIds.length > 0) {
+            const { data: replyMsgs } = await supabase
+                .from('executive_messages')
+                .select('id, content, sender_id, media_type, media_url')
+                .in('id', replyToIds);
+
+            if (replyMsgs && replyMsgs.length > 0) {
+                const replySenderIds = [...new Set(replyMsgs.map(m => m.sender_id))];
+                const { data: replyUsers } = await supabase
+                    .from('users').select('id, username').in('id', replySenderIds);
+                const ruMap = {};
+                (replyUsers || []).forEach(u => { ruMap[u.id] = u; });
+                const rmMap = {};
+                replyMsgs.forEach(rm => {
+                    rmMap[rm.id] = { ...rm, sender_username: ruMap[rm.sender_id]?.username || 'Member' };
+                });
+                enrichedMessages = enrichedMessages.map(msg => ({
+                    ...msg,
+                    reply_to: msg.reply_to_id ? (rmMap[msg.reply_to_id] || null) : null
+                }));
+            }
+        }
+
+        res.json({ success: true, messages: enrichedMessages });
+    } catch (error) {
+        console.error('❌ Executive GET error:', error);
+        res.status(500).json({ error: 'Failed to load executive messages' });
+    }
+});
+
+// POST /api/executive/messages
+app.post('/api/executive/messages', authenticateToken, (req, res, next) => {
+    if (req.headers['content-type']?.includes('multipart/form-data')) {
+        upload.single('media')(req, res, next);
+    } else { next(); }
+}, async (req, res) => {
+    try {
+        const rawContent = req.body.content;
+        const media = req.file;
+
+        if (!rawContent && !media) {
+            return res.status(400).json({ error: 'Message content or media required' });
+        }
+        if (!req.user.community_joined || !req.user.college) {
+            return res.status(400).json({ error: 'Join a college community first' });
+        }
+
+        // Apply family-word filter before storing
+        const content = sanitizeExecutiveMessage(rawContent?.trim() || '');
+
+        let mediaUrl = null, mediaType = null;
+        if (media) {
+            const safeName = media.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+            const fileName = `executive/${Date.now()}_${safeName}`;
+            const { error: upErr } = await supabase.storage
+                .from('chat-media').upload(fileName, media.buffer, { contentType: media.mimetype });
+            if (upErr) throw upErr;
+            const { data: { publicUrl } } = supabase.storage.from('chat-media').getPublicUrl(fileName);
+            mediaUrl = publicUrl;
+            if (media.mimetype.startsWith('video/'))       mediaType = 'video';
+            else if (media.mimetype.startsWith('audio/'))  mediaType = 'audio';
+            else if (media.mimetype === 'application/pdf') mediaType = 'pdf';
+            else if (media.mimetype.startsWith('application/') || media.mimetype.startsWith('text/')) mediaType = 'document';
+            else mediaType = 'image';
+        }
+
+        const { data: insertedMsg, error: insertError } = await supabase
+            .from('executive_messages')
+            .insert([{
+                sender_id: req.user.id,
+                college_name: req.user.college,
+                content,
+                media_url: mediaUrl,
+                media_type: mediaType,
+                message_type: mediaUrl
+                    ? (mediaType === 'video' ? 'video' : mediaType === 'audio' ? 'audio'
+                        : mediaType === 'image' ? 'image' : 'document')
+                    : 'text',
+                media_name: media ? media.originalname : null,
+                media_size: media ? media.size : null,
+                reply_to_id: (req.body.reply_to_id && req.body.reply_to_id !== 'null' && req.body.reply_to_id !== 'undefined')
+                    ? req.body.reply_to_id : null
+            }])
+            .select('*').single();
+
+        if (insertError) throw insertError;
+
+        const { data: senderInfo } = await supabase
+            .from('users').select('id, username, profile_pic').eq('id', req.user.id).single();
+
+        let replyToData = null;
+        if (insertedMsg.reply_to_id) {
+            const { data: replyMsg } = await supabase
+                .from('executive_messages')
+                .select('id, content, sender_id, media_type, media_url')
+                .eq('id', insertedMsg.reply_to_id).single();
+            if (replyMsg) {
+                const { data: replyUser } = await supabase
+                    .from('users').select('username').eq('id', replyMsg.sender_id).single();
+                replyToData = { ...replyMsg, sender_username: replyUser?.username || 'Member' };
+            }
+        }
+
+        const message = {
+            ...insertedMsg,
+            users: senderInfo || { id: req.user.id, username: req.user.username, profile_pic: req.user.profile_pic || null },
+            reply_to: replyToData
+        };
+
+        // Broadcast on exec-specific event in the same college room
+        const senderSocketId = userSockets.get(req.user.id);
+        if (senderSocketId) {
+            io.to(req.user.college).except(senderSocketId).emit('new_executive_message', message);
+        } else {
+            io.to(req.user.college).emit('new_executive_message', message);
+        }
+
+        console.log(`🎓 Executive msg from ${req.user.username} in ${req.user.college}`);
+        res.json({ success: true, message });
+
+    } catch (error) {
+        console.error('❌ Executive POST error:', error);
+        res.status(500).json({ error: 'Failed to send executive message: ' + error.message });
+    }
+});
+
+// DELETE /api/executive/messages/:messageId
+app.delete('/api/executive/messages/:messageId', authenticateToken, async (req, res) => {
+    try {
+        const { messageId } = req.params;
+        const { data: msg } = await supabase
+            .from('executive_messages').select('sender_id, college_name').eq('id', messageId).single();
+        if (!msg || msg.sender_id !== req.user.id) {
+            return res.status(403).json({ error: 'Not authorized' });
+        }
+        await supabase.from('executive_messages').delete().eq('id', messageId);
+        io.to(msg.college_name).emit('executive_message_deleted', { id: messageId });
+        res.json({ success: true });
+    } catch (error) {
+        console.error('❌ Executive DELETE error:', error);
+        res.status(500).json({ error: 'Failed to delete message' });
+    }
+});
+
+// PATCH /api/executive/messages/:messageId  (edit)
+app.patch('/api/executive/messages/:messageId', authenticateToken, async (req, res) => {
+    try {
+        const { messageId } = req.params;
+        const rawContent = req.body.content;
+        if (!rawContent?.trim()) return res.status(400).json({ error: 'Content required' });
+
+        const { data: msg } = await supabase
+            .from('executive_messages').select('sender_id, college_name').eq('id', messageId).single();
+        if (!msg || msg.sender_id !== req.user.id) {
+            return res.status(403).json({ error: 'Not authorized' });
+        }
+
+        const content = sanitizeExecutiveMessage(rawContent.trim());
+        await supabase.from('executive_messages')
+            .update({ content, is_edited: true, edited_at: new Date().toISOString() })
+            .eq('id', messageId);
+
+        io.to(msg.college_name).emit('executive_message_edited', { id: messageId, content });
+        res.json({ success: true, content });
+    } catch (error) {
+        console.error('❌ Executive PATCH error:', error);
+        res.status(500).json({ error: 'Failed to edit message' });
+    }
+});
+
+// ==================== END EXECUTIVE CHAT ENDPOINTS ====================
+
 // ==================== DM ENDPOINTS ====================
 
 // GET /api/dm/status — quick check that DM tables exist
