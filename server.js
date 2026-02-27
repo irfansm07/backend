@@ -35,12 +35,7 @@ const userSockets = new Map(); // userId -> socketId
 io.on('connection', (socket) => {
     console.log('⚡ User connected:', socket.id);
 
-    // ✅ UPDATED: Store user socket mapping FIRST
-    socket.on('user_online', (userId) => {
-        socket.data.userId = userId;
-        userSockets.set(userId, socket.id); // Store mapping
-        console.log(`📍 User ${userId} mapped to socket ${socket.id}`);
-    });
+    // user_online is handled later in this block (see presence sync section)
 
     socket.on('join_college', (collegeName) => {
         if (collegeName && typeof collegeName === 'string') {
@@ -81,12 +76,39 @@ io.on('connection', (socket) => {
         }
     });
 
+    // ── Presence: mark user online (null last_seen = online) ──────────────────
+    socket.on('user_online', async (userId) => {
+        socket.data.userId = userId;
+        userSockets.set(userId, socket.id);
+        console.log(`📍 User ${userId} mapped to socket ${socket.id}`);
+        await supabase.from('users').update({ last_seen: null }).eq('id', userId);
+        io.emit('user_online_broadcast', { userId });
+    });
+
+    // ── DM Typing proxy ────────────────────────────────────────────────────────
+    socket.on('dm_typing', ({ receiverId }) => {
+        const receiverSocketId = userSockets.get(receiverId);
+        if (receiverSocketId) {
+            io.to(receiverSocketId).emit('dm_typing', { senderId: socket.data.userId });
+        }
+    });
+    socket.on('dm_stop_typing', ({ receiverId }) => {
+        const receiverSocketId = userSockets.get(receiverId);
+        if (receiverSocketId) {
+            io.to(receiverSocketId).emit('dm_stop_typing', { senderId: socket.data.userId });
+        }
+    });
+
     socket.on('disconnect', () => {
         console.log('👋 User disconnected:', socket.id);
-        // ✅ UPDATED: Clean up user socket mapping
+        // ✅ UPDATED: Clean up user socket mapping + mark offline
         if (socket.data.userId) {
-            userSockets.delete(socket.data.userId);
-            console.log(`🗑️ Removed mapping for user ${socket.data.userId}`);
+            const offlineUserId = socket.data.userId;
+            userSockets.delete(offlineUserId);
+            console.log(`🗑️ Removed mapping for user ${offlineUserId}`);
+            supabase.from('users').update({ last_seen: new Date().toISOString() }).eq('id', offlineUserId)
+                .then(() => io.emit('user_offline', { userId: offlineUserId }))
+                .catch(console.error);
         }
         if (socket.data.college) {
             const roomSize = io.sockets.adapter.rooms.get(socket.data.college)?.size || 0;
@@ -260,6 +282,48 @@ app.get('/api/music-library', (req, res) => {
 
 app.get('/api/sticker-library', (req, res) => {
     res.json({ success: true, stickers: availableStickers });
+});
+
+// ==================== MEDIA PROXY (fixes mobile data ISP blocking) ====================
+// Indian mobile carriers (Jio/Airtel/Vi) often block/throttle *.supabase.co storage URLs.
+// This proxy fetches media server-side (Render is unaffected) and streams it to the client.
+
+app.get('/api/proxy/media', async (req, res) => {
+    try {
+        const { url } = req.query;
+        if (!url) return res.status(400).json({ error: 'Missing url param' });
+
+        // Only allow proxying from our own Supabase project to prevent abuse
+        const supabaseHost = new URL(process.env.SUPABASE_URL).hostname;
+        let targetUrl;
+        try {
+            targetUrl = new URL(url);
+        } catch {
+            return res.status(400).json({ error: 'Invalid URL' });
+        }
+        if (!targetUrl.hostname.endsWith('supabase.co') && targetUrl.hostname !== supabaseHost) {
+            return res.status(403).json({ error: 'Only Supabase storage URLs are allowed' });
+        }
+
+        const response = await axios.get(url, {
+            responseType: 'stream',
+            timeout: 30000,
+            headers: { 'User-Agent': 'VibeXpert-Proxy/1.0' }
+        });
+
+        // Pass through content type and cache headers
+        res.set('Content-Type', response.headers['content-type'] || 'application/octet-stream');
+        res.set('Cache-Control', 'public, max-age=86400'); // cache 24h on client
+        res.set('Access-Control-Allow-Origin', '*');
+        if (response.headers['content-length']) {
+            res.set('Content-Length', response.headers['content-length']);
+        }
+
+        response.data.pipe(res);
+    } catch (error) {
+        console.error('❌ Media proxy error:', error.message);
+        res.status(502).json({ error: 'Failed to fetch media' });
+    }
 });
 
 // ==================== PAYMENT ENDPOINTS ====================
@@ -1594,10 +1658,19 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
             const userMap = {};
             (users || []).forEach(u => { userMap[u.id] = u; });
 
-            enrichedMessages = enrichedMessages.map(msg => ({
-                ...msg,
-                users: userMap[msg.sender_id] || { id: msg.sender_id, username: 'User', profile_pic: null }
-            }));
+            enrichedMessages = enrichedMessages.map(msg => {
+                const realUser = userMap[msg.sender_id] || { id: msg.sender_id, username: 'User', profile_pic: null };
+                // Use anon_name for display — never expose real username/avatar in institute chat
+                const displayName = msg.anon_name || '👻 Anonymous';
+                return {
+                    ...msg,
+                    users: {
+                        id: realUser.id,
+                        username: displayName,   // ghost name shown to everyone
+                        profile_pic: null         // no avatar in community chat
+                    }
+                };
+            });
         }
 
         // STEP 3: Enrich reply_to data for messages that are replies
@@ -1741,6 +1814,17 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
             console.log('✅ Media uploaded to chat-media bucket:', mediaUrl, '| type:', mediaType);
         }
 
+        // ── Ghost name: validate (REQUIRED for institute community chat) ────
+        const rawAnonName = req.body.anon_name;
+        let anonName = null;
+        if (rawAnonName && typeof rawAnonName === 'string') {
+            anonName = rawAnonName.trim().slice(0, 30);
+            if (anonName.length < 2) anonName = null;
+        }
+        if (!anonName) {
+            return res.status(400).json({ error: 'Ghost name is required. Please set your ghost name before chatting.' });
+        }
+
         // STEP 1: Insert the message first (no join - simpler, less failure points)
         const { data: insertedMsg, error: insertError } = await supabase
             .from('community_messages')
@@ -1750,13 +1834,13 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
                 content: content?.trim() || '',
                 media_url: mediaUrl,
                 media_type: mediaType,
+                anon_name: anonName,
                 // message_type must match DB CHECK: 'text','image','video','audio','document',...
-                // 'pdf' maps to 'document' for the CHECK constraint
                 message_type: mediaUrl
                     ? (mediaType === 'video' ? 'video'
                         : mediaType === 'audio' ? 'audio'
-                        : mediaType === 'image' ? 'image'
-                        : 'document')  // pdf, doc, xlsx, etc. all → 'document'
+                            : mediaType === 'image' ? 'image'
+                                : 'document')
                     : 'text',
                 media_name: media ? media.originalname : null,
                 media_size: media ? media.size : null,
@@ -1817,13 +1901,15 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
             }
         }
 
-        // Build final message object with user info attached
+        // Build final message object — use anon_name, never expose real identity
+        const displayName = anonName || '👻 Anonymous';
         const message = {
             ...insertedMsg,
-            users: senderInfo || {
+            anon_name: anonName,
+            users: {
                 id: req.user.id,
-                username: req.user.username,
-                profile_pic: req.user.profile_pic || null
+                username: displayName,   // ghost name for display
+                profile_pic: null         // no real avatar in community chat
             },
             reply_to: replyToData
         };
@@ -1850,6 +1936,210 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
     }
 });
 
+
+// ==================== DM ENDPOINTS ====================
+
+// GET /api/dm/status — quick check that DM tables exist
+app.get('/api/dm/status', authenticateToken, async (req, res) => {
+    try {
+        await supabase.from('direct_messages').select('id').limit(1);
+        await supabase.from('dm_conversations').select('id').limit(1);
+        res.json({ success: true, ready: true });
+    } catch (error) {
+        const missing = error.code === '42P01' || (error.message || '').includes('does not exist');
+        res.json({ success: true, ready: false, reason: missing ? 'tables_missing' : error.message });
+    }
+});
+
+// GET /api/dm/conversations — list conversations with unread counts for current user
+app.get('/api/dm/conversations', authenticateToken, async (req, res) => {
+    try {
+        const uid = req.user.id;
+        const { data: convs, error } = await supabase
+            .from('dm_conversations')
+            .select('*')
+            .or(`user1_id.eq.${uid},user2_id.eq.${uid}`)
+            .order('last_message_at', { ascending: false });
+
+        if (error) {
+            const isTableMissing = error.code === '42P01' || (error.message || '').includes('does not exist');
+            if (isTableMissing) {
+                console.warn('⚠️  dm_conversations table not found — run database.sql migration');
+                return res.json({ success: true, conversations: [] });
+            }
+            throw error;
+        }
+
+        const enriched = await Promise.all((convs || []).map(async (conv) => {
+            const otherId = conv.user1_id === uid ? conv.user2_id : conv.user1_id;
+            const unreadCount = conv.user1_id === uid ? conv.unread_count_user1 : conv.unread_count_user2;
+            const { data: other } = await supabase
+                .from('users')
+                .select('id, username, profile_pic, last_seen, status_text')
+                .eq('id', otherId)
+                .single();
+            return { ...conv, otherUser: other, unreadCount };
+        }));
+
+        res.json({ success: true, conversations: enriched });
+    } catch (error) {
+        console.error('❌ DM conversations error:', error);
+        res.status(500).json({ error: 'Failed to load conversations' });
+    }
+});
+
+// POST /api/dm/send — send a DM (handles media upload + upserts conversation)
+app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, res) => {
+    try {
+        const { receiverId, content } = req.body;
+        if (!receiverId) return res.status(400).json({ error: 'receiverId required' });
+        if (!content && !req.file) return res.status(400).json({ error: 'Content or media required' });
+
+        const senderId = req.user.id;
+        let mediaUrl = null;
+        let mediaType = null;
+
+        if (req.file) {
+            const fileName = `dm/${Date.now()}_${req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+            const { error: upErr } = await supabase.storage.from('chat-media').upload(fileName, req.file.buffer, { contentType: req.file.mimetype });
+            if (upErr) throw upErr;
+            const { data: { publicUrl } } = supabase.storage.from('chat-media').getPublicUrl(fileName);
+            mediaUrl = publicUrl;
+            if (req.file.mimetype.startsWith('video/')) mediaType = 'video';
+            else if (req.file.mimetype.startsWith('audio/')) mediaType = 'audio';
+            else if (req.file.mimetype === 'application/pdf') mediaType = 'pdf';
+            else mediaType = 'image';
+        }
+
+        // Insert the message
+        const { data: dm, error: dmErr } = await supabase
+            .from('direct_messages')
+            .insert([{
+                sender_id: senderId,
+                receiver_id: receiverId,
+                content: content?.trim() || '',
+                media_url: mediaUrl,
+                media_type: mediaType
+            }])
+            .select()
+            .single();
+
+        if (dmErr) {
+            const isTableMissing = dmErr.code === '42P01' || (dmErr.message || '').includes('does not exist');
+            if (isTableMissing) {
+                return res.status(503).json({ error: 'DM tables not set up yet. Please run the database.sql migration in Supabase.' });
+            }
+            throw dmErr;
+        }
+
+        // Alphabetically sort user IDs for the conversation record
+        const [u1, u2] = [senderId, receiverId].sort();
+        const isUser1Sender = u1 === senderId;
+        const lastMsg = content?.trim() || (mediaType ? `[${mediaType}]` : '');
+
+        // Check if conversation already exists
+        const { data: existingConv } = await supabase
+            .from('dm_conversations')
+            .select('id, unread_count_user1, unread_count_user2')
+            .eq('user1_id', u1)
+            .eq('user2_id', u2)
+            .maybeSingle();
+
+        if (existingConv) {
+            // Update existing — increment only the receiver's counter
+            const updateData = {
+                last_message: lastMsg,
+                last_message_at: new Date().toISOString()
+            };
+            if (isUser1Sender) {
+                updateData.unread_count_user2 = (existingConv.unread_count_user2 || 0) + 1;
+            } else {
+                updateData.unread_count_user1 = (existingConv.unread_count_user1 || 0) + 1;
+            }
+            await supabase.from('dm_conversations').update(updateData).eq('id', existingConv.id);
+        } else {
+            // Insert new conversation
+            const insertData = {
+                user1_id: u1,
+                user2_id: u2,
+                last_message: lastMsg,
+                last_message_at: new Date().toISOString(),
+                unread_count_user1: isUser1Sender ? 0 : 1,
+                unread_count_user2: isUser1Sender ? 1 : 0
+            };
+            await supabase.from('dm_conversations').insert([insertData]).catch(() => {
+                // Race condition: already inserted by another request — update instead
+                return supabase.from('dm_conversations')
+                    .update({ last_message: lastMsg, last_message_at: new Date().toISOString() })
+                    .eq('user1_id', u1).eq('user2_id', u2);
+            });
+        }
+
+        // Emit DM via Socket.IO to receiver if online
+        const payload = {
+            ...dm,
+            senderUser: {
+                id: req.user.id,
+                username: req.user.username,
+                profile_pic: req.user.profile_pic
+            }
+        };
+        const receiverSocketId = userSockets.get(receiverId);
+        if (receiverSocketId) io.to(receiverSocketId).emit('new_dm', payload);
+
+        res.json({ success: true, dm: payload });
+    } catch (error) {
+        console.error('❌ DM send error:', error);
+        res.status(500).json({ error: 'Failed to send DM: ' + error.message });
+    }
+});
+
+// GET /api/dm/messages/:otherId — fetch history + mark as read
+app.get('/api/dm/messages/:otherId', authenticateToken, async (req, res) => {
+    try {
+        const { otherId } = req.params;
+        const uid = req.user.id;
+
+        // Use two separate queries instead of compound .or() — far more reliable across Supabase versions
+        const [{ data: sent, error: e1 }, { data: recv, error: e2 }] = await Promise.all([
+            supabase.from('direct_messages').select('*').eq('sender_id', uid).eq('receiver_id', otherId).limit(200),
+            supabase.from('direct_messages').select('*').eq('sender_id', otherId).eq('receiver_id', uid).limit(200)
+        ]);
+
+        // Gracefully handle table-not-yet-created
+        if (e1 || e2) {
+            const err = e1 || e2;
+            const isTableMissing = err.code === '42P01' || (err.message || '').includes('does not exist');
+            if (isTableMissing) {
+                console.warn('⚠️  direct_messages table not found — run database.sql migration');
+                return res.json({ success: true, messages: [] });
+            }
+            throw err;
+        }
+
+        // Merge + sort chronologically
+        const messages = [...(sent || []), ...(recv || [])].sort(
+            (a, b) => new Date(a.created_at) - new Date(b.created_at)
+        );
+
+        // Mark received messages as read (fire-and-forget)
+        supabase.from('direct_messages').update({ is_read: true })
+            .eq('sender_id', otherId).eq('receiver_id', uid).eq('is_read', false)
+            .then(() => {}).catch(() => {});
+
+        // Reset our unread counter (fire-and-forget)
+        const [u1, u2] = [uid, otherId].sort();
+        const unreadField = u1 === uid ? 'unread_count_user1' : 'unread_count_user2';
+        supabase.from('dm_conversations').update({ [unreadField]: 0 })
+            .eq('user1_id', u1).eq('user2_id', u2)
+            .then(() => {}).catch(() => {});
+
+        res.json({ success: true, messages });
+    } catch (error) {
+        console.error('❌ DM messages error:', error);
+        res.status(500).json({ error: 'Failed to load messages' });
+    }
+});
 
 // ==================== FEEDBACK ENDPOINT ====================
 
