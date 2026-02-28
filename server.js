@@ -134,6 +134,59 @@ io.on('connection', (socket) => {
         }
     });
 
+    // ── Executive Chat: join college executive room ────────────────
+    socket.on('join_executive', (collegeName) => {
+        if (collegeName && typeof collegeName === 'string') {
+            socket.join(`exec_${collegeName}`);
+            socket.data.execCollege = collegeName;
+            console.log(`🎓 User ${socket.id} joined executive room: exec_${collegeName}`);
+        }
+    });
+
+    // ── Executive Chat: typing events ─────────────────────────────
+    socket.on('exec_typing', (data) => {
+        if (data.collegeName && data.username) {
+            socket.to(`exec_${data.collegeName}`).emit('exec_user_typing', {
+                username: data.username,
+                avatar: data.avatar || null
+            });
+        }
+    });
+
+    socket.on('exec_stop_typing', (data) => {
+        if (data.collegeName && data.username) {
+            socket.to(`exec_${data.collegeName}`).emit('exec_user_stop_typing', {
+                username: data.username
+            });
+        }
+    });
+
+    // ── Executive Chat: read receipts ──────────────────────────────
+    socket.on('exec_mark_seen', (data) => {
+        if (data.collegeName && data.userId && data.messageIds?.length) {
+            socket.to(`exec_${data.collegeName}`).emit('exec_messages_seen', {
+                userId:     data.userId,
+                username:   data.username,
+                avatar:     data.avatar || null,
+                messageIds: data.messageIds
+            });
+        }
+    });
+
+    // ── Executive Chat: reaction broadcast ────────────────────────
+    socket.on('exec_reaction_update', (data) => {
+        if (data.collegeName && data.messageId) {
+            socket.to(`exec_${data.collegeName}`).emit('exec_reaction_update', data);
+        }
+    });
+
+    // ── Executive Chat: poll vote broadcast ───────────────────────
+    socket.on('exec_poll_voted', (data) => {
+        if (data.collegeName && data.pollId) {
+            socket.to(`exec_${data.collegeName}`).emit('exec_poll_voted', data);
+        }
+    });
+
     socket.on('disconnect', () => {
         console.log('👋 User disconnected:', socket.id);
         // ✅ UPDATED: Clean up user socket mapping + mark offline
@@ -2841,6 +2894,454 @@ app.get('/api/realvibes/my-submissions', authenticateToken, async (req, res) => 
 
 
 
+// ==================== EXECUTIVE CHAT ENDPOINTS ====================
+
+// GET /api/executive/messages — load last 5 days of messages
+app.get('/api/executive/messages', authenticateToken, async (req, res) => {
+    try {
+        if (!req.user.community_joined || !req.user.college) {
+            return res.json({ success: false, needsJoinCommunity: true, messages: [] });
+        }
+
+        const fiveDaysAgo = new Date();
+        fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
+
+        // 1. Fetch messages
+        const { data: messages, error } = await supabase
+            .from('executive_messages')
+            .select('*')
+            .eq('college_name', req.user.college)
+            .eq('is_deleted', false)
+            .gte('created_at', fiveDaysAgo.toISOString())
+            .order('created_at', { ascending: true })
+            .limit(500);
+
+        if (error) throw error;
+
+        let enriched = messages || [];
+
+        // 2. Enrich with sender info (real name + avatar)
+        if (enriched.length > 0) {
+            const senderIds = [...new Set(enriched.map(m => m.sender_id))];
+            const { data: users } = await supabase
+                .from('users')
+                .select('id, username, profile_pic')
+                .in('id', senderIds);
+
+            const userMap = {};
+            (users || []).forEach(u => { userMap[u.id] = u; });
+
+            enriched = enriched.map(msg => ({
+                ...msg,
+                users: userMap[msg.sender_id] || { id: msg.sender_id, username: 'User', profile_pic: null }
+            }));
+        }
+
+        // 3. Enrich reply_to data
+        const replyIds = [...new Set(enriched.filter(m => m.reply_to_id).map(m => m.reply_to_id))];
+        if (replyIds.length > 0) {
+            const { data: replyMsgs } = await supabase
+                .from('executive_messages')
+                .select('id, content, sender_id, media_type, media_url, message_type')
+                .in('id', replyIds);
+
+            const replyUserIds = [...new Set((replyMsgs || []).map(m => m.sender_id))];
+            const { data: replyUsers } = await supabase
+                .from('users').select('id, username').in('id', replyUserIds);
+            const replyUserMap = {};
+            (replyUsers || []).forEach(u => { replyUserMap[u.id] = u; });
+
+            const replyMap = {};
+            (replyMsgs || []).forEach(m => {
+                replyMap[m.id] = { ...m, sender_username: replyUserMap[m.sender_id]?.username || 'User' };
+            });
+
+            enriched = enriched.map(msg => ({
+                ...msg,
+                reply_to: msg.reply_to_id ? (replyMap[msg.reply_to_id] || null) : null
+            }));
+        }
+
+        // 4. Attach reactions
+        if (enriched.length > 0) {
+            const msgIds = enriched.map(m => m.id);
+            const { data: reactions } = await supabase
+                .from('executive_message_reactions')
+                .select('message_id, user_id, emoji')
+                .in('message_id', msgIds);
+
+            const rxMap = {};
+            (reactions || []).forEach(r => {
+                if (!rxMap[r.message_id]) rxMap[r.message_id] = [];
+                rxMap[r.message_id].push(r);
+            });
+
+            enriched = enriched.map(msg => ({ ...msg, reactions: rxMap[msg.id] || [] }));
+        }
+
+        // 5. Attach read receipts counts
+        if (enriched.length > 0) {
+            const msgIds = enriched.map(m => m.id);
+            const { data: reads } = await supabase
+                .from('executive_message_reads')
+                .select('message_id, user_id')
+                .in('message_id', msgIds);
+
+            const readMap = {};
+            (reads || []).forEach(r => {
+                if (!readMap[r.message_id]) readMap[r.message_id] = [];
+                readMap[r.message_id].push(r.user_id);
+            });
+
+            enriched = enriched.map(msg => ({
+                ...msg,
+                read_by: readMap[msg.id] || []
+            }));
+        }
+
+        // 6. Attach poll data for poll messages
+        const pollMsgIds = enriched.filter(m => m.message_type === 'poll').map(m => m.id);
+        if (pollMsgIds.length > 0) {
+            const { data: polls } = await supabase
+                .from('executive_polls')
+                .select('*, executive_poll_votes(*)')
+                .in('message_id', pollMsgIds);
+
+            const pollMap = {};
+            (polls || []).forEach(p => { pollMap[p.message_id] = p; });
+
+            enriched = enriched.map(msg => ({
+                ...msg,
+                poll: msg.message_type === 'poll' ? (pollMap[msg.id] || null) : undefined
+            }));
+        }
+
+        res.json({ success: true, messages: enriched });
+
+    } catch (err) {
+        console.error('❌ Executive GET messages error:', err);
+        res.status(500).json({ error: 'Failed to load messages', details: err.message });
+    }
+});
+
+
+// POST /api/executive/messages — send a new message (text / media / voice / poll)
+app.post('/api/executive/messages', authenticateToken, (req, res, next) => {
+    if (req.headers['content-type']?.includes('multipart/form-data')) {
+        upload.single('media')(req, res, next);
+    } else {
+        next();
+    }
+}, async (req, res) => {
+    try {
+        if (!req.user.community_joined || !req.user.college) {
+            return res.status(400).json({ error: 'Join a college community first' });
+        }
+
+        const { content, reply_to_id, poll_question, poll_options } = req.body;
+        const media = req.file;
+
+        if (!content && !media && !poll_question) {
+            return res.status(400).json({ error: 'Message content, media, or poll required' });
+        }
+
+        let mediaUrl = null, mediaType = null, msgType = 'text';
+
+        if (media) {
+            const safeName = media.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+            const isVoice = req.body.is_voice === 'true';
+            const folder = isVoice ? 'exec-voice' : 'exec-media';
+            const fileName = `${folder}/${Date.now()}_${safeName}`;
+
+            const { error: uploadError } = await supabase.storage
+                .from('chat-media')
+                .upload(fileName, media.buffer, { contentType: media.mimetype, upsert: false });
+
+            if (uploadError) {
+                return res.status(500).json({ error: 'Media upload failed: ' + uploadError.message });
+            }
+
+            const { data: { publicUrl } } = supabase.storage.from('chat-media').getPublicUrl(fileName);
+            mediaUrl = publicUrl;
+
+            if (isVoice) {
+                mediaType = 'audio'; msgType = 'voice';
+            } else if (media.mimetype.startsWith('video/')) {
+                mediaType = 'video'; msgType = 'video';
+            } else if (media.mimetype.startsWith('audio/')) {
+                mediaType = 'audio'; msgType = 'audio';
+            } else if (media.mimetype === 'application/pdf') {
+                mediaType = 'pdf'; msgType = 'document';
+            } else if (media.mimetype.startsWith('application/') || media.mimetype.startsWith('text/')) {
+                mediaType = 'document'; msgType = 'document';
+            } else {
+                mediaType = 'image'; msgType = 'image';
+            }
+        }
+
+        if (poll_question) msgType = 'poll';
+
+        const { data: inserted, error: insertError } = await supabase
+            .from('executive_messages')
+            .insert([{
+                sender_id:   req.user.id,
+                college_name: req.user.college,
+                content:     content?.trim() || '',
+                message_type: msgType,
+                media_url:   mediaUrl,
+                media_type:  mediaType,
+                media_name:  media ? media.originalname : null,
+                media_size:  media ? media.size : null,
+                reply_to_id: (reply_to_id && reply_to_id !== 'null' && reply_to_id !== 'undefined') ? reply_to_id : null
+            }])
+            .select('*')
+            .single();
+
+        if (insertError) throw insertError;
+
+        // Create poll if poll_question present
+        let pollData = null;
+        if (poll_question && inserted) {
+            let options = [];
+            try { options = JSON.parse(poll_options || '[]'); } catch {}
+            const { data: poll } = await supabase
+                .from('executive_polls')
+                .insert([{ message_id: inserted.id, question: poll_question, options }])
+                .select('*').single();
+            pollData = poll ? { ...poll, executive_poll_votes: [] } : null;
+        }
+
+        // Fetch sender info
+        const { data: sender } = await supabase
+            .from('users').select('id, username, profile_pic').eq('id', req.user.id).single();
+
+        // Fetch reply_to if needed
+        let replyToData = null;
+        if (inserted.reply_to_id) {
+            const { data: rMsg } = await supabase
+                .from('executive_messages').select('id, content, sender_id, media_type, media_url, message_type')
+                .eq('id', inserted.reply_to_id).single();
+            if (rMsg) {
+                const { data: rUser } = await supabase.from('users').select('username').eq('id', rMsg.sender_id).single();
+                replyToData = { ...rMsg, sender_username: rUser?.username || 'User' };
+            }
+        }
+
+        const finalMsg = {
+            ...inserted,
+            users: sender || { id: req.user.id, username: req.user.username, profile_pic: null },
+            reactions: [],
+            read_by: [],
+            reply_to: replyToData,
+            poll: pollData
+        };
+
+        // Broadcast to college executive room
+        const senderSocketId = userSockets.get(req.user.id);
+        const room = `exec_${req.user.college}`;
+        if (senderSocketId) {
+            io.to(room).except(senderSocketId).emit('exec_new_message', finalMsg);
+        } else {
+            io.to(room).emit('exec_new_message', finalMsg);
+        }
+
+        res.json({ success: true, message: finalMsg });
+
+    } catch (err) {
+        console.error('❌ Executive POST message error:', err);
+        res.status(500).json({ error: 'Failed to send message', details: err.message });
+    }
+});
+
+
+// PATCH /api/executive/messages/:id — edit a message
+app.patch('/api/executive/messages/:id', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { content } = req.body;
+        if (!content?.trim()) return res.status(400).json({ error: 'Content required' });
+
+        const { data: msg } = await supabase.from('executive_messages')
+            .select('sender_id, college_name').eq('id', id).single();
+
+        if (!msg || msg.sender_id !== req.user.id) {
+            return res.status(403).json({ error: 'Not authorized to edit this message' });
+        }
+
+        const { data: updated, error } = await supabase.from('executive_messages')
+            .update({ content: content.trim(), is_edited: true, edited_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+            .eq('id', id).select('*').single();
+
+        if (error) throw error;
+
+        io.to(`exec_${msg.college_name}`).emit('exec_message_edited', { id, content: content.trim(), edited_at: updated.edited_at });
+        res.json({ success: true, message: updated });
+
+    } catch (err) {
+        console.error('❌ Executive PATCH message error:', err);
+        res.status(500).json({ error: 'Failed to edit message' });
+    }
+});
+
+
+// DELETE /api/executive/messages/:id — soft-delete a message
+app.delete('/api/executive/messages/:id', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const { data: msg } = await supabase.from('executive_messages')
+            .select('sender_id, college_name').eq('id', id).single();
+
+        if (!msg || msg.sender_id !== req.user.id) {
+            return res.status(403).json({ error: 'Not authorized to delete this message' });
+        }
+
+        await supabase.from('executive_messages')
+            .update({ is_deleted: true, deleted_at: new Date().toISOString() })
+            .eq('id', id);
+
+        io.to(`exec_${msg.college_name}`).emit('exec_message_deleted', { id });
+        res.json({ success: true });
+
+    } catch (err) {
+        console.error('❌ Executive DELETE message error:', err);
+        res.status(500).json({ error: 'Failed to delete message' });
+    }
+});
+
+
+// POST /api/executive/reactions — toggle a reaction emoji on a message
+app.post('/api/executive/reactions', authenticateToken, async (req, res) => {
+    try {
+        const { message_id, emoji } = req.body;
+        if (!message_id || !emoji) return res.status(400).json({ error: 'message_id and emoji required' });
+
+        // Fetch the message for its college
+        const { data: msg } = await supabase.from('executive_messages')
+            .select('college_name').eq('id', message_id).single();
+        if (!msg) return res.status(404).json({ error: 'Message not found' });
+
+        // Check if reaction already exists (toggle)
+        const { data: existing } = await supabase.from('executive_message_reactions')
+            .select('id').eq('message_id', message_id).eq('user_id', req.user.id).eq('emoji', emoji).single();
+
+        let action;
+        if (existing) {
+            await supabase.from('executive_message_reactions').delete().eq('id', existing.id);
+            action = 'removed';
+        } else {
+            await supabase.from('executive_message_reactions')
+                .insert([{ message_id, user_id: req.user.id, emoji }]);
+            action = 'added';
+        }
+
+        // Fetch updated reactions for this message
+        const { data: allReactions } = await supabase.from('executive_message_reactions')
+            .select('message_id, user_id, emoji').eq('message_id', message_id);
+
+        const update = { message_id, reactions: allReactions || [], action, userId: req.user.id, emoji, collegeName: msg.college_name };
+        io.to(`exec_${msg.college_name}`).emit('exec_reaction_update', update);
+
+        res.json({ success: true, reactions: allReactions || [], action });
+
+    } catch (err) {
+        console.error('❌ Executive reaction error:', err);
+        res.status(500).json({ error: 'Failed to update reaction' });
+    }
+});
+
+
+// POST /api/executive/read — mark messages as read (batch)
+app.post('/api/executive/read', authenticateToken, async (req, res) => {
+    try {
+        const { message_ids } = req.body;
+        if (!message_ids?.length) return res.json({ success: true });
+
+        const rows = message_ids.map(mid => ({ message_id: mid, user_id: req.user.id }));
+
+        await supabase.from('executive_message_reads')
+            .upsert(rows, { onConflict: 'message_id,user_id', ignoreDuplicates: true });
+
+        res.json({ success: true });
+    } catch (err) {
+        console.error('❌ Executive read error:', err);
+        res.status(500).json({ error: 'Failed to mark as read' });
+    }
+});
+
+
+// GET /api/executive/reads/:messageId — get list of users who read a message (for popup)
+app.get('/api/executive/reads/:messageId', authenticateToken, async (req, res) => {
+    try {
+        const { messageId } = req.params;
+
+        const { data: reads, error } = await supabase
+            .from('executive_message_reads')
+            .select('user_id, read_at')
+            .eq('message_id', messageId)
+            .order('read_at', { ascending: true });
+
+        if (error) throw error;
+
+        // Fetch user info for each reader
+        const userIds = (reads || []).map(r => r.user_id);
+        let readers = [];
+        if (userIds.length > 0) {
+            const { data: users } = await supabase
+                .from('users').select('id, username, profile_pic').in('id', userIds);
+            const userMap = {};
+            (users || []).forEach(u => { userMap[u.id] = u; });
+            readers = (reads || []).map(r => ({
+                ...userMap[r.user_id],
+                read_at: r.read_at
+            })).filter(u => u.id);
+        }
+
+        res.json({ success: true, readers });
+    } catch (err) {
+        console.error('❌ Executive reads error:', err);
+        res.status(500).json({ error: 'Failed to load readers' });
+    }
+});
+
+
+// POST /api/executive/polls/:pollId/vote — cast or change a vote
+app.post('/api/executive/polls/:pollId/vote', authenticateToken, async (req, res) => {
+    try {
+        const { pollId } = req.params;
+        const { option_id } = req.body;
+        if (!option_id) return res.status(400).json({ error: 'option_id required' });
+
+        // Check poll exists and get college
+        const { data: poll } = await supabase.from('executive_polls')
+            .select('*, executive_messages(college_name)').eq('id', pollId).single();
+        if (!poll || poll.is_closed) {
+            return res.status(404).json({ error: poll?.is_closed ? 'Poll is closed' : 'Poll not found' });
+        }
+
+        const collegeName = poll.executive_messages?.college_name;
+
+        // Upsert vote (allows changing vote)
+        await supabase.from('executive_poll_votes')
+            .upsert([{ poll_id: pollId, user_id: req.user.id, option_id }],
+                { onConflict: 'poll_id,user_id' });
+
+        // Fetch updated votes
+        const { data: votes } = await supabase.from('executive_poll_votes')
+            .select('*').eq('poll_id', pollId);
+
+        const update = { pollId, messageId: poll.message_id, votes: votes || [], userId: req.user.id, collegeName };
+        if (collegeName) io.to(`exec_${collegeName}`).emit('exec_poll_voted', update);
+
+        res.json({ success: true, votes: votes || [] });
+
+    } catch (err) {
+        console.error('❌ Executive poll vote error:', err);
+        res.status(500).json({ error: 'Failed to vote' });
+    }
+});
+
+
 // AUTO-DELETE: Chats older than 5 days  (day 1 is deleted ON day 6)
 // Schedule: runs every hour
 // =====================================================================
@@ -2885,6 +3386,30 @@ async function cleanupOldPosts() {
 // Chat cleanup — every 1 hour
 setInterval(cleanupOldMessages, 60 * 60 * 1000);
 cleanupOldMessages();                              // also run immediately on boot
+
+// =====================================================================
+// AUTO-DELETE: Executive chat older than 5 days (day 1 deleted on day 6)
+// =====================================================================
+async function cleanupOldExecutiveMessages() {
+    try {
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - 5);
+
+        const { error } = await supabase
+            .from('executive_messages')
+            .delete()
+            .lt('created_at', cutoff.toISOString());
+
+        if (error) throw error;
+        console.log('🗑️  Executive chat cleanup: messages older than 5 days removed');
+    } catch (err) {
+        console.error('❌ Executive chat cleanup error:', err.message);
+    }
+}
+
+// Run every hour alongside community_messages cleanup
+setInterval(cleanupOldExecutiveMessages, 60 * 60 * 1000);
+cleanupOldExecutiveMessages();  // run immediately on boot
 
 // Post cleanup — every 6 hours (intentionally offset from chat cleanup)
 setInterval(cleanupOldPosts, 6 * 60 * 60 * 1000);
