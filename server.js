@@ -30,6 +30,34 @@ const io = socketIO(server, {
 
 // Add at top of server.js after io initialization
 const userSockets = new Map(); // userId -> socketId
+// Ghost name uniqueness tracking per college: Map<collegeName, Map<ghostName_lowercase, userId>>
+const collegeGhostNames = new Map();
+
+function registerGhostName(userId, collegeName, ghostName) {
+    if (!collegeName || !ghostName) return { success: false, error: 'Missing college or ghost name' };
+    const lower = ghostName.trim().toLowerCase();
+    if (!collegeGhostNames.has(collegeName)) collegeGhostNames.set(collegeName, new Map());
+    const collegeMap = collegeGhostNames.get(collegeName);
+    // Check if this ghost name is already taken by someone else
+    const existingUserId = collegeMap.get(lower);
+    if (existingUserId && existingUserId !== userId) {
+        return { success: false, error: `Ghost name "${ghostName}" is already taken in your college. Choose a different name!` };
+    }
+    // Release any old ghost name this user had in this college
+    for (const [name, uid] of collegeMap.entries()) {
+        if (uid === userId) { collegeMap.delete(name); break; }
+    }
+    collegeMap.set(lower, userId);
+    return { success: true };
+}
+
+function releaseGhostName(userId, collegeName) {
+    if (!collegeName || !collegeGhostNames.has(collegeName)) return;
+    const collegeMap = collegeGhostNames.get(collegeName);
+    for (const [name, uid] of collegeMap.entries()) {
+        if (uid === userId) { collegeMap.delete(name); break; }
+    }
+}
 
 
 io.on('connection', (socket) => {
@@ -49,6 +77,13 @@ io.on('connection', (socket) => {
             const roomSize = io.sockets.adapter.rooms.get(collegeName)?.size || 0;
             io.to(collegeName).emit('online_count', roomSize);
         }
+    });
+
+    // Ghost name registration from client
+    socket.on('register_ghost_name', ({ userId, collegeName, ghostName }) => {
+        if (!userId || !collegeName || !ghostName) return;
+        const result = registerGhostName(userId, collegeName, ghostName);
+        socket.emit('ghost_name_result', result);
     });
 
     socket.on('typing', (data) => {
@@ -111,6 +146,10 @@ io.on('connection', (socket) => {
                 .catch(console.error);
         }
         if (socket.data.college) {
+            // Release ghost name on disconnect
+            if (socket.data.userId) {
+                releaseGhostName(socket.data.userId, socket.data.college);
+            }
             const roomSize = io.sockets.adapter.rooms.get(socket.data.college)?.size || 0;
             io.to(socket.data.college).emit('online_count', roomSize);
         }
@@ -654,6 +693,16 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
             .eq('following_id', userId)
             .maybeSingle();
 
+        // Check if the target user also follows back (mutual follow check)
+        const { data: isFollowedBy } = await supabase
+            .from('followers')
+            .select('id')
+            .eq('follower_id', userId)
+            .eq('following_id', req.user.id)
+            .maybeSingle();
+
+        const isMutualFollow = !!isFollowing && !!isFollowedBy;
+
         res.json({
             success: true,
             user: {
@@ -663,7 +712,9 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
                 followingCount: followingCount || 0,
                 profileLikes: likeCount || 0,
                 isProfileLiked: !!isLiked,
-                isFollowing: !!isFollowing
+                isFollowing: !!isFollowing,
+                isFollowedBy: !!isFollowedBy,
+                isMutualFollow
             }
         });
     } catch (error) {
@@ -721,13 +772,31 @@ app.post('/api/follow/:userId', authenticateToken, async (req, res) => {
             }]);
 
         if (error) {
-            if (error.code === '23505') { // Unique violation
-                return res.json({ success: true, message: 'Already following' });
+            if (error.code === '23505') { // Unique violation - already following, fetch real counts
+                const { count: targetFollowers } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId);
+                const { count: myFollowing } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', req.user.id);
+                return res.json({ success: true, isFollowing: true, targetFollowersCount: targetFollowers || 0, myFollowingCount: myFollowing || 0 });
             }
             throw error;
         }
 
-        res.json({ success: true, message: 'Followed successfully' });
+        // Return real counts after follow
+        const { count: targetFollowers } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId);
+        const { count: myFollowing } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', req.user.id);
+
+        // Notify the followed user via socket (so their follower count updates live)
+        const targetSocketId = userSockets.get(userId);
+        if (targetSocketId) {
+            io.to(targetSocketId).emit('new_follow', {
+                followerId: req.user.id,
+                followerUsername: req.user.username,
+                followerProfilePic: req.user.profile_pic || null,
+                followingId: userId,
+                newFollowersCount: targetFollowers || 0
+            });
+        }
+
+        res.json({ success: true, isFollowing: true, targetFollowersCount: targetFollowers || 0, myFollowingCount: myFollowing || 0 });
 
     } catch (error) {
         console.error('❌ Follow error:', error);
@@ -748,7 +817,21 @@ app.post('/api/unfollow/:userId', authenticateToken, async (req, res) => {
 
         if (error) throw error;
 
-        res.json({ success: true, message: 'Unfollowed successfully' });
+        // Return real counts after unfollow
+        const { count: targetFollowers } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId);
+        const { count: myFollowing } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', req.user.id);
+
+        // Notify the unfollowed user via socket
+        const targetSocketId = userSockets.get(userId);
+        if (targetSocketId) {
+            io.to(targetSocketId).emit('lost_follow', {
+                followerId: req.user.id,
+                followingId: userId,
+                newFollowersCount: targetFollowers || 0
+            });
+        }
+
+        res.json({ success: true, isFollowing: false, targetFollowersCount: targetFollowers || 0, myFollowingCount: myFollowing || 0 });
 
     } catch (error) {
         console.error('❌ Unfollow error:', error);
@@ -1255,12 +1338,25 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
                     .eq('user_id', req.user.id)
                     .maybeSingle();
 
+                // Check if current user follows this post's author
+                let isFollowingAuthor = false;
+                if (post.user_id && post.user_id !== req.user.id) {
+                    const { data: followCheck } = await supabase
+                        .from('followers')
+                        .select('id')
+                        .eq('follower_id', req.user.id)
+                        .eq('following_id', post.user_id)
+                        .maybeSingle();
+                    isFollowingAuthor = !!followCheck;
+                }
+
                 return {
                     ...post,
                     like_count: likeCount || 0,
                     comment_count: commentCount || 0,
                     share_count: shareCount || 0,
-                    is_liked: !!isLiked
+                    is_liked: !!isLiked,
+                    is_following_author: isFollowingAuthor
                 };
             })
         );
@@ -1814,7 +1910,7 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
             console.log('✅ Media uploaded to chat-media bucket:', mediaUrl, '| type:', mediaType);
         }
 
-        // ── Ghost name: validate (REQUIRED for institute community chat) ────
+        // ── Ghost name: validate + uniqueness check ────
         const rawAnonName = req.body.anon_name;
         let anonName = null;
         if (rawAnonName && typeof rawAnonName === 'string') {
@@ -1823,6 +1919,11 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
         }
         if (!anonName) {
             return res.status(400).json({ error: 'Ghost name is required. Please set your ghost name before chatting.' });
+        }
+        // Enforce uniqueness per college
+        const ghostCheckResult = registerGhostName(req.user.id, req.user.college, anonName);
+        if (!ghostCheckResult.success) {
+            return res.status(409).json({ error: ghostCheckResult.error, code: 'GHOST_NAME_TAKEN' });
         }
 
         // STEP 1: Insert the message first (no join - simpler, less failure points)
@@ -1936,311 +2037,6 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
     }
 });
 
-
-
-// ── Ghost name uniqueness check ─────────────────────────────────────────────
-// Returns whether a ghost name is already claimed in a college.
-// "Claimed" = appears in community_messages sent within the last 7 days
-// by a DIFFERENT user (same user can keep their own name).
-app.post('/api/community/check-ghost-name', authenticateToken, async (req, res) => {
-    try {
-        const { ghost_name } = req.body;
-        if (!ghost_name || ghost_name.trim().length < 2) {
-            return res.status(400).json({ error: 'Invalid ghost name' });
-        }
-        if (!req.user.college) {
-            return res.status(400).json({ error: 'Not in a college community' });
-        }
-
-        const sevenDaysAgo = new Date();
-        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
-        // Check if this name was used by ANOTHER user in this college recently
-        const { data: existing } = await supabase
-            .from('community_messages')
-            .select('sender_id')
-            .eq('college_name', req.user.college)
-            .ilike('anon_name', ghost_name.trim())
-            .gte('created_at', sevenDaysAgo.toISOString())
-            .neq('sender_id', req.user.id)
-            .limit(1);
-
-        const taken = !!(existing && existing.length > 0);
-        console.log(`👻 Ghost name check: "${ghost_name}" in ${req.user.college} → ${taken ? 'TAKEN' : 'AVAILABLE'}`);
-        res.json({ available: !taken, taken });
-    } catch (error) {
-        console.error('❌ Ghost name check error:', error);
-        // On error, allow the name (fail open so chat isn't blocked)
-        res.json({ available: true, taken: false });
-    }
-});
-
-
-// ==================== EXECUTIVE CHAT ENDPOINTS ====================
-// Official college chat — real names + profile pics shown
-// Family-word filter: shows 10% of letters, rest replaced with ***
-
-// ── Family-word sanitizer ────────────────────────────────────────
-// Matches family slur patterns across EN/HI/TA/TE/KA/ML/BN/MR/PA
-const FAMILY_SLUR_PATTERNS = [
-    // English
-    /\b(your\s+mother|ur\s+mother|yo\s+mama|your\s+mama|your\s+mom|ur\s+mom)\b/gi,
-    /\b(your\s+father|ur\s+father|your\s+dad|ur\s+dad)\b/gi,
-    /\b(your\s+sister|ur\s+sister|your\s+sis)\b/gi,
-    /\b(motherfucker|motherfucking|son\s+of\s+a\s+bitch)\b/gi,
-    // Hindi / Urdu (roman)
-    /\b(madarchod|madar\s+chod|maa\s+ki|maa\s+ka|maa\s+ko|teri\s+maa|teri\s+ma)\b/gi,
-    /\b(behenchod|bhen\s*chod|behen\s*chod|teri\s*behan|teri\s*behen)\b/gi,
-    /\b(baap\s+chod|bap\s+chod|tera\s+baap|tera\s+bap)\b/gi,
-    /\b(maa\s+chod|teri\s+maa\s+ki|teri\s+behan\s+ko|teri\s+maa\s+ko)\b/gi,
-    // Punjabi
-    /\b(teri\s+maa\s+di|teri\s+pen\s+di|pen\s+di\s+lun|penchod|pen\s+chod|teri\s+pen)\b/gi,
-    /\b(tera\s+pyo|tere\s+pyo)\b/gi,
-    // Tamil (roman)
-    /\b(ommala|omala|nee\s+amma|nee\s+amma\s+ki|nee\s+amma\s+tho)\b/gi,
-    /\b(thevidiya\s+punda|otha\s+amma)\b/gi,
-    // Telugu (roman)
-    /\b(nee\s+amma|nee\s+amma\s+ki|nee\s+amma\s+tho|lanja\s+amma)\b/gi,
-    // Kannada (roman)
-    /\b(ninna\s+amma|nin\s+taayi|nin\s+thaayi|sule\s+magane)\b/gi,
-    // Malayalam (roman)
-    /\b(ammayude|ammaye|achan|chechi\s+da|ammachi)\b/gi,
-    // Bengali (roman)
-    /\b(tor\s+ma|tor\s+baap|tor\s+bon|tor\s+didi|maa\s+ke)\b/gi,
-    // Marathi (roman)
-    /\b(aai\s+zava|aai\s+zhav|aai\s+ga|aai\s+chi|bai\s+cha|bai\s+chi)\b/gi,
-];
-
-/**
- * Sanitize text: replace family slurs with 10%-reveal masking.
- * e.g. "madarchod" (9 chars) → "m★★★★★★★★"
- */
-function sanitizeExecutiveMessage(text) {
-    if (!text) return text;
-    let sanitized = text;
-    for (const pattern of FAMILY_SLUR_PATTERNS) {
-        sanitized = sanitized.replace(pattern, (match) => {
-            const chars = [...match]; // unicode-safe
-            const showCount = Math.max(1, Math.ceil(chars.length * 0.1));
-            const visible = chars.slice(0, showCount).join('');
-            const hidden = '★'.repeat(chars.length - showCount);
-            return visible + hidden;
-        });
-    }
-    return sanitized;
-}
-
-// GET /api/executive/messages
-app.get('/api/executive/messages', authenticateToken, async (req, res) => {
-    try {
-        if (!req.user.community_joined || !req.user.college) {
-            return res.json({ success: false, needsJoinCommunity: true, messages: [] });
-        }
-
-        const fiveDaysAgo = new Date();
-        fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
-
-        const { data: messages, error } = await supabase
-            .from('executive_messages')
-            .select('*')
-            .eq('college_name', req.user.college)
-            .gte('created_at', fiveDaysAgo.toISOString())
-            .order('created_at', { ascending: true })
-            .limit(500);
-
-        if (error) throw error;
-
-        let enrichedMessages = messages || [];
-
-        if (enrichedMessages.length > 0) {
-            const senderIds = [...new Set(enrichedMessages.map(m => m.sender_id))];
-            const { data: users } = await supabase
-                .from('users')
-                .select('id, username, profile_pic')
-                .in('id', senderIds);
-
-            const userMap = {};
-            (users || []).forEach(u => { userMap[u.id] = u; });
-
-            enrichedMessages = enrichedMessages.map(msg => ({
-                ...msg,
-                users: userMap[msg.sender_id] || { id: msg.sender_id, username: 'Member', profile_pic: null }
-            }));
-        }
-
-        // Enrich reply_to data
-        const replyToIds = [...new Set(enrichedMessages.filter(m => m.reply_to_id).map(m => m.reply_to_id))];
-        if (replyToIds.length > 0) {
-            const { data: replyMsgs } = await supabase
-                .from('executive_messages')
-                .select('id, content, sender_id, media_type, media_url')
-                .in('id', replyToIds);
-
-            if (replyMsgs && replyMsgs.length > 0) {
-                const replySenderIds = [...new Set(replyMsgs.map(m => m.sender_id))];
-                const { data: replyUsers } = await supabase
-                    .from('users').select('id, username').in('id', replySenderIds);
-                const ruMap = {};
-                (replyUsers || []).forEach(u => { ruMap[u.id] = u; });
-                const rmMap = {};
-                replyMsgs.forEach(rm => {
-                    rmMap[rm.id] = { ...rm, sender_username: ruMap[rm.sender_id]?.username || 'Member' };
-                });
-                enrichedMessages = enrichedMessages.map(msg => ({
-                    ...msg,
-                    reply_to: msg.reply_to_id ? (rmMap[msg.reply_to_id] || null) : null
-                }));
-            }
-        }
-
-        res.json({ success: true, messages: enrichedMessages });
-    } catch (error) {
-        console.error('❌ Executive GET error:', error);
-        res.status(500).json({ error: 'Failed to load executive messages' });
-    }
-});
-
-// POST /api/executive/messages
-app.post('/api/executive/messages', authenticateToken, (req, res, next) => {
-    if (req.headers['content-type']?.includes('multipart/form-data')) {
-        upload.single('media')(req, res, next);
-    } else { next(); }
-}, async (req, res) => {
-    try {
-        const rawContent = req.body.content;
-        const media = req.file;
-
-        if (!rawContent && !media) {
-            return res.status(400).json({ error: 'Message content or media required' });
-        }
-        if (!req.user.community_joined || !req.user.college) {
-            return res.status(400).json({ error: 'Join a college community first' });
-        }
-
-        // Apply family-word filter before storing
-        const content = sanitizeExecutiveMessage(rawContent?.trim() || '');
-
-        let mediaUrl = null, mediaType = null;
-        if (media) {
-            const safeName = media.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-            const fileName = `executive/${Date.now()}_${safeName}`;
-            const { error: upErr } = await supabase.storage
-                .from('chat-media').upload(fileName, media.buffer, { contentType: media.mimetype });
-            if (upErr) throw upErr;
-            const { data: { publicUrl } } = supabase.storage.from('chat-media').getPublicUrl(fileName);
-            mediaUrl = publicUrl;
-            if (media.mimetype.startsWith('video/'))       mediaType = 'video';
-            else if (media.mimetype.startsWith('audio/'))  mediaType = 'audio';
-            else if (media.mimetype === 'application/pdf') mediaType = 'pdf';
-            else if (media.mimetype.startsWith('application/') || media.mimetype.startsWith('text/')) mediaType = 'document';
-            else mediaType = 'image';
-        }
-
-        const { data: insertedMsg, error: insertError } = await supabase
-            .from('executive_messages')
-            .insert([{
-                sender_id: req.user.id,
-                college_name: req.user.college,
-                content,
-                media_url: mediaUrl,
-                media_type: mediaType,
-                message_type: mediaUrl
-                    ? (mediaType === 'video' ? 'video' : mediaType === 'audio' ? 'audio'
-                        : mediaType === 'image' ? 'image' : 'document')
-                    : 'text',
-                media_name: media ? media.originalname : null,
-                media_size: media ? media.size : null,
-                reply_to_id: (req.body.reply_to_id && req.body.reply_to_id !== 'null' && req.body.reply_to_id !== 'undefined')
-                    ? req.body.reply_to_id : null
-            }])
-            .select('*').single();
-
-        if (insertError) throw insertError;
-
-        const { data: senderInfo } = await supabase
-            .from('users').select('id, username, profile_pic').eq('id', req.user.id).single();
-
-        let replyToData = null;
-        if (insertedMsg.reply_to_id) {
-            const { data: replyMsg } = await supabase
-                .from('executive_messages')
-                .select('id, content, sender_id, media_type, media_url')
-                .eq('id', insertedMsg.reply_to_id).single();
-            if (replyMsg) {
-                const { data: replyUser } = await supabase
-                    .from('users').select('username').eq('id', replyMsg.sender_id).single();
-                replyToData = { ...replyMsg, sender_username: replyUser?.username || 'Member' };
-            }
-        }
-
-        const message = {
-            ...insertedMsg,
-            users: senderInfo || { id: req.user.id, username: req.user.username, profile_pic: req.user.profile_pic || null },
-            reply_to: replyToData
-        };
-
-        // Broadcast on exec-specific event in the same college room
-        const senderSocketId = userSockets.get(req.user.id);
-        if (senderSocketId) {
-            io.to(req.user.college).except(senderSocketId).emit('new_executive_message', message);
-        } else {
-            io.to(req.user.college).emit('new_executive_message', message);
-        }
-
-        console.log(`🎓 Executive msg from ${req.user.username} in ${req.user.college}`);
-        res.json({ success: true, message });
-
-    } catch (error) {
-        console.error('❌ Executive POST error:', error);
-        res.status(500).json({ error: 'Failed to send executive message: ' + error.message });
-    }
-});
-
-// DELETE /api/executive/messages/:messageId
-app.delete('/api/executive/messages/:messageId', authenticateToken, async (req, res) => {
-    try {
-        const { messageId } = req.params;
-        const { data: msg } = await supabase
-            .from('executive_messages').select('sender_id, college_name').eq('id', messageId).single();
-        if (!msg || msg.sender_id !== req.user.id) {
-            return res.status(403).json({ error: 'Not authorized' });
-        }
-        await supabase.from('executive_messages').delete().eq('id', messageId);
-        io.to(msg.college_name).emit('executive_message_deleted', { id: messageId });
-        res.json({ success: true });
-    } catch (error) {
-        console.error('❌ Executive DELETE error:', error);
-        res.status(500).json({ error: 'Failed to delete message' });
-    }
-});
-
-// PATCH /api/executive/messages/:messageId  (edit)
-app.patch('/api/executive/messages/:messageId', authenticateToken, async (req, res) => {
-    try {
-        const { messageId } = req.params;
-        const rawContent = req.body.content;
-        if (!rawContent?.trim()) return res.status(400).json({ error: 'Content required' });
-
-        const { data: msg } = await supabase
-            .from('executive_messages').select('sender_id, college_name').eq('id', messageId).single();
-        if (!msg || msg.sender_id !== req.user.id) {
-            return res.status(403).json({ error: 'Not authorized' });
-        }
-
-        const content = sanitizeExecutiveMessage(rawContent.trim());
-        await supabase.from('executive_messages')
-            .update({ content, is_edited: true, edited_at: new Date().toISOString() })
-            .eq('id', messageId);
-
-        io.to(msg.college_name).emit('executive_message_edited', { id: messageId, content });
-        res.json({ success: true, content });
-    } catch (error) {
-        console.error('❌ Executive PATCH error:', error);
-        res.status(500).json({ error: 'Failed to edit message' });
-    }
-});
-
-// ==================== END EXECUTIVE CHAT ENDPOINTS ====================
 
 // ==================== DM ENDPOINTS ====================
 
@@ -2483,6 +2279,7 @@ app.get('/api/realvibes', authenticateToken, async (req, res) => {
             .from('real_vibes')
             .select(`*, users:user_id (id, username, profile_pic, college)`)
             .gt('expires_at', now)
+            .eq('status', 'approved')
             .order('created_at', { ascending: false })
             .limit(50);
 
@@ -2579,7 +2376,8 @@ app.post('/api/realvibes', authenticateToken, upload.single('media'), async (req
                 media_type: isVideo ? 'video' : 'image',
                 plan_type: plan,
                 visibility,
-                expires_at: expiresAt.toISOString()
+                expires_at: expiresAt.toISOString(),
+                status: 'pending'
             }])
             .select()
             .single();
@@ -2593,9 +2391,14 @@ app.post('/api/realvibes', authenticateToken, upload.single('media'), async (req
             users: { id: req.user.id, username: req.user.username, profile_pic: req.user.profile_pic, college: req.user.college }
         };
 
-        io.emit('new_realvibe', enriched);
-        console.log(`✨ RealVibe posted by ${req.user.username} (${plan})`);
-        res.json({ success: true, vibe: enriched });
+        // Don't broadcast to feed — post is pending review
+        console.log(`✨ RealVibe submitted by ${req.user.username} (${plan}) — awaiting moderation`);
+        res.json({
+            success: true,
+            vibe: enriched,
+            pending: true,
+            message: 'Your post is under review. You will be notified once it is approved!'
+        });
 
     } catch (error) {
         console.error('❌ Create real vibe error:', error);
@@ -2675,6 +2478,368 @@ app.post('/api/realvibes/:vibeId/comments', authenticateToken, async (req, res) 
         res.status(500).json({ error: 'Failed to comment' });
     }
 });
+
+
+// =====================================================================
+// ==================== REAL VIBES MODERATION ROUTES ====================
+// ADD THESE ROUTES TO YOUR server.js
+// Place them right after your existing REAL VIBES ENDPOINTS block
+// =====================================================================
+
+// ── ADMIN SECRET (add this to your .env file) ─────────────────────────────
+// ADMIN_SECRET=your_super_secret_admin_key_here
+// (Use a long random string — this protects all admin routes)
+
+// ── Admin auth middleware ─────────────────────────────────────────────────
+function authenticateAdmin(req, res, next) {
+    const adminKey = req.headers['x-admin-secret'] || req.query.admin_secret;
+    if (!adminKey || adminKey !== process.env.ADMIN_SECRET) {
+        return res.status(401).json({ error: 'Unauthorized — invalid admin secret' });
+    }
+    next();
+}
+
+// ── MODIFICATION TO EXISTING POST /api/realvibes ─────────────────────────
+// In your existing POST /api/realvibes route, change the INSERT to include status: 'pending'
+// Find the .insert([{...}]) call and add:    status: 'pending'
+//
+// ALSO change the io.emit('new_realvibe', enriched) line to:
+//    io.emit('new_realvibe_pending', enriched);   // so it only shows in admin queue, not feed
+//
+// ALSO change the response to:
+//    res.json({ success: true, vibe: enriched, message: 'Your post is under review. We will notify you once approved.' });
+
+// ── MODIFICATION TO EXISTING GET /api/realvibes ──────────────────────────
+// In your existing GET /api/realvibes route, ADD this filter after .gt('expires_at', now):
+//    .eq('status', 'approved')
+// This ensures only approved vibes appear in the public feed.
+
+// ==========================================================================
+// NEW ROUTE 1: Admin — GET pending queue
+// GET /api/admin/realvibes/pending
+// ==========================================================================
+app.get('/api/admin/realvibes/pending', authenticateAdmin, async (req, res) => {
+    try {
+        const { data: vibes, error } = await supabase
+            .from('real_vibes')
+            .select(`*, users:user_id (id, username, profile_pic, college, subscription_plan)`)
+            .eq('status', 'pending')
+            .order('created_at', { ascending: true }); // oldest first — FIFO review
+
+        if (error) throw error;
+
+        res.json({ success: true, vibes: vibes || [], count: (vibes || []).length });
+    } catch (err) {
+        console.error('❌ Admin pending vibes error:', err);
+        res.status(500).json({ error: 'Failed to load pending vibes' });
+    }
+});
+
+// ==========================================================================
+// NEW ROUTE 2: Admin — GET all vibes (with status filter)
+// GET /api/admin/realvibes?status=pending|approved|rejected
+// ==========================================================================
+app.get('/api/admin/realvibes', authenticateAdmin, async (req, res) => {
+    try {
+        const { status, limit = 50, offset = 0 } = req.query;
+
+        let query = supabase
+            .from('real_vibes')
+            .select(`*, users:user_id (id, username, profile_pic, college, subscription_plan)`)
+            .order('created_at', { ascending: false })
+            .range(Number(offset), Number(offset) + Number(limit) - 1);
+
+        if (status && ['pending', 'approved', 'rejected'].includes(status)) {
+            query = query.eq('status', status);
+        }
+
+        const { data: vibes, error } = await query;
+        if (error) throw error;
+
+        res.json({ success: true, vibes: vibes || [] });
+    } catch (err) {
+        console.error('❌ Admin get vibes error:', err);
+        res.status(500).json({ error: 'Failed to load vibes' });
+    }
+});
+
+// ==========================================================================
+// NEW ROUTE 3: Admin — APPROVE a vibe
+// POST /api/admin/realvibes/:vibeId/approve
+// ==========================================================================
+app.post('/api/admin/realvibes/:vibeId/approve', authenticateAdmin, async (req, res) => {
+    try {
+        const { vibeId } = req.params;
+        const { admin_name = 'Admin' } = req.body;
+
+        // Get the vibe first
+        const { data: vibe, error: fetchErr } = await supabase
+            .from('real_vibes')
+            .select(`*, users:user_id (id, username, profile_pic, college)`)
+            .eq('id', vibeId)
+            .single();
+
+        if (fetchErr || !vibe) return res.status(404).json({ error: 'Vibe not found' });
+        if (vibe.status !== 'pending') return res.status(400).json({ error: `Vibe is already ${vibe.status}` });
+
+        // Update status to approved
+        const { error: updateErr } = await supabase
+            .from('real_vibes')
+            .update({
+                status: 'approved',
+                reviewed_at: new Date().toISOString(),
+                reviewed_by_admin: admin_name
+            })
+            .eq('id', vibeId);
+
+        if (updateErr) throw updateErr;
+
+        // Log the action
+        await supabase.from('real_vibe_moderation_log').insert([{
+            vibe_id: vibeId,
+            admin_id: admin_name,
+            action: 'approved'
+        }]);
+
+        // Notify the user
+        await supabase.from('real_vibe_notifications').insert([{
+            user_id: vibe.user_id,
+            vibe_id: vibeId,
+            type: 'approved',
+            message: '✅ Your RealVibe post has been approved and is now live!'
+        }]);
+
+        // Broadcast approved vibe to all connected users (it now goes live on the feed)
+        const enriched = {
+            ...vibe,
+            status: 'approved',
+            like_count: 0,
+            comment_count: 0,
+            is_liked: false,
+            hours_left: Math.ceil((new Date(vibe.expires_at) - new Date()) / (1000 * 60 * 60))
+        };
+        io.emit('new_realvibe', enriched);
+
+        // Also notify the specific user via socket if they're connected
+        const userSocketId = userSockets.get(vibe.user_id);
+        if (userSocketId) {
+            io.to(userSocketId).emit('realvibe_status_update', {
+                vibeId,
+                status: 'approved',
+                message: '✅ Your RealVibe has been approved and is now live!'
+            });
+        }
+
+        console.log(`✅ RealVibe ${vibeId} APPROVED by ${admin_name}`);
+        res.json({ success: true, message: 'Vibe approved and published' });
+
+    } catch (err) {
+        console.error('❌ Admin approve error:', err);
+        res.status(500).json({ error: 'Failed to approve vibe' });
+    }
+});
+
+// ==========================================================================
+// NEW ROUTE 4: Admin — REJECT a vibe
+// POST /api/admin/realvibes/:vibeId/reject
+// Body: { reason: 'vulgar' | 'spam' | 'irrelevant' | 'other', custom_message: '' }
+// ==========================================================================
+app.post('/api/admin/realvibes/:vibeId/reject', authenticateAdmin, async (req, res) => {
+    try {
+        const { vibeId } = req.params;
+        const { reason = 'vulgar', custom_message, admin_name = 'Admin' } = req.body;
+
+        const rejectionMessages = {
+            vulgar: '❌ Your RealVibe was rejected: Inappropriate or vulgar content is not allowed.',
+            spam: '❌ Your RealVibe was rejected: Spam or repetitive content is not allowed.',
+            irrelevant: '❌ Your RealVibe was rejected: Content is not relevant or does not meet posting guidelines.',
+            other: `❌ Your RealVibe was rejected. ${custom_message || 'Does not meet community guidelines.'}`
+        };
+
+        const rejectionMsg = rejectionMessages[reason] || rejectionMessages.other;
+
+        // Get the vibe
+        const { data: vibe, error: fetchErr } = await supabase
+            .from('real_vibes')
+            .select('id, user_id, media_url, status')
+            .eq('id', vibeId)
+            .single();
+
+        if (fetchErr || !vibe) return res.status(404).json({ error: 'Vibe not found' });
+        if (vibe.status !== 'pending') return res.status(400).json({ error: `Vibe is already ${vibe.status}` });
+
+        // Update status to rejected
+        const { error: updateErr } = await supabase
+            .from('real_vibes')
+            .update({
+                status: 'rejected',
+                rejection_reason: rejectionMsg,
+                reviewed_at: new Date().toISOString(),
+                reviewed_by_admin: admin_name
+            })
+            .eq('id', vibeId);
+
+        if (updateErr) throw updateErr;
+
+        // Log the action
+        await supabase.from('real_vibe_moderation_log').insert([{
+            vibe_id: vibeId,
+            admin_id: admin_name,
+            action: 'rejected',
+            rejection_reason: rejectionMsg
+        }]);
+
+        // Notify the user
+        await supabase.from('real_vibe_notifications').insert([{
+            user_id: vibe.user_id,
+            vibe_id: vibeId,
+            type: 'rejected',
+            message: rejectionMsg
+        }]);
+
+        // Notify via socket if user is online
+        const userSocketId = userSockets.get(vibe.user_id);
+        if (userSocketId) {
+            io.to(userSocketId).emit('realvibe_status_update', {
+                vibeId,
+                status: 'rejected',
+                message: rejectionMsg
+            });
+        }
+
+        console.log(`❌ RealVibe ${vibeId} REJECTED by ${admin_name} — reason: ${reason}`);
+        res.json({ success: true, message: 'Vibe rejected and user notified' });
+
+    } catch (err) {
+        console.error('❌ Admin reject error:', err);
+        res.status(500).json({ error: 'Failed to reject vibe' });
+    }
+});
+
+// ==========================================================================
+// NEW ROUTE 5: Admin — GET stats (pending count, total, etc.)
+// GET /api/admin/realvibes/stats
+// ==========================================================================
+app.get('/api/admin/realvibes/stats', authenticateAdmin, async (req, res) => {
+    try {
+        const [
+            { count: pending },
+            { count: approved },
+            { count: rejected },
+            { count: total }
+        ] = await Promise.all([
+            supabase.from('real_vibes').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
+            supabase.from('real_vibes').select('id', { count: 'exact', head: true }).eq('status', 'approved'),
+            supabase.from('real_vibes').select('id', { count: 'exact', head: true }).eq('status', 'rejected'),
+            supabase.from('real_vibes').select('id', { count: 'exact', head: true })
+        ]);
+
+        res.json({ success: true, stats: { pending, approved, rejected, total } });
+    } catch (err) {
+        console.error('❌ Admin stats error:', err);
+        res.status(500).json({ error: 'Failed to load stats' });
+    }
+});
+
+// ==========================================================================
+// NEW ROUTE 6: User — GET their own notifications (approve/reject status)
+// GET /api/realvibes/notifications
+// ==========================================================================
+app.get('/api/realvibes/notifications', authenticateToken, async (req, res) => {
+    try {
+        const { data: notifications, error } = await supabase
+            .from('real_vibe_notifications')
+            .select('*')
+            .eq('user_id', req.user.id)
+            .order('created_at', { ascending: false })
+            .limit(20);
+
+        if (error) throw error;
+
+        res.json({ success: true, notifications: notifications || [] });
+    } catch (err) {
+        console.error('❌ Get notifications error:', err);
+        res.status(500).json({ error: 'Failed to load notifications' });
+    }
+});
+
+// ==========================================================================
+// NEW ROUTE 7: User — Mark notifications as read
+// POST /api/realvibes/notifications/read
+// ==========================================================================
+app.post('/api/realvibes/notifications/read', authenticateToken, async (req, res) => {
+    try {
+        await supabase
+            .from('real_vibe_notifications')
+            .update({ is_read: true })
+            .eq('user_id', req.user.id)
+            .eq('is_read', false);
+
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to mark as read' });
+    }
+});
+
+// ==========================================================================
+// NEW ROUTE 8: User — GET their own pending/rejected vibes
+// GET /api/realvibes/my-submissions
+// ==========================================================================
+app.get('/api/realvibes/my-submissions', authenticateToken, async (req, res) => {
+    try {
+        const { data: vibes, error } = await supabase
+            .from('real_vibes')
+            .select('id, caption, media_url, media_type, status, rejection_reason, created_at, expires_at')
+            .eq('user_id', req.user.id)
+            .order('created_at', { ascending: false });
+
+        if (error) throw error;
+
+        res.json({ success: true, vibes: vibes || [] });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to load your submissions' });
+    }
+});
+
+// =====================================================================
+// IMPORTANT: CHANGES NEEDED IN YOUR EXISTING ROUTES
+// =====================================================================
+//
+// 1. In POST /api/realvibes, in the .insert([{...}]) block, ADD:
+//       status: 'pending',
+//
+// 2. In POST /api/realvibes, change:
+//       io.emit('new_realvibe', enriched);
+//    TO:
+//       // Don't broadcast pending vibes to the feed
+//       // io.emit('new_realvibe', enriched);  <-- comment out or remove
+//
+// 3. In POST /api/realvibes, change the success response to:
+//       res.json({
+//           success: true,
+//           vibe: enriched,
+//           pending: true,
+//           message: 'Your post is under review. You will be notified once it is approved!'
+//       });
+//
+// 4. In GET /api/realvibes, add .eq('status', 'approved') filter:
+//       const { data: vibes, error } = await supabase
+//           .from('real_vibes')
+//           .select(`*, users:user_id (id, username, profile_pic, college)`)
+//           .gt('expires_at', now)
+//           .eq('status', 'approved')   // <-- ADD THIS LINE
+//           .order('created_at', { ascending: false })
+//           .limit(50);
+//
+// 5. Add ADMIN_SECRET=your_secret_here to your .env file
+//
+// =====================================================================
+
+
+
+
+
+
 
 // AUTO-DELETE: Chats older than 5 days  (day 1 is deleted ON day 6)
 // Schedule: runs every hour
