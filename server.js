@@ -2145,7 +2145,7 @@ app.get('/api/dm/conversations', authenticateToken, async (req, res) => {
 // POST /api/dm/send — send a DM (handles media upload + upserts conversation)
 app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, res) => {
     try {
-        const { receiverId, content } = req.body;
+        const { receiverId, content, replyToId } = req.body;
         if (!receiverId) return res.status(400).json({ error: 'receiverId required' });
         if (!content && !req.file) return res.status(400).json({ error: 'Content or media required' });
 
@@ -2166,15 +2166,19 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
         }
 
         // Insert the message
+        const insertPayload = {
+            sender_id: senderId,
+            receiver_id: receiverId,
+            content: content?.trim() || '',
+            media_url: mediaUrl,
+            media_type: mediaType
+        };
+        if (replyToId && replyToId !== 'null' && replyToId !== 'undefined') {
+            insertPayload.reply_to_id = replyToId;
+        }
         const { data: dm, error: dmErr } = await supabase
             .from('direct_messages')
-            .insert([{
-                sender_id: senderId,
-                receiver_id: receiverId,
-                content: content?.trim() || '',
-                media_url: mediaUrl,
-                media_type: mediaType
-            }])
+            .insert([insertPayload])
             .select()
             .single();
 
@@ -2229,9 +2233,21 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
             });
         }
 
+        // Fetch reply_to data if this message is a reply
+        let replyToData = null;
+        if (dm.reply_to_id) {
+            const { data: replyMsg } = await supabase
+                .from('direct_messages')
+                .select('id, content, sender_id, media_type')
+                .eq('id', dm.reply_to_id)
+                .single();
+            replyToData = replyMsg || null;
+        }
+
         // Emit DM via Socket.IO to receiver if online
         const payload = {
             ...dm,
+            reply_to: replyToData,
             senderUser: {
                 id: req.user.id,
                 username: req.user.username,
@@ -2245,6 +2261,145 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
     } catch (error) {
         console.error('❌ DM send error:', error);
         res.status(500).json({ error: 'Failed to send DM: ' + error.message });
+    }
+});
+
+
+// POST /api/dm/react/:messageId — toggle emoji reaction on a DM
+app.post('/api/dm/react/:messageId', authenticateToken, async (req, res) => {
+    try {
+        const { messageId } = req.params;
+        const { emoji } = req.body;
+        const uid = req.user.id;
+
+        if (!emoji) return res.status(400).json({ error: 'emoji required' });
+
+        // Fetch current reactions
+        const { data: msg, error: fetchErr } = await supabase
+            .from('direct_messages')
+            .select('id, reactions, sender_id, receiver_id')
+            .eq('id', messageId)
+            .single();
+
+        if (fetchErr || !msg) return res.status(404).json({ error: 'Message not found' });
+
+        // Only sender or receiver can react
+        if (msg.sender_id !== uid && msg.receiver_id !== uid) {
+            return res.status(403).json({ error: 'Not your conversation' });
+        }
+
+        const reactions = msg.reactions || {};
+        const users = reactions[emoji] || [];
+        const alreadyReacted = users.includes(uid);
+
+        if (alreadyReacted) {
+            // Remove reaction
+            const newUsers = users.filter(id => id !== uid);
+            if (newUsers.length === 0) delete reactions[emoji];
+            else reactions[emoji] = newUsers;
+        } else {
+            // Add reaction
+            reactions[emoji] = [...users, uid];
+        }
+
+        const { data: updated, error: updateErr } = await supabase
+            .from('direct_messages')
+            .update({ reactions })
+            .eq('id', messageId)
+            .select()
+            .single();
+
+        if (updateErr) throw updateErr;
+
+        // Notify the other person via socket
+        const otherId = msg.sender_id === uid ? msg.receiver_id : msg.sender_id;
+        const otherSocket = userSockets.get(otherId);
+        if (otherSocket) {
+            io.to(otherSocket).emit('dm_reaction', { messageId, reactions, reactorId: uid });
+        }
+
+        res.json({ success: true, reactions });
+    } catch (error) {
+        console.error('❌ DM react error:', error);
+        res.status(500).json({ error: 'Failed to react: ' + error.message });
+    }
+});
+
+// GET /api/dm/mutual-follows — returns all users who mutually follow the current user
+app.get('/api/dm/mutual-follows', authenticateToken, async (req, res) => {
+    try {
+        const uid = req.user.id;
+
+        // ── Step 1: Get everyone this user follows ─────────────────────────────
+        const { data: following, error: err1 } = await supabase
+            .from('followers')
+            .select('following_id')
+            .eq('follower_id', uid);
+
+        if (err1) {
+            console.error('❌ mutual-follows step1 (get following) error:', err1);
+            return res.status(500).json({ error: 'DB error fetching following list: ' + err1.message });
+        }
+
+        if (!following || following.length === 0) {
+            return res.json({ success: true, mutualFollows: [], debug: 'user follows nobody' });
+        }
+
+        const followingIds = following.map(f => f.following_id);
+
+        // ── Step 2: Of those, find who also follows this user back ────────────
+        const { data: followersBack, error: err2 } = await supabase
+            .from('followers')
+            .select('follower_id')
+            .eq('following_id', uid)
+            .in('follower_id', followingIds);
+
+        if (err2) {
+            console.error('❌ mutual-follows step2 (get followers-back) error:', err2);
+            return res.status(500).json({ error: 'DB error fetching followers-back: ' + err2.message });
+        }
+
+        if (!followersBack || followersBack.length === 0) {
+            return res.json({ success: true, mutualFollows: [], debug: 'no one follows back yet' });
+        }
+
+        const mutualIds = followersBack.map(f => f.follower_id);
+
+        // ── Step 3: Fetch user details for all mutual follows ─────────────────
+        const { data: users, error: err3 } = await supabase
+            .from('users')
+            .select('id, username, profile_pic, last_seen, status_text')
+            .in('id', mutualIds);
+
+        if (err3) {
+            console.error('❌ mutual-follows step3 (fetch user details) error:', err3);
+            return res.status(500).json({ error: 'DB error fetching user details: ' + err3.message });
+        }
+
+        console.log(`✅ mutual-follows for ${uid}: found ${users?.length || 0} mutual(s)`);
+        res.json({ success: true, mutualFollows: users || [] });
+
+    } catch (error) {
+        console.error('❌ Mutual follows fatal error:', error);
+        res.status(500).json({ error: 'Failed to load mutual follows: ' + error.message });
+    }
+});
+
+// GET /api/dm/debug-follows — diagnostic: shows raw follower/following rows for current user
+app.get('/api/dm/debug-follows', authenticateToken, async (req, res) => {
+    try {
+        const uid = req.user.id;
+        const { data: following, error: e1 } = await supabase.from('followers').select('*').eq('follower_id', uid);
+        const { data: followers, error: e2 } = await supabase.from('followers').select('*').eq('following_id', uid);
+        res.json({
+            uid,
+            following: following || [],
+            followers: followers || [],
+            followingError: e1?.message || null,
+            followersError: e2?.message || null
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
     }
 });
 
@@ -2276,10 +2431,31 @@ app.get('/api/dm/messages/:otherId', authenticateToken, async (req, res) => {
             (a, b) => new Date(a.created_at) - new Date(b.created_at)
         );
 
+        // Enrich with reply_to data
+        const replyIds = [...new Set(messages.filter(m => m.reply_to_id).map(m => m.reply_to_id))];
+        let replyMap = {};
+        if (replyIds.length > 0) {
+            const { data: replyMsgs } = await supabase
+                .from('direct_messages')
+                .select('id, content, sender_id, media_type')
+                .in('id', replyIds);
+            if (replyMsgs) replyMsgs.forEach(r => { replyMap[r.id] = r; });
+        }
+        const enriched = messages.map(m => ({
+            ...m,
+            reply_to: m.reply_to_id ? (replyMap[m.reply_to_id] || null) : null
+        }));
+
         // Mark received messages as read (fire-and-forget)
         supabase.from('direct_messages').update({ is_read: true })
             .eq('sender_id', otherId).eq('receiver_id', uid).eq('is_read', false)
-            .then(() => {}).catch(() => {});
+            .then(() => {
+                // Notify sender via socket that messages are read (blue ticks)
+                const senderSocketId = userSockets.get(otherId);
+                if (senderSocketId) {
+                    io.to(senderSocketId).emit('dm_read', { readBy: uid, conversationWith: uid });
+                }
+            }).catch(() => {});
 
         // Reset our unread counter (fire-and-forget)
         const [u1, u2] = [uid, otherId].sort();
@@ -2288,7 +2464,7 @@ app.get('/api/dm/messages/:otherId', authenticateToken, async (req, res) => {
             .eq('user1_id', u1).eq('user2_id', u2)
             .then(() => {}).catch(() => {});
 
-        res.json({ success: true, messages });
+        res.json({ success: true, messages: enriched });
     } catch (error) {
         console.error('❌ DM messages error:', error);
         res.status(500).json({ error: 'Failed to load messages' });
