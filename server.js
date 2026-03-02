@@ -165,9 +165,9 @@ io.on('connection', (socket) => {
     socket.on('exec_mark_seen', (data) => {
         if (data.collegeName && data.userId && data.messageIds?.length) {
             socket.to(`exec_${data.collegeName}`).emit('exec_messages_seen', {
-                userId:     data.userId,
-                username:   data.username,
-                avatar:     data.avatar || null,
+                userId: data.userId,
+                username: data.username,
+                avatar: data.avatar || null,
                 messageIds: data.messageIds
             });
         }
@@ -649,6 +649,84 @@ app.get('/api/subscription/status', authenticateToken, async (req, res) => {
     } catch (error) {
         console.error('❌ Subscription status error:', error);
         res.status(500).json({ error: 'Failed to fetch subscription status' });
+    }
+});
+
+// ==================== SSO (SINGLE SIGN-ON) ENDPOINTS ====================
+
+// Generate a short-lived SSO token for cross-domain authentication
+app.post('/api/sso/generate-token', authenticateToken, async (req, res) => {
+    try {
+        const ssoToken = jwt.sign(
+            { userId: req.user.id, email: req.user.email, purpose: 'sso' },
+            process.env.JWT_SECRET,
+            { expiresIn: '60s' } // Very short-lived for security
+        );
+
+        console.log(`🔐 SSO token generated for user ${req.user.username}`);
+        res.json({ success: true, ssoToken });
+    } catch (error) {
+        console.error('❌ SSO token generation error:', error);
+        res.status(500).json({ error: 'Failed to generate SSO token' });
+    }
+});
+
+// Verify SSO token and return full user session (public endpoint — no auth required)
+app.post('/api/sso/verify-token', async (req, res) => {
+    try {
+        const { ssoToken } = req.body;
+
+        if (!ssoToken) {
+            return res.status(400).json({ error: 'SSO token required' });
+        }
+
+        // Verify the SSO token
+        const decoded = jwt.verify(ssoToken, process.env.JWT_SECRET);
+
+        // Ensure this is an SSO-purpose token
+        if (decoded.purpose !== 'sso') {
+            return res.status(403).json({ error: 'Invalid token purpose' });
+        }
+
+        // Fetch user from database
+        const { data: user, error } = await supabase
+            .from('users')
+            .select('*')
+            .eq('id', decoded.userId)
+            .single();
+
+        if (error || !user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // Generate a regular auth token for the shop session
+        const authToken = jwt.sign(
+            { userId: user.id, email: user.email },
+            process.env.JWT_SECRET,
+            { expiresIn: '30d' }
+        );
+
+        console.log(`✅ SSO verified for user ${user.username} → vibexpert.shop`);
+
+        res.json({
+            success: true,
+            token: authToken,
+            user: {
+                id: user.id,
+                username: user.username,
+                email: user.email,
+                college: user.college,
+                profile_pic: user.profile_pic,
+                bio: user.bio || '',
+                isPremium: user.is_premium || false
+            }
+        });
+    } catch (error) {
+        if (error.name === 'TokenExpiredError') {
+            return res.status(401).json({ error: 'SSO token expired. Please try again from vibexpert.online.' });
+        }
+        console.error('❌ SSO verification error:', error);
+        res.status(403).json({ error: 'Invalid SSO token' });
     }
 });
 
@@ -2455,14 +2533,14 @@ app.get('/api/dm/messages/:otherId', authenticateToken, async (req, res) => {
                 if (senderSocketId) {
                     io.to(senderSocketId).emit('dm_read', { readBy: uid, conversationWith: uid });
                 }
-            }).catch(() => {});
+            }).catch(() => { });
 
         // Reset our unread counter (fire-and-forget)
         const [u1, u2] = [uid, otherId].sort();
         const unreadField = u1 === uid ? 'unread_count_user1' : 'unread_count_user2';
         supabase.from('dm_conversations').update({ [unreadField]: 0 })
             .eq('user1_id', u1).eq('user2_id', u2)
-            .then(() => {}).catch(() => {});
+            .then(() => { }).catch(() => { });
 
         res.json({ success: true, messages: enriched });
     } catch (error) {
@@ -3260,14 +3338,14 @@ app.post('/api/executive/messages', authenticateToken, (req, res, next) => {
         const { data: inserted, error: insertError } = await supabase
             .from('executive_messages')
             .insert([{
-                sender_id:   req.user.id,
+                sender_id: req.user.id,
                 college_name: req.user.college,
-                content:     content?.trim() || '',
+                content: content?.trim() || '',
                 message_type: msgType,
-                media_url:   mediaUrl,
-                media_type:  mediaType,
-                media_name:  media ? media.originalname : null,
-                media_size:  media ? media.size : null,
+                media_url: mediaUrl,
+                media_type: mediaType,
+                media_name: media ? media.originalname : null,
+                media_size: media ? media.size : null,
                 reply_to_id: (reply_to_id && reply_to_id !== 'null' && reply_to_id !== 'undefined') ? reply_to_id : null
             }])
             .select('*')
@@ -3279,7 +3357,7 @@ app.post('/api/executive/messages', authenticateToken, (req, res, next) => {
         let pollData = null;
         if (poll_question && inserted) {
             let options = [];
-            try { options = JSON.parse(poll_options || '[]'); } catch {}
+            try { options = JSON.parse(poll_options || '[]'); } catch { }
             const { data: poll } = await supabase
                 .from('executive_polls')
                 .insert([{ message_id: inserted.id, question: poll_question, options }])
