@@ -970,6 +970,116 @@ app.post('/api/unfollow/:userId', authenticateToken, async (req, res) => {
     }
 });
 
+// ✅ ADDED: Get Followers List
+app.get('/api/followers/:userId', authenticateToken, async (req, res) => {
+    try {
+        const { userId } = req.params;
+
+        // Get all follower_id entries where following_id = userId
+        const { data: followerRows, error } = await supabase
+            .from('followers')
+            .select('follower_id, created_at')
+            .eq('following_id', userId)
+            .order('created_at', { ascending: false });
+
+        if (error) throw error;
+
+        if (!followerRows || followerRows.length === 0) {
+            return res.json({ success: true, users: [], count: 0 });
+        }
+
+        // Fetch user details for each follower
+        const followerIds = followerRows.map(r => r.follower_id);
+        const { data: users, error: usersError } = await supabase
+            .from('users')
+            .select('id, username, profile_pic, bio, college')
+            .in('id', followerIds);
+
+        if (usersError) throw usersError;
+
+        // Check which of these followers the current user is following back
+        const { data: myFollowing } = await supabase
+            .from('followers')
+            .select('following_id')
+            .eq('follower_id', req.user.id)
+            .in('following_id', followerIds);
+
+        const myFollowingSet = new Set((myFollowing || []).map(f => f.following_id));
+
+        // Merge and maintain order
+        const userMap = {};
+        (users || []).forEach(u => { userMap[u.id] = u; });
+
+        const result = followerRows
+            .filter(r => userMap[r.follower_id])
+            .map(r => ({
+                ...userMap[r.follower_id],
+                followedAt: r.created_at,
+                isFollowedByMe: myFollowingSet.has(r.follower_id)
+            }));
+
+        res.json({ success: true, users: result, count: result.length });
+    } catch (error) {
+        console.error('❌ Get followers list error:', error);
+        res.status(500).json({ error: 'Failed to fetch followers' });
+    }
+});
+
+// ✅ ADDED: Get Following List
+app.get('/api/following/:userId', authenticateToken, async (req, res) => {
+    try {
+        const { userId } = req.params;
+
+        // Get all following_id entries where follower_id = userId
+        const { data: followingRows, error } = await supabase
+            .from('followers')
+            .select('following_id, created_at')
+            .eq('follower_id', userId)
+            .order('created_at', { ascending: false });
+
+        if (error) throw error;
+
+        if (!followingRows || followingRows.length === 0) {
+            return res.json({ success: true, users: [], count: 0 });
+        }
+
+        // Fetch user details for each following
+        const followingIds = followingRows.map(r => r.following_id);
+        const { data: users, error: usersError } = await supabase
+            .from('users')
+            .select('id, username, profile_pic, bio, college')
+            .in('id', followingIds);
+
+        if (usersError) throw usersError;
+
+        // Check which of these the current user is following
+        const { data: myFollowing } = await supabase
+            .from('followers')
+            .select('following_id')
+            .eq('follower_id', req.user.id)
+            .in('following_id', followingIds);
+
+        const myFollowingSet = new Set((myFollowing || []).map(f => f.following_id));
+
+        // Merge and maintain order
+        const userMap = {};
+        (users || []).forEach(u => { userMap[u.id] = u; });
+
+        const result = followingRows
+            .filter(r => userMap[r.following_id])
+            .map(r => ({
+                ...userMap[r.following_id],
+                followedAt: r.created_at,
+                isFollowedByMe: myFollowingSet.has(r.following_id)
+            }));
+
+        res.json({ success: true, users: result, count: result.length });
+    } catch (error) {
+        console.error('❌ Get following list error:', error);
+        res.status(500).json({ error: 'Failed to fetch following' });
+    }
+});
+
 // ✅ FIXED: Changed registrationNumber to phoneNumber to match frontend
 app.post('/api/register', async (req, res) => {
     try {
