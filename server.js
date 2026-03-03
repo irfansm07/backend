@@ -779,72 +779,67 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
     try {
         const { userId } = req.params;
 
-        const { data: user, error } = await supabase
-            .from('users')
-            .select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined, created_at')
-            .eq('id', userId)
-            .single();
+        // Run ALL queries in parallel instead of sequentially (7x faster)
+        const [
+            userResult,
+            postCountResult,
+            likeCountResult,
+            isLikedResult,
+            followersCountResult,
+            followingCountResult,
+            isFollowingResult,
+            isFollowedByResult
+        ] = await Promise.all([
+            supabase.from('users')
+                .select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined, created_at')
+                .eq('id', userId).single(),
+            supabase.from('posts')
+                .select('id', { count: 'exact', head: true })
+                .eq('user_id', userId),
+            supabase.from('profile_likes')
+                .select('id', { count: 'exact', head: true })
+                .eq('user_id', userId),
+            supabase.from('profile_likes')
+                .select('id')
+                .eq('user_id', userId)
+                .eq('liker_id', req.user.id)
+                .maybeSingle(),
+            supabase.from('followers')
+                .select('id', { count: 'exact', head: true })
+                .eq('following_id', userId),
+            supabase.from('followers')
+                .select('id', { count: 'exact', head: true })
+                .eq('follower_id', userId),
+            supabase.from('followers')
+                .select('id')
+                .eq('follower_id', req.user.id)
+                .eq('following_id', userId)
+                .maybeSingle(),
+            supabase.from('followers')
+                .select('id')
+                .eq('follower_id', userId)
+                .eq('following_id', req.user.id)
+                .maybeSingle()
+        ]);
 
-        if (error || !user) {
+        const user = userResult.data;
+        if (userResult.error || !user) {
             return res.status(404).json({ error: 'User not found' });
         }
 
-        const { count: postCount } = await supabase
-            .from('posts')
-            .select('id', { count: 'exact', head: true })
-            .eq('user_id', userId);
-
-        const { count: likeCount } = await supabase
-            .from('profile_likes')
-            .select('id', { count: 'exact', head: true })
-            .eq('user_id', userId);
-
-        const { data: isLiked } = await supabase
-            .from('profile_likes')
-            .select('id')
-            .eq('user_id', userId)
-            .eq('liker_id', req.user.id)
-            .maybeSingle();
-
-        // ✅ ADDED: Fetch Follow Counts
-        const { count: followersCount } = await supabase
-            .from('followers')
-            .select('id', { count: 'exact', head: true })
-            .eq('following_id', userId);
-
-        const { count: followingCount } = await supabase
-            .from('followers')
-            .select('id', { count: 'exact', head: true })
-            .eq('follower_id', userId);
-
-        const { data: isFollowing } = await supabase
-            .from('followers')
-            .select('id')
-            .eq('follower_id', req.user.id)
-            .eq('following_id', userId)
-            .maybeSingle();
-
-        // Check if the target user also follows back (mutual follow check)
-        const { data: isFollowedBy } = await supabase
-            .from('followers')
-            .select('id')
-            .eq('follower_id', userId)
-            .eq('following_id', req.user.id)
-            .maybeSingle();
-
-        const isMutualFollow = !!isFollowing && !!isFollowedBy;
+        const isMutualFollow = !!isFollowingResult.data && !!isFollowedByResult.data;
 
         res.json({
             success: true,
             user: {
                 ...user,
-                postCount: postCount || 0,
-                followersCount: followersCount || 0,
-                followingCount: followingCount || 0,
-                profileLikes: likeCount || 0,
-                isProfileLiked: !!isLiked,
-                isFollowing: !!isFollowing,
-                isFollowedBy: !!isFollowedBy,
+                postCount: postCountResult.count || 0,
+                followersCount: followersCountResult.count || 0,
+                followingCount: followingCountResult.count || 0,
+                profileLikes: likeCountResult.count || 0,
+                isProfileLiked: !!isLikedResult.data,
+                isFollowing: !!isFollowingResult.data,
+                isFollowedBy: !!isFollowedByResult.data,
                 isMutualFollow
             }
         });
