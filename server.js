@@ -791,7 +791,7 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
             isFollowedByResult
         ] = await Promise.all([
             supabase.from('users')
-                .select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined, created_at')
+                .select('id, username, email, registration_number, college, profile_pic, bio, badges, community_joined, created_at, note')
                 .eq('id', userId).single(),
             supabase.from('posts')
                 .select('id', { count: 'exact', head: true })
@@ -878,6 +878,24 @@ app.put('/api/profile/update', authenticateToken, async (req, res) => {
     } catch (error) {
         console.error('❌ Update profile error:', error);
         res.status(500).json({ error: 'Failed to update profile' });
+    }
+});
+// ✅ Save/Clear profile note (Instagram-style)
+app.post('/api/profile/note', authenticateToken, async (req, res) => {
+    try {
+        const { note } = req.body;
+        const cleanNote = (note || '').trim().slice(0, 30);
+
+        await supabase
+            .from('users')
+            .update({ note: cleanNote || null })
+            .eq('id', req.user.id);
+
+        res.json({ success: true, note: cleanNote });
+    } catch (error) {
+        // note column might not exist yet — fail silently
+        console.error('⚠️ Note save (non-critical):', error.message);
+        res.json({ success: true, note: req.body.note || '' });
     }
 });
 
@@ -2373,61 +2391,65 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
             throw dmErr;
         }
 
-        // Alphabetically sort user IDs for the conversation record
-        const [u1, u2] = [senderId, receiverId].sort();
-        const isUser1Sender = u1 === senderId;
-        const lastMsg = content?.trim() || (mediaType ? `[${mediaType}]` : '');
+        // Conversation tracking — non-critical, don't fail the whole request
+        try {
+            const [u1, u2] = [senderId, receiverId].sort();
+            const isUser1Sender = u1 === senderId;
+            const lastMsg = content?.trim() || (mediaType ? `[${mediaType}]` : '');
 
-        // Check if conversation already exists
-        const { data: existingConv } = await supabase
-            .from('dm_conversations')
-            .select('id, unread_count_user1, unread_count_user2')
-            .eq('user1_id', u1)
-            .eq('user2_id', u2)
-            .maybeSingle();
+            const { data: existingConv } = await supabase
+                .from('dm_conversations')
+                .select('id, unread_count_user1, unread_count_user2')
+                .eq('user1_id', u1)
+                .eq('user2_id', u2)
+                .maybeSingle();
 
-        if (existingConv) {
-            // Update existing — increment only the receiver's counter
-            const updateData = {
-                last_message: lastMsg,
-                last_message_at: new Date().toISOString()
-            };
-            if (isUser1Sender) {
-                updateData.unread_count_user2 = (existingConv.unread_count_user2 || 0) + 1;
+            if (existingConv) {
+                const updateData = {
+                    last_message: lastMsg,
+                    last_message_at: new Date().toISOString()
+                };
+                if (isUser1Sender) {
+                    updateData.unread_count_user2 = (existingConv.unread_count_user2 || 0) + 1;
+                } else {
+                    updateData.unread_count_user1 = (existingConv.unread_count_user1 || 0) + 1;
+                }
+                await supabase.from('dm_conversations').update(updateData).eq('id', existingConv.id);
             } else {
-                updateData.unread_count_user1 = (existingConv.unread_count_user1 || 0) + 1;
+                const insertData = {
+                    user1_id: u1,
+                    user2_id: u2,
+                    last_message: lastMsg,
+                    last_message_at: new Date().toISOString(),
+                    unread_count_user1: isUser1Sender ? 0 : 1,
+                    unread_count_user2: isUser1Sender ? 1 : 0
+                };
+                await supabase.from('dm_conversations').insert([insertData]).catch(() => {
+                    return supabase.from('dm_conversations')
+                        .update({ last_message: lastMsg, last_message_at: new Date().toISOString() })
+                        .eq('user1_id', u1).eq('user2_id', u2);
+                });
             }
-            await supabase.from('dm_conversations').update(updateData).eq('id', existingConv.id);
-        } else {
-            // Insert new conversation
-            const insertData = {
-                user1_id: u1,
-                user2_id: u2,
-                last_message: lastMsg,
-                last_message_at: new Date().toISOString(),
-                unread_count_user1: isUser1Sender ? 0 : 1,
-                unread_count_user2: isUser1Sender ? 1 : 0
-            };
-            await supabase.from('dm_conversations').insert([insertData]).catch(() => {
-                // Race condition: already inserted by another request — update instead
-                return supabase.from('dm_conversations')
-                    .update({ last_message: lastMsg, last_message_at: new Date().toISOString() })
-                    .eq('user1_id', u1).eq('user2_id', u2);
-            });
+        } catch (convErr) {
+            console.error('⚠️ DM conversation update failed (non-critical):', convErr.message);
         }
 
-        // Fetch reply_to data if this message is a reply
+        // Fetch reply_to data — non-critical
         let replyToData = null;
-        if (dm.reply_to_id) {
-            const { data: replyMsg } = await supabase
-                .from('direct_messages')
-                .select('id, content, sender_id, media_type')
-                .eq('id', dm.reply_to_id)
-                .single();
-            replyToData = replyMsg || null;
+        try {
+            if (dm.reply_to_id) {
+                const { data: replyMsg } = await supabase
+                    .from('direct_messages')
+                    .select('id, content, sender_id, media_type')
+                    .eq('id', dm.reply_to_id)
+                    .single();
+                replyToData = replyMsg || null;
+            }
+        } catch (replyErr) {
+            console.error('⚠️ Reply fetch failed (non-critical):', replyErr.message);
         }
 
-        // Emit DM via Socket.IO to receiver if online
+        // Emit DM via Socket.IO — non-critical
         const payload = {
             ...dm,
             reply_to: replyToData,
@@ -2437,8 +2459,12 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
                 profile_pic: req.user.profile_pic
             }
         };
-        const receiverSocketId = userSockets.get(receiverId);
-        if (receiverSocketId) io.to(receiverSocketId).emit('new_dm', payload);
+        try {
+            const receiverSocketId = userSockets.get(receiverId);
+            if (receiverSocketId) io.to(receiverSocketId).emit('new_dm', payload);
+        } catch (socketErr) {
+            console.error('⚠️ Socket emit failed (non-critical):', socketErr.message);
+        }
 
         res.json({ success: true, dm: payload });
     } catch (error) {
