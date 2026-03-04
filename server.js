@@ -832,6 +832,72 @@ app.get('/api/shop/orders', authenticateToken, async (req, res) => {
     }
 });
 
+// ==================== ADMIN ENDPOINTS ====================
+
+// Get all shop orders for Admin Panel
+app.get('/api/admin/shop-orders', authenticateToken, async (req, res) => {
+    try {
+        // SECURITY: Hardcoded admin email
+        const ADMIN_EMAIL = 'smirfan9247@gmail.com';
+
+        if (req.user.email !== ADMIN_EMAIL) {
+            return res.status(403).json({ error: 'Access denied. Only admins can view this data.' });
+        }
+
+        const { data: orders, error } = await supabase
+            .from('shop_orders')
+            .select(`
+                *,
+                users (
+                    username,
+                    email
+                )
+            `)
+            .order('created_at', { ascending: false });
+
+        if (error) {
+            console.error('Supabase error:', error);
+            throw error;
+        }
+
+        res.json({ success: true, orders: orders || [] });
+    } catch (error) {
+        console.error('❌ Admin fetch orders error:', error);
+        res.status(500).json({ error: 'Failed to fetch all orders for admin' });
+    }
+});
+
+// Update order status (Admin Panel)
+app.put('/api/admin/shop-orders/:orderId/status', authenticateToken, async (req, res) => {
+    try {
+        // SECURITY: Hardcoded admin email
+        const ADMIN_EMAIL = 'smirfan9247@gmail.com';
+
+        if (req.user.email !== ADMIN_EMAIL) {
+            return res.status(403).json({ error: 'Access denied. Only admins can update orders.' });
+        }
+
+        const { orderId } = req.params;
+        const { status } = req.body;
+
+        const { error } = await supabase
+            .from('shop_orders')
+            .update({ status, updated_at: new Date().toISOString() })
+            .eq('order_id', orderId);
+
+        if (error) {
+            console.error('Supabase error:', error);
+            throw error;
+        }
+
+        res.json({ success: true, message: 'Order status successfully updated!' });
+    } catch (error) {
+        console.error('❌ Admin order update error:', error);
+        res.status(500).json({ error: 'Failed to update order status' });
+    }
+});
+
+
 // ==================== SSO (SINGLE SIGN-ON) ENDPOINTS ====================
 
 // Generate a short-lived SSO token for cross-domain authentication
