@@ -652,6 +652,186 @@ app.get('/api/subscription/status', authenticateToken, async (req, res) => {
     }
 });
 
+// ==================== SHOP ORDER ENDPOINTS ====================
+
+// Create order for vibexpert.shop product purchases
+app.post('/api/shop/create-order', authenticateToken, async (req, res) => {
+    try {
+        const { items, totalAmount, shippingAddress } = req.body;
+
+        if (!items || !items.length || !totalAmount) {
+            return res.status(400).json({ error: 'Cart items and total amount are required' });
+        }
+
+        if (totalAmount < 1 || totalAmount > 500000) {
+            return res.status(400).json({ error: 'Invalid amount' });
+        }
+
+        const options = {
+            amount: Math.round(totalAmount * 100), // Razorpay expects paise
+            currency: 'INR',
+            receipt: `shop_${req.user.id.slice(-8)}_${Date.now()}`,
+            notes: {
+                userId: req.user.id,
+                username: req.user.username,
+                itemCount: items.length,
+                source: 'vibexpert.shop'
+            }
+        };
+
+        const order = await razorpay.orders.create(options);
+
+        // Save order to database
+        await supabase.from('shop_orders').insert([{
+            user_id: req.user.id,
+            order_id: order.id,
+            items: JSON.stringify(items),
+            total_amount: totalAmount,
+            shipping_address: shippingAddress ? JSON.stringify(shippingAddress) : null,
+            status: 'created'
+        }]);
+
+        console.log(`🛒 Shop order created: ${order.id} for user ${req.user.username} — ₹${totalAmount}`);
+
+        res.json({
+            success: true,
+            orderId: order.id,
+            amount: totalAmount,
+            currency: 'INR',
+            razorpayKeyId: process.env.RAZORPAY_KEY_ID
+        });
+
+    } catch (error) {
+        console.error('❌ Shop create order error:', error);
+        res.status(500).json({ error: 'Failed to create shop order' });
+    }
+});
+
+// Verify payment for vibexpert.shop product purchases
+app.post('/api/shop/verify-payment', authenticateToken, async (req, res) => {
+    try {
+        const {
+            razorpay_order_id,
+            razorpay_payment_id,
+            razorpay_signature,
+            shippingAddress
+        } = req.body;
+
+        if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+            return res.status(400).json({ error: 'Missing payment details' });
+        }
+
+        // Verify signature
+        const generated_signature = crypto
+            .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+            .update(razorpay_order_id + '|' + razorpay_payment_id)
+            .digest('hex');
+
+        if (generated_signature !== razorpay_signature) {
+            console.error('❌ Invalid shop payment signature');
+            await supabase
+                .from('shop_orders')
+                .update({ status: 'failed', updated_at: new Date().toISOString() })
+                .eq('order_id', razorpay_order_id);
+
+            return res.status(400).json({ success: false, error: 'Invalid payment signature' });
+        }
+
+        // Update order status
+        const updateData = {
+            payment_id: razorpay_payment_id,
+            signature: razorpay_signature,
+            status: 'paid',
+            updated_at: new Date().toISOString()
+        };
+        if (shippingAddress) {
+            updateData.shipping_address = JSON.stringify(shippingAddress);
+        }
+
+        await supabase
+            .from('shop_orders')
+            .update(updateData)
+            .eq('order_id', razorpay_order_id);
+
+        // Fetch order details for email
+        const { data: orderData } = await supabase
+            .from('shop_orders')
+            .select('*')
+            .eq('order_id', razorpay_order_id)
+            .single();
+
+        let itemsList = '';
+        try {
+            const items = JSON.parse(orderData.items);
+            itemsList = items.map(i =>
+                `<li>${i.name} × ${i.quantity} — ₹${(i.price * i.quantity).toLocaleString()}</li>`
+            ).join('');
+        } catch { itemsList = '<li>Your items</li>'; }
+
+        // Send confirmation email
+        sendEmail(
+            req.user.email,
+            '🛍️ Order Confirmed — VibExpert Shop',
+            `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+              <h1 style="color: #7c3aed;">Order Confirmed! 🎉</h1>
+              <p style="font-size: 16px;">Hi ${req.user.username},</p>
+              <p>Your order has been placed successfully.</p>
+              
+              <div style="background: #F3F4F6; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                <h3 style="margin-top: 0;">Order Details:</h3>
+                <ul>${itemsList}</ul>
+                <p style="font-weight: bold; font-size: 18px; margin-bottom: 0;">
+                  Total: ₹${orderData.total_amount.toLocaleString()}
+                </p>
+              </div>
+              
+              <p style="font-size: 14px; color: #6B7280;">
+                Order ID: ${razorpay_order_id}<br>
+                Payment ID: ${razorpay_payment_id}
+              </p>
+              
+              <p>We'll notify you once your order ships!</p>
+              
+              <p style="margin-top: 30px;">
+                Best regards,<br>
+                Team VibExpert Shop
+              </p>
+            </div>
+          `
+        );
+
+        console.log(`✅ Shop payment verified: ${razorpay_payment_id} for user ${req.user.username}`);
+
+        res.json({
+            success: true,
+            message: 'Payment verified — your order has been placed!',
+            orderId: razorpay_order_id,
+            paymentId: razorpay_payment_id
+        });
+
+    } catch (error) {
+        console.error('❌ Shop payment verification error:', error);
+        res.status(500).json({ error: 'Payment verification failed' });
+    }
+});
+
+// Get order history for vibexpert.shop
+app.get('/api/shop/orders', authenticateToken, async (req, res) => {
+    try {
+        const { data: orders } = await supabase
+            .from('shop_orders')
+            .select('*')
+            .eq('user_id', req.user.id)
+            .order('created_at', { ascending: false });
+
+        res.json({ success: true, orders: orders || [] });
+    } catch (error) {
+        console.error('❌ Shop orders fetch error:', error);
+        res.status(500).json({ error: 'Failed to fetch order history' });
+    }
+});
+
 // ==================== SSO (SINGLE SIGN-ON) ENDPOINTS ====================
 
 // Generate a short-lived SSO token for cross-domain authentication
