@@ -602,8 +602,9 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
         const user = userResult.data;
         if (userResult.error || !user) return res.status(404).json({ error: 'User not found' });
 
-        // Get post count from MongoDB
-        const postCount = await Post.countDocuments({ userId });
+        // Get post count from MongoDB — won't crash profile if Mongo is down
+        let postCount = 0;
+        try { postCount = await Post.countDocuments({ userId }); } catch (_) {}
 
         const isMutualFollow = !!isFollowingResult.data && !!isFollowedByResult.data;
         res.json({ success: true, user: { ...user, postCount, followersCount: followersCountResult.count || 0, followingCount: followingCountResult.count || 0, profileLikes: likeCountResult.count || 0, isProfileLiked: !!isLikedResult.data, isFollowing: !!isFollowingResult.data, isFollowedBy: !!isFollowedByResult.data, isMutualFollow } });
@@ -751,7 +752,12 @@ app.post('/api/login', async (req, res) => {
             supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', user.id),
             supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', user.id)
         ]);
-        const postCount = await Post.countDocuments({ userId: user.id });
+        
+        // ✅ MongoDB failure won't break login
+        let postCount = 0;
+        try { postCount = await Post.countDocuments({ userId: user.id }); } catch (_) {}
+
+
         res.json({ success: true, token, user: { id: user.id, username: user.username, email: user.email, college: user.college, communityJoined: user.community_joined, profilePic: user.profile_pic, registrationNumber: user.registration_number, badges: user.badges || [], bio: user.bio || '', isPremium: user.is_premium || false, subscriptionPlan: user.subscription_plan || null, followersCount: followersCount || 0, followingCount: followingCount || 0, postCount } });
     } catch (error) {
         res.status(500).json({ error: 'Login failed' });
@@ -965,7 +971,8 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
         };
 
         io.emit('new_post', enrichedPost);
-        const postCount = await Post.countDocuments({ userId: req.user.id });
+        let postCount = 0;
+        try { postCount = await Post.countDocuments({ userId: req.user.id }); } catch (_) {}
         res.json({ success: true, post: enrichedPost, postCount, message: 'Post created successfully' });
     } catch (error) {
         console.error('❌ Create post error:', error);
@@ -1851,4 +1858,5 @@ server.listen(PORT, () => {
     console.log(`✅ Redis     → Notifications`);
     console.log(`✅ Socket.IO → Real-time events`);
     console.log(`💳 Razorpay  → Payments active`);
-});
+})
+;
