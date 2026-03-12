@@ -801,14 +801,34 @@ app.post('/api/college/request-verification', authenticateToken, async (req, res
     try {
         const { collegeName, collegeEmail } = req.body;
         if (!collegeName || !collegeEmail) return res.status(400).json({ error: 'College name and email required' });
-        if (req.user.college) return res.status(400).json({ error: 'You are already connected to a college community' });
+        // Allow re-verification attempt even if user already has college set in localStorage
+        // Only block if confirmed in DB (req.user comes from DB via authenticateToken)
+        if (req.user.college) return res.status(400).json({ error: 'You are already connected to ' + req.user.college });
         const code = generateCode();
         const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
-        await supabase.from('codes').insert([{ user_id: req.user.id, code, type: 'college', meta: { collegeName, collegeEmail }, expires_at: expiresAt.toISOString() }]);
-        sendEmail(collegeEmail, `🎓 College Verification Code - VibeXpert`, `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;"><h1 style="color:#4F46E5;">College Verification</h1><p>Hi ${req.user.username},</p><p>Verify <strong>${collegeName}</strong>:</p><div style="background:#F3F4F6;padding:20px;text-align:center;border-radius:8px;"><h2 style="font-size:32px;letter-spacing:4px;">${code}</h2></div><p>Expires in 15 minutes.</p></div>`).catch(console.error);
-        res.json({ success: true, message: 'Verification code sent' });
+        // Delete any existing pending codes for this user first to avoid duplicates
+        await supabase.from('codes').delete().eq('user_id', req.user.id).eq('type', 'college');
+        // Insert new code
+        const { error: insertError } = await supabase.from('codes').insert([{
+            user_id: req.user.id,
+            code,
+            type: 'college',
+            meta: { collegeName, collegeEmail },
+            expires_at: expiresAt.toISOString()
+        }]);
+        if (insertError) {
+            console.error('❌ codes insert error:', insertError);
+            return res.status(500).json({ error: 'Failed to save verification code: ' + insertError.message });
+        }
+        const emailSent = await sendEmail(collegeEmail, '🎓 College Verification Code - VibeXpert', `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;"><h1 style="color:#4F46E5;">College Verification</h1><p>Hi ${req.user.username},</p><p>Verify <strong>${collegeName}</strong>:</p><div style="background:#F3F4F6;padding:20px;text-align:center;border-radius:8px;"><h2 style="font-size:32px;letter-spacing:4px;">${code}</h2></div><p>Expires in 15 minutes.</p></div>`);
+        if (!emailSent) {
+            console.error('❌ Email failed to send for college verification');
+            return res.status(500).json({ error: 'Failed to send email. Check your email address and try again.' });
+        }
+        res.json({ success: true, message: 'Verification code sent to ' + collegeEmail });
     } catch (error) {
-        res.status(500).json({ error: 'Failed to send verification code' });
+        console.error('❌ request-verification error:', error);
+        res.status(500).json({ error: 'Failed to send verification code: ' + error.message });
     }
 });
 
@@ -816,15 +836,28 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
     try {
         const { code } = req.body;
         if (!code) return res.status(400).json({ error: 'Verification code required' });
-        const { data: codeData } = await supabase.from('codes').select('*').eq('user_id', req.user.id).eq('code', code).eq('type', 'college').gte('expires_at', new Date().toISOString()).maybeSingle();
-        if (!codeData) return res.status(400).json({ error: 'Invalid or expired code' });
-        const { collegeName } = codeData.meta;
-        const newBadges = [...(req.user.badges || []), 'verified_student'];
-        await supabase.from('users').update({ college: collegeName, community_joined: true, badges: newBadges }).eq('id', req.user.id);
+        // Trim code in case user added spaces
+        const cleanCode = String(code).trim();
+        const { data: codeData, error: selectError } = await supabase.from('codes').select('*').eq('user_id', req.user.id).eq('code', cleanCode).eq('type', 'college').gte('expires_at', new Date().toISOString()).maybeSingle();
+        if (selectError) {
+            console.error('❌ codes select error:', selectError);
+            return res.status(500).json({ error: 'Database error: ' + selectError.message });
+        }
+        if (!codeData) return res.status(400).json({ error: 'Invalid or expired code. Request a new one.' });
+        const { collegeName, collegeEmail } = codeData.meta;
+        // Remove duplicate badge if already present
+        const existingBadges = Array.isArray(req.user.badges) ? req.user.badges : [];
+        const newBadges = existingBadges.includes('verified_student') ? existingBadges : [...existingBadges, 'verified_student'];
+        const { error: updateError } = await supabase.from('users').update({ college: collegeName, community_joined: true, badges: newBadges }).eq('id', req.user.id);
+        if (updateError) {
+            console.error('❌ users update error:', updateError);
+            return res.status(500).json({ error: 'Failed to update profile: ' + updateError.message });
+        }
         await supabase.from('codes').delete().eq('id', codeData.id);
-        res.json({ success: true, message: 'College verification successful', college: collegeName, badges: newBadges });
+        res.json({ success: true, message: 'College verified! Welcome to ' + collegeName, college: collegeName, collegeEmail, communityJoined: true, badges: newBadges });
     } catch (error) {
-        res.status(500).json({ error: 'Verification failed' });
+        console.error('❌ college/verify error:', error);
+        res.status(500).json({ error: 'Verification failed: ' + error.message });
     }
 });
 
