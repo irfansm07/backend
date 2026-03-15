@@ -839,6 +839,128 @@ app.post('/api/reset-password', async (req, res) => {
     }
 });
 
+// ══════════════════════════════════════════════════════════════
+// GOOGLE AUTH (for Flutter app)
+// ══════════════════════════════════════════════════════════════
+app.post('/api/auth/google', async (req, res) => {
+    try {
+        const { idToken, email, displayName, photoUrl } = req.body;
+        if (!idToken || !email) {
+            return res.status(400).json({ error: 'Google ID token and email are required' });
+        }
+
+        // Verify Google ID token using Google's tokeninfo endpoint
+        let googleUser;
+        try {
+            const googleRes = await axios.get(`https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`);
+            googleUser = googleRes.data;
+        } catch (tokenError) {
+            console.error('❌ Google token verification failed:', tokenError.message);
+            return res.status(401).json({ error: 'Invalid Google token' });
+        }
+
+        // Verify email matches
+        if (googleUser.email !== email) {
+            return res.status(401).json({ error: 'Email mismatch' });
+        }
+
+        // Check if user already exists with this email
+        const { data: existingUser } = await supabase.from('users')
+            .select('*')
+            .eq('email', email)
+            .maybeSingle();
+
+        let user;
+
+        if (existingUser) {
+            // Existing user — log them in
+            user = existingUser;
+
+            // Update profile pic from Google if they don't have one
+            if (!user.profile_pic && photoUrl) {
+                await supabase.from('users')
+                    .update({ profile_pic: photoUrl })
+                    .eq('id', user.id);
+                user.profile_pic = photoUrl;
+            }
+        } else {
+            // New user — create account (no password needed for Google auth)
+            const username = displayName || email.split('@')[0];
+            const randomPassword = crypto.randomBytes(32).toString('hex');
+            const passwordHash = await bcrypt.hash(randomPassword, 10);
+
+            const { data: newUser, error: insertError } = await supabase.from('users')
+                .insert([{
+                    username,
+                    email,
+                    password_hash: passwordHash,
+                    registration_number: `google_${Date.now()}`,
+                    profile_pic: photoUrl || null,
+                    auth_provider: 'google'
+                }])
+                .select()
+                .single();
+
+            if (insertError) {
+                console.error('❌ Google signup insert error:', insertError);
+                return res.status(500).json({ error: 'Failed to create account: ' + insertError.message });
+            }
+
+            user = newUser;
+
+            // Send welcome email
+            sendEmail(email, '🎉 Welcome to VibeXpert!', `
+                <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
+                    <h1 style="color:#4F46E5;">Welcome to VibeXpert, ${username}! 🎉</h1>
+                    <p>You signed up with Google. Ready to vibe? Let's go! 🚀</p>
+                </div>
+            `).catch(console.error);
+        }
+
+        // Generate JWT token
+        const token = jwt.sign(
+            { userId: user.id, email: user.email },
+            process.env.JWT_SECRET,
+            { expiresIn: '30d' }
+        );
+
+        // Get social counts
+        const [{ count: followersCount }, { count: followingCount }] = await Promise.all([
+            supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', user.id),
+            supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', user.id)
+        ]);
+
+        let postCount = 0;
+        try { postCount = await Post.countDocuments({ userId: user.id }); } catch (_) {}
+
+        res.json({
+            success: true,
+            token,
+            user: {
+                id: user.id,
+                username: user.username,
+                email: user.email,
+                college: user.college,
+                communityJoined: user.community_joined,
+                profilePic: user.profile_pic,
+                profile_pic: user.profile_pic,
+                cover_photo: user.cover_photo || null,
+                registrationNumber: user.registration_number,
+                badges: user.badges || [],
+                bio: user.bio || '',
+                isPremium: user.is_premium || false,
+                subscriptionPlan: user.subscription_plan || null,
+                followersCount: followersCount || 0,
+                followingCount: followingCount || 0,
+                postCount
+            }
+        });
+    } catch (error) {
+        console.error('❌ Google auth error:', error);
+        res.status(500).json({ error: 'Google authentication failed' });
+    }
+});
+
 app.post('/api/college/request-verification', authenticateToken, async (req, res) => {
     try {
         const { collegeName, collegeEmail } = req.body;
