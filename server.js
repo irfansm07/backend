@@ -591,7 +591,7 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
     try {
         const { userId } = req.params;
         const [userResult, followersCountResult, followingCountResult, isFollowingResult, isFollowedByResult, likeCountResult, isLikedResult] = await Promise.all([
-            supabase.from('users').select('id,username,email,registration_number,college,profile_pic,bio,badges,community_joined,created_at,note').eq('id', userId).single(),
+            supabase.from('users').select('id,username,email,registration_number,college,profile_pic,cover_photo,bio,badges,community_joined,created_at,note').eq('id', userId).single(),
             supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId),
             supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', userId),
             supabase.from('followers').select('id').eq('follower_id', req.user.id).eq('following_id', userId).maybeSingle(),
@@ -639,6 +639,48 @@ app.post('/api/profile/note', authenticateToken, async (req, res) => {
         res.json({ success: true, note: req.body.note || '' });
     }
 });
+
+// ── Profile Photo Upload ──────────────────────────────────────────────────────
+app.post('/api/user/profile-photo', authenticateToken, upload.single('profilePhoto'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+        const result = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/profiles');
+        const photoUrl = result.secure_url;
+        const { error } = await supabase.from('users').update({ profile_pic: photoUrl }).eq('id', req.user.id);
+        if (error) throw error;
+        res.json({ success: true, photoUrl });
+    } catch (error) {
+        console.error('Profile photo upload error:', error);
+        res.status(500).json({ error: 'Failed to upload profile photo' });
+    }
+});
+
+app.delete('/api/user/profile-photo', authenticateToken, async (req, res) => {
+    try {
+        const { error } = await supabase.from('users').update({ profile_pic: null }).eq('id', req.user.id);
+        if (error) throw error;
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Profile photo remove error:', error);
+        res.status(500).json({ error: 'Failed to remove profile photo' });
+    }
+});
+
+// ── Cover Photo Upload ────────────────────────────────────────────────────────
+app.post('/api/user/cover-photo', authenticateToken, upload.single('coverPhoto'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+        const result = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/covers');
+        const photoUrl = result.secure_url;
+        const { error } = await supabase.from('users').update({ cover_photo: photoUrl }).eq('id', req.user.id);
+        if (error) throw error;
+        res.json({ success: true, photoUrl });
+    } catch (error) {
+        console.error('Cover photo upload error:', error);
+        res.status(500).json({ error: 'Failed to upload cover photo' });
+    }
+});
+
 
 app.post('/api/follow/:userId', authenticateToken, async (req, res) => {
     try {
@@ -758,7 +800,7 @@ app.post('/api/login', async (req, res) => {
         try { postCount = await Post.countDocuments({ userId: user.id }); } catch (_) {}
 
 
-        res.json({ success: true, token, user: { id: user.id, username: user.username, email: user.email, college: user.college, communityJoined: user.community_joined, profilePic: user.profile_pic, registrationNumber: user.registration_number, badges: user.badges || [], bio: user.bio || '', isPremium: user.is_premium || false, subscriptionPlan: user.subscription_plan || null, followersCount: followersCount || 0, followingCount: followingCount || 0, postCount } });
+        res.json({ success: true, token, user: { id: user.id, username: user.username, email: user.email, college: user.college, communityJoined: user.community_joined, profilePic: user.profile_pic, profile_pic: user.profile_pic, cover_photo: user.cover_photo || null, registrationNumber: user.registration_number, badges: user.badges || [], bio: user.bio || '', isPremium: user.is_premium || false, subscriptionPlan: user.subscription_plan || null, followersCount: followersCount || 0, followingCount: followingCount || 0, postCount } });
     } catch (error) {
         res.status(500).json({ error: 'Login failed' });
     }
