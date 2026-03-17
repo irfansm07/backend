@@ -1093,6 +1093,111 @@ app.get('/api/posts/community', authenticateToken, async (req, res) => {
     }
 });
 
+// GET liked posts
+app.get('/api/posts/liked', authenticateToken, async (req, res) => {
+    try {
+        const [postLikes, vibeLikes] = await Promise.all([
+            PostLike.find({ userId: req.user.id }).sort({ createdAt: -1 }).limit(50),
+            RealVibeLike.find({ userId: req.user.id }).sort({ createdAt: -1 }).limit(50)
+        ]);
+        
+        console.log(`Debug: User ${req.user.id} has ${postLikes.length} post likes and ${vibeLikes.length} vibe likes`);
+
+        const postIds = postLikes.map(l => l.postId);
+        const vibeIds = vibeLikes.map(l => l.vibeId);
+
+        const [posts, vibes] = await Promise.all([
+            Post.find({ _id: { $in: postIds } }),
+            RealVibe.find({ _id: { $in: vibeIds } })
+        ]);
+
+        const postMap = {};
+        posts.forEach(p => { postMap[p._id.toString()] = p; });
+        
+        const vibeMap = {};
+        vibes.forEach(v => { vibeMap[v._id.toString()] = v; });
+
+        // Map likes to full objects with custom timestamp for sorting
+        const items = [
+            ...postLikes.map(l => ({ type: 'post', data: postMap[l.postId.toString()], likedAt: l.createdAt })),
+            ...vibeLikes.map(l => ({ type: 'vibe', data: vibeMap[l.vibeId.toString()], likedAt: l.createdAt }))
+        ].filter(item => item.data);
+
+        // Sort by when they were liked
+        items.sort((a, b) => b.likedAt - a.likedAt);
+
+        // Enrich and normalize
+        const enrichedItems = await Promise.all(items.map(async (item) => {
+            if (item.type === 'post') {
+                const enriched = await enrichPosts([item.data], req.user.id);
+                return enriched[0];
+            } else {
+                // Manually enrich RealVibe to match post structure
+                const vibe = item.data;
+                const [likeCount, commentCount, isLiked] = await Promise.all([
+                    RealVibeLike.countDocuments({ vibeId: vibe._id }),
+                    RealVibeComment.countDocuments({ vibeId: vibe._id }),
+                    RealVibeLike.findOne({ vibeId: vibe._id, userId: req.user.id })
+                ]);
+                
+                // Get user info from Supabase
+                const { data: userData } = await supabase.from('users').select('id,username,profile_pic,college').eq('id', vibe.userId).maybeSingle();
+
+                return {
+                    ...vibe.toObject(),
+                    id: vibe._id.toString(),
+                    is_real_vibe: true,
+                    content: vibe.caption || '',
+                    media: [{ url: vibe.mediaUrl, type: vibe.mediaType }],
+                    users: userData || { id: vibe.userId, username: 'User', profile_pic: null, college: null },
+                    like_count: likeCount,
+                    comment_count: commentCount,
+                    is_liked: !!isLiked
+                };
+            }
+        }));
+
+        console.log(`Debug: Returning ${enrichedItems.length} total liked items`);
+        res.json({ success: true, posts: enrichedItems });
+    } catch (error) {
+        console.error('❌ Liked posts error:', error);
+        res.status(500).json({ error: 'Failed to load liked posts' });
+    }
+});
+
+// GET commented posts
+app.get('/api/posts/commented', authenticateToken, async (req, res) => {
+    try {
+        const comments = await PostComment.find({ userId: req.user.id }).sort({ createdAt: -1 }).limit(50);
+        const postIds = [...new Set(comments.map(c => c.postId.toString()))];
+        const posts = await Post.find({ _id: { $in: postIds } });
+        // Order by latest comment
+        const postMap = {};
+        posts.forEach(p => { postMap[p._id.toString()] = p; });
+        const sortedPosts = postIds.map(id => postMap[id]).filter(Boolean);
+        const enriched = await enrichPosts(sortedPosts, req.user.id);
+        res.json({ success: true, posts: enriched });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to load commented posts' });
+    }
+});
+
+// GET shared posts
+app.get('/api/posts/shared', authenticateToken, async (req, res) => {
+    try {
+        const shares = await PostShare.find({ userId: req.user.id }).sort({ createdAt: -1 }).limit(50);
+        const postIds = shares.map(s => s.postId);
+        const posts = await Post.find({ _id: { $in: postIds } });
+        const postMap = {};
+        posts.forEach(p => { postMap[p._id.toString()] = p; });
+        const sortedPosts = postIds.map(id => postMap[id.toString()]).filter(Boolean);
+        const enriched = await enrichPosts(sortedPosts, req.user.id);
+        res.json({ success: true, posts: enriched });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to load shared posts' });
+    }
+});
+
 // GET all posts (global feed)
 app.get('/api/posts', authenticateToken, async (req, res) => {
     try {
