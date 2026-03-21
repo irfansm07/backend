@@ -26,7 +26,8 @@ const {
     Post, PostLike, PostComment, PostShare,
     RealVibe, RealVibeLike, RealVibeComment,
     BannedUser, PlatformNotification, SellerRequest,
-    ClientRequest, ClientProduct, OrderMessage
+    ClientRequest, ClientProduct, OrderMessage,
+    Complaint
 } = require('./config/mongodb');
 const redis = require('./config/redis');
 
@@ -913,6 +914,79 @@ app.post('/api/client/setup', async (req, res) => {
     } catch (error) {
         console.error('Client setup error:', error);
         res.status(500).json({ error: 'Failed to set up account' });
+    }
+});
+// ══════════════════════════════════════════════════════════════
+// COMPLAINTS / SUPPORT TICKETS
+// ══════════════════════════════════════════════════════════════
+
+// Submit a new complaint (Public or Authenticated)
+app.post('/api/complaints', async (req, res) => {
+    try {
+        const { userId, email, name, type, subject, message, source } = req.body;
+        if (!email || !name || !subject || !message || !source) 
+            return res.status(400).json({ error: 'Required fields missing' });
+        
+        const complaint = await Complaint.create({ 
+            userId: userId || null, 
+            email, name, 
+            type: type || 'support', 
+            subject, message, source 
+        });
+        res.json({ success: true, complaint, message: 'Your complaint/support ticket has been submitted successfully.' });
+    } catch (error) {
+        console.error('Complaint submit error:', error);
+        res.status(500).json({ error: 'Failed to submit complaint' });
+    }
+});
+
+// Admin: Get all complaints
+app.get('/api/admin/complaints', authenticateToken, async (req, res) => {
+    try {
+        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
+        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        
+        const complaints = await Complaint.find().sort({ createdAt: -1 });
+        res.json({ success: true, complaints });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch complaints' });
+    }
+});
+
+// Admin: Respond to complaint
+app.put('/api/admin/complaints/:id', authenticateToken, async (req, res) => {
+    try {
+        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
+        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        
+        const { status, adminResponse } = req.body;
+        const complaint = await Complaint.findById(req.params.id);
+        if (!complaint) return res.status(404).json({ error: 'Complaint not found' });
+        
+        complaint.status = status || complaint.status;
+        if (adminResponse && adminResponse !== complaint.adminResponse) {
+            complaint.adminResponse = adminResponse;
+            complaint.resolvedAt = new Date();
+            
+            // Email user about the response
+            const emailHtml = `
+                <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
+                    <h2 style="color:#4F46E5;">Response to Your VibExpert Ticket</h2>
+                    <p>Hi ${complaint.name},</p>
+                    <p>Regarding your ticket: <strong>${complaint.subject}</strong></p>
+                    <div style="background:#F3F4F6;padding:15px;border-radius:8px;margin:20px 0;">
+                        <p style="white-space:pre-wrap;">${adminResponse}</p>
+                    </div>
+                    <p>Status: <strong>${complaint.status.toUpperCase()}</strong></p>
+                    <p>If you need further assistance, please reply to this email or submit a new ticket.</p>
+                </div>
+            `;
+            await sendEmail(complaint.email, `Update on ticket: ${complaint.subject}`, emailHtml);
+        }
+        await complaint.save();
+        res.json({ success: true, complaint });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to update complaint' });
     }
 });
 

@@ -179,6 +179,20 @@ const orderMessageSchema = new mongoose.Schema({
 
 orderMessageSchema.index({ orderId: 1, createdAt: 1 });
 
+// Complaints / Support Tickets
+const complaintSchema = new mongoose.Schema({
+    userId: { type: String, default: null, index: true },
+    email: { type: String, required: true },
+    name: { type: String, required: true },
+    type: { type: String, enum: ['bug', 'support', 'feedback', 'other'], default: 'support' },
+    subject: { type: String, required: true },
+    message: { type: String, required: true },
+    source: { type: String, enum: ['online', 'shop', 'client_portal', 'app'], required: true },
+    status: { type: String, enum: ['open', 'resolved', 'closed'], default: 'open', index: true },
+    adminResponse: { type: String, default: null },
+    resolvedAt: { type: Date, default: null }
+}, { timestamps: true });
+
 // ── Models ────────────────────────────────────────────────────
 const Post            = mongoose.models.Post            || mongoose.model('Post',            postSchema);
 const PostLike        = mongoose.models.PostLike        || mongoose.model('PostLike',        postLikeSchema);
@@ -193,6 +207,7 @@ const BannedUser      = mongoose.models.BannedUser      || mongoose.model('Banne
 const ClientRequest   = mongoose.models.ClientRequest   || mongoose.model('ClientRequest',   clientRequestSchema);
 const ClientProduct   = mongoose.models.ClientProduct   || mongoose.model('ClientProduct',   clientProductSchema);
 const OrderMessage    = mongoose.models.OrderMessage    || mongoose.model('OrderMessage',    orderMessageSchema);
+const Complaint       = mongoose.models.Complaint       || mongoose.model('Complaint',       complaintSchema);
 
 module.exports = {
     connectMongo,
@@ -208,5 +223,6 @@ module.exports = {
     BannedUser,
     ClientRequest,
     ClientProduct,
-    OrderMessage
+    OrderMessage,
+    Complaint
 };
