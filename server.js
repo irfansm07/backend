@@ -501,8 +501,77 @@ app.post('/api/shop/verify-payment', authenticateToken, async (req, res) => {
         await supabase.from('shop_orders').update(updateData).eq('order_id', razorpay_order_id);
         const { data: orderData } = await supabase.from('shop_orders').select('*').eq('order_id', razorpay_order_id).single();
         let itemsList = '';
-        try { const items = JSON.parse(orderData.items); itemsList = items.map(i => `<li>${i.name} × ${i.quantity} — ₹${(i.price * i.quantity).toLocaleString()}</li>`).join(''); } catch { itemsList = '<li>Your items</li>'; }
+        let parsedItems = [];
+        try { parsedItems = JSON.parse(orderData.items); itemsList = parsedItems.map(i => `<li>${i.name} × ${i.quantity} — ₹${(i.price * i.quantity).toLocaleString()}</li>`).join(''); } catch { itemsList = '<li>Your items</li>'; }
         sendEmail(req.user.email, '🛍️ Order Confirmed — VibExpert Shop', `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;"><h1 style="color:#7c3aed;">Order Confirmed! 🎉</h1><p>Hi ${req.user.username},</p><ul>${itemsList}</ul><p>Total: ₹${orderData.total_amount.toLocaleString()}</p><p>Order ID: ${razorpay_order_id}</p></div>`);
+
+        // ── Notify each seller/client whose product was ordered ──
+        try {
+            let shippingInfo = {};
+            try { shippingInfo = JSON.parse(orderData.shipping_address || '{}'); } catch {}
+            const buyerName = shippingInfo.fullName || shippingInfo.name || req.user.username;
+            const buyerPhone = shippingInfo.phone || shippingInfo.mobile || 'Not provided';
+            const buyerAddress = [shippingInfo.address, shippingInfo.city, shippingInfo.state, shippingInfo.pincode || shippingInfo.zip].filter(Boolean).join(', ') || 'Not provided';
+            const buyerEmail = req.user.email;
+
+            // Collect unique clientIds from the ordered items
+            const clientIdsSeen = new Set();
+            for (const item of parsedItems) {
+                // Try to find the product by name or id in ClientProduct collection
+                let clientProduct = null;
+                if (item.productId || item.id) {
+                    try { clientProduct = await ClientProduct.findById(item.productId || item.id); } catch {}
+                }
+                if (!clientProduct && item.name) {
+                    clientProduct = await ClientProduct.findOne({ name: item.name, status: 'active' });
+                }
+                if (clientProduct && !clientIdsSeen.has(clientProduct.clientId)) {
+                    clientIdsSeen.add(clientProduct.clientId);
+                    const sellerItems = parsedItems.filter(i => {
+                        // Find items belonging to this seller
+                        return true; // We'll send all items for now, as the order is combined
+                    });
+                    const sellerItemsList = parsedItems.map(i => `${i.name} × ${i.quantity}`).join(', ');
+
+                    // Push notification to seller
+                    await pushNotification(clientProduct.clientId, {
+                        type: 'new_order',
+                        message: `🎉 New order received! ${buyerName} ordered: ${sellerItemsList}. Delivery to: ${buyerAddress}. Phone: ${buyerPhone}`,
+                        from: 'VibExpert Shop',
+                        orderId: razorpay_order_id
+                    });
+
+                    // Send email to seller
+                    const { data: sellerUser } = await supabase.from('users').select('email,username').eq('id', clientProduct.clientId).single();
+                    if (sellerUser?.email) {
+                        sendEmail(sellerUser.email, '🎉 New Order Received — VibExpert Shop', `
+                            <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
+                                <h1 style="color:#7c3aed;">New Order Received! 🎉</h1>
+                                <p>Hi ${sellerUser.username},</p>
+                                <p>Great news! A customer has ordered your product(s).</p>
+                                <div style="background:#F3F4F6;padding:20px;border-radius:8px;margin:20px 0;">
+                                    <h3 style="margin-top:0;color:#4F46E5;">📦 Order Details</h3>
+                                    <ul>${parsedItems.map(i => `<li><strong>${i.name}</strong> × ${i.quantity} — ₹${(i.price * i.quantity).toLocaleString()}</li>`).join('')}</ul>
+                                    <p><strong>Total:</strong> ₹${orderData.total_amount.toLocaleString()}</p>
+                                    <p><strong>Order ID:</strong> ${razorpay_order_id}</p>
+                                </div>
+                                <div style="background:#EDE9FE;padding:20px;border-radius:8px;margin:20px 0;">
+                                    <h3 style="margin-top:0;color:#7c3aed;">🚚 Delivery Details</h3>
+                                    <p><strong>Customer Name:</strong> ${buyerName}</p>
+                                    <p><strong>Email:</strong> ${buyerEmail}</p>
+                                    <p><strong>Phone:</strong> ${buyerPhone}</p>
+                                    <p><strong>Delivery Address:</strong> ${buyerAddress}</p>
+                                </div>
+                                <p style="color:#6B7280;font-size:12px;">Please prepare and ship the order as soon as possible. You can manage this order from your Client Portal.</p>
+                            </div>
+                        `);
+                    }
+                }
+            }
+        } catch (sellerNotifyErr) {
+            console.error('⚠️ Seller notification error (non-critical):', sellerNotifyErr.message);
+        }
+
         res.json({ success: true, message: 'Payment verified — your order has been placed!', orderId: razorpay_order_id, paymentId: razorpay_payment_id });
     } catch (error) {
         res.status(500).json({ error: 'Payment verification failed' });
