@@ -948,6 +948,21 @@ app.get('/api/admin/client-products', authenticateToken, async (req, res) => {
     }
 });
 
+// Admin: Delete a client product
+app.delete('/api/admin/client-products/:id', authenticateToken, async (req, res) => {
+    try {
+        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
+        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        
+        const deleted = await ClientProduct.findByIdAndDelete(req.params.id);
+        if (!deleted) return res.status(404).json({ error: 'Product not found' });
+        
+        res.json({ success: true, message: 'Product successfully deleted by admin.' });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to delete product' });
+    }
+});
+
 // ══════════════════════════════════════════════════════════════
 // ORDER MESSAGING & TRACKING
 // ══════════════════════════════════════════════════════════════

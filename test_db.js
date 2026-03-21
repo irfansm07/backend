@@ -1,0 +1,1 @@
+require('dotenv').config(); const { connectMongo, PostLike } = require('./config/mongodb'); connectMongo().then(async () => { const likes = await PostLike.find(); console.log('Total likes:', likes.length); if(likes.length > 0) { console.log('Sample like:', JSON.stringify(likes[0], null, 2)); } process.exit(0); }).catch(console.error);
