@@ -99,6 +99,85 @@ const realVibeCommentSchema = new mongoose.Schema({
     content: { type: String, required: true }
 }, { timestamps: true });
 
+// Seller Requests
+const sellerRequestSchema = new mongoose.Schema({
+    userId: { type: String, required: true, index: true },
+    type: { type: String, enum: ['new_seller', 'new_product'], required: true },
+    title: { type: String, required: true },
+    description: { type: String, required: true },
+    status: { type: String, enum: ['pending', 'approved', 'rejected', 'hold'], default: 'pending', index: true },
+    adminMessage: { type: String, default: null }
+}, { timestamps: true });
+
+// Platform Notifications (Global/Targeted)
+const platformNotificationSchema = new mongoose.Schema({
+    title: { type: String, required: true },
+    message: { type: String, required: true },
+    target: { type: String, enum: ['all', 'sellers', 'specific'], default: 'all' },
+    targetUserId: { type: String, default: null }, // if target is specific
+    createdBy: { type: String, required: true }
+}, { timestamps: true });
+
+// Banned Users
+const bannedUserSchema = new mongoose.Schema({
+    userId: { type: String, required: true, unique: true },
+    reason: { type: String, required: true },
+    bannedBy: { type: String, required: true },
+    bannedAt: { type: Date, default: Date.now }
+});
+
+// Client Registration Requests
+const clientRequestSchema = new mongoose.Schema({
+    userId: { type: String, required: true, index: true },
+    email: { type: String, required: true },
+    businessName: { type: String, required: true },
+    businessType: { type: String, required: true },
+    phone: { type: String, default: '' },
+    description: { type: String, required: true },
+    gstNumber: { type: String, default: '' },
+    address: { type: String, default: '' },
+    status: { type: String, enum: ['pending', 'approved', 'rejected', 'hold'], default: 'pending', index: true },
+    adminMessage: { type: String, default: null },
+    reviewedBy: { type: String, default: null },
+    reviewedAt: { type: Date, default: null }
+}, { timestamps: true });
+
+clientRequestSchema.index({ userId: 1, status: 1 });
+
+// Client Products (products added by clients/sellers)
+const clientProductSchema = new mongoose.Schema({
+    clientId: { type: String, required: true, index: true },
+    name: { type: String, required: true },
+    description: { type: String, required: true },
+    price: { type: Number, required: true },
+    originalPrice: { type: Number, required: true },
+    category: { type: String, required: true },
+    images: [{ url: String, public_id: String }],
+    colors: [String],
+    sizes: [String],
+    badge: { type: String, enum: ['sale', 'new', 'trending', null], default: 'new' },
+    inStock: { type: Boolean, default: true },
+    stockQuantity: { type: Number, default: 0 },
+    discountPercent: { type: Number, default: 0 },
+    status: { type: String, enum: ['active', 'inactive', 'pending_review'], default: 'active', index: true },
+    rating: { type: Number, default: 0 },
+    reviews: { type: Number, default: 0 }
+}, { timestamps: true });
+
+clientProductSchema.index({ clientId: 1, status: 1 });
+clientProductSchema.index({ category: 1 });
+
+// Order Messages (admin-user communication about orders)
+const orderMessageSchema = new mongoose.Schema({
+    orderId: { type: String, required: true, index: true },
+    senderId: { type: String, required: true },
+    senderRole: { type: String, enum: ['admin', 'user', 'client'], required: true },
+    message: { type: String, required: true },
+    read: { type: Boolean, default: false }
+}, { timestamps: true });
+
+orderMessageSchema.index({ orderId: 1, createdAt: 1 });
+
 // ── Models ────────────────────────────────────────────────────
 const Post            = mongoose.models.Post            || mongoose.model('Post',            postSchema);
 const PostLike        = mongoose.models.PostLike        || mongoose.model('PostLike',        postLikeSchema);
@@ -107,6 +186,12 @@ const PostShare       = mongoose.models.PostShare       || mongoose.model('PostS
 const RealVibe        = mongoose.models.RealVibe        || mongoose.model('RealVibe',        realVibeSchema);
 const RealVibeLike    = mongoose.models.RealVibeLike    || mongoose.model('RealVibeLike',    realVibeLikeSchema);
 const RealVibeComment = mongoose.models.RealVibeComment || mongoose.model('RealVibeComment', realVibeCommentSchema);
+const SellerRequest   = mongoose.models.SellerRequest   || mongoose.model('SellerRequest',   sellerRequestSchema);
+const PlatformNotification = mongoose.models.PlatformNotification || mongoose.model('PlatformNotification', platformNotificationSchema);
+const BannedUser      = mongoose.models.BannedUser      || mongoose.model('BannedUser',      bannedUserSchema);
+const ClientRequest   = mongoose.models.ClientRequest   || mongoose.model('ClientRequest',   clientRequestSchema);
+const ClientProduct   = mongoose.models.ClientProduct   || mongoose.model('ClientProduct',   clientProductSchema);
+const OrderMessage    = mongoose.models.OrderMessage    || mongoose.model('OrderMessage',    orderMessageSchema);
 
 module.exports = {
     connectMongo,
@@ -116,5 +201,11 @@ module.exports = {
     PostShare,
     RealVibe,
     RealVibeLike,
-    RealVibeComment
+    RealVibeComment,
+    SellerRequest,
+    PlatformNotification,
+    BannedUser,
+    ClientRequest,
+    ClientProduct,
+    OrderMessage
 };
