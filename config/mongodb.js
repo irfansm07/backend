@@ -128,7 +128,7 @@ const bannedUserSchema = new mongoose.Schema({
 
 // Client Registration Requests
 const clientRequestSchema = new mongoose.Schema({
-    userId: { type: String, required: true, index: true },
+    userId: { type: String, default: null },
     email: { type: String, required: true },
     businessName: { type: String, required: true },
     businessType: { type: String, required: true },
@@ -138,6 +138,7 @@ const clientRequestSchema = new mongoose.Schema({
     address: { type: String, default: '' },
     status: { type: String, enum: ['pending', 'approved', 'rejected', 'hold'], default: 'pending', index: true },
     adminMessage: { type: String, default: null },
+    setupToken: { type: String, default: null },
     reviewedBy: { type: String, default: null },
     reviewedAt: { type: Date, default: null }
 }, { timestamps: true });

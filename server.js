@@ -250,6 +250,33 @@ const getNotifications = async (userId, limit = 20) => {
     } catch { return []; }
 };
 
+const sendEmail = async (to, subject, htmlContent) => {
+    try {
+        if (!process.env.BREVO_API_KEY) return console.log('⚠️ Brevo API key missing, email not sent');
+        const fetch = require('node-fetch') || global.fetch; // Use global fetch in Node 18+
+        const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+            method: 'POST',
+            headers: {
+                'accept': 'application/json',
+                'api-key': process.env.BREVO_API_KEY,
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+                sender: { email: process.env.BREVO_FROM_EMAIL || 'noreply@vibexpert.online', name: process.env.BREVO_FROM_NAME || 'VibExpert' },
+                to: [{ email: to }],
+                subject: subject,
+                htmlContent: htmlContent
+            })
+        });
+        if (!response.ok) {
+            const errBody = await response.text();
+            console.error('⚠️ Brevo email failed:', errBody);
+        }
+    } catch (err) {
+        console.error('⚠️ Send email internal error:', err.message);
+    }
+};
+
 const markNotificationsRead = async (userId) => {
     try {
         const key = `notifications:${userId}`;
@@ -757,25 +784,24 @@ app.post('/api/admin/notifications', authenticateToken, async (req, res) => {
 // CLIENT REGISTRATION / APPROVAL FLOW
 // ══════════════════════════════════════════════════════════════
 
-// Client signs up (submits registration request)
-app.post('/api/client/signup', authenticateToken, async (req, res) => {
+// Client submits application (Public Endpoint - No Auth Required)
+app.post('/api/client/apply', async (req, res) => {
     try {
-        const { businessName, businessType, phone, description, gstNumber, address } = req.body;
-        if (!businessName || !businessType || !description)
-            return res.status(400).json({ error: 'Business name, type, and description are required' });
+        const { email, businessName, businessType, phone, description, gstNumber, address } = req.body;
+        if (!email || !businessName || !businessType || !description)
+            return res.status(400).json({ error: 'Email, business name, type, and description are required' });
         
-        // Check if user already has a pending or approved request
-        const existing = await ClientRequest.findOne({ userId: req.user.id, status: { $in: ['pending', 'approved'] } });
+        // Check if email already has a pending or approved request
+        const existing = await ClientRequest.findOne({ email, status: { $in: ['pending', 'approved'] } });
         if (existing) {
             if (existing.status === 'approved')
-                return res.status(400).json({ error: 'You are already an approved client!' });
-            return res.status(400).json({ error: 'You already have a pending request. Please wait for admin review.' });
+                return res.status(400).json({ error: 'This email is already an approved client!' });
+            return res.status(400).json({ error: 'This email already has a pending request. Please wait for admin review.' });
         }
 
         const request = await ClientRequest.create({
-            userId: req.user.id,
-            email: req.user.email,
-            businessName, businessType, phone: phone || '',
+            userId: null,
+            email, businessName, businessType, phone: phone || '',
             description, gstNumber: gstNumber || '', address: address || '',
             status: 'pending'
         });
@@ -783,7 +809,7 @@ app.post('/api/client/signup', authenticateToken, async (req, res) => {
         res.json({ 
             success: true, 
             request,
-            message: 'Your request has been submitted! You have been added to the top priority list. You will receive your credentials within 1 hour after admin verification.'
+            message: 'Your application has been submitted successfully! You will receive an email once the admin reviews it.'
         });
     } catch (error) {
         console.error('Client signup error:', error);
@@ -829,33 +855,91 @@ app.put('/api/admin/client-requests/:id', authenticateToken, async (req, res) =>
         if (!['approved', 'rejected', 'hold'].includes(status))
             return res.status(400).json({ error: 'Invalid status' });
 
+        const requestToUpdate = await ClientRequest.findById(req.params.id);
+        if (!requestToUpdate) return res.status(404).json({ error: 'Request not found' });
+
+        let setupToken = requestToUpdate.setupToken;
+        if (status === 'approved' && requestToUpdate.status !== 'approved') {
+            setupToken = require('crypto').randomBytes(24).toString('hex');
+        }
+
         const updated = await ClientRequest.findByIdAndUpdate(req.params.id, {
-            status, adminMessage: adminMessage || '',
+            status, adminMessage: adminMessage || '', setupToken,
             reviewedBy: req.user.id, reviewedAt: new Date()
         }, { new: true });
 
-        if (!updated) return res.status(404).json({ error: 'Request not found' });
-
-        // Send notification to the user
-        let notifMessage = '';
+        // Send email notification to applicant
+        let emailHtml = '';
         if (status === 'approved') {
-            notifMessage = '🎉 Congratulations! Your client registration has been approved. You can now access the Client Portal and start adding products!';
+            const setupLink = `https://vibexpert-client-portal.vercel.app/setup-account?token=${setupToken}&email=${encodeURIComponent(updated.email)}`;
+            emailHtml = `
+                <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
+                    <h2 style="color:#7c3aed;">Congratulations! 🎉</h2>
+                    <p>Your seller registration for <strong>${updated.businessName}</strong> on VibExpert has been approved.</p>
+                    <p>To access your Seller Dashboard, you need to create your account credentials.</p>
+                    <a href="${setupLink}" style="display:inline-block;padding:12px 24px;background-color:#7c3aed;color:#fff;text-decoration:none;border-radius:8px;margin-top:20px;font-weight:bold;">Set Up Your Account</a>
+                </div>
+            `;
         } else if (status === 'rejected') {
-            notifMessage = `❌ Your client registration has been rejected. Reason: ${adminMessage || 'No reason provided'}`;
+            emailHtml = `<h2>Application Update</h2><p>Unfortunately, your seller application for ${updated.businessName} was rejected.</p><p>Reason: ${adminMessage}</p>`;
         } else if (status === 'hold') {
-            notifMessage = `⏸️ Your client registration is on hold. Note: ${adminMessage || 'Admin is reviewing your details'}`;
+            emailHtml = `<h2>Application Update</h2><p>Your seller application for ${updated.businessName} is currently on hold. Note from admin: ${adminMessage}</p>`;
         }
 
-        await pushNotification(updated.userId, {
-            type: 'client_request',
-            message: notifMessage,
-            from: 'VibExpert Admin'
-        });
+        if (emailHtml) {
+            await sendEmail(updated.email, status === 'approved' ? 'Welcome to VibExpert Sellers! Action Required' : 'VibExpert Seller Application Update', emailHtml);
+        }
 
         res.json({ success: true, request: updated });
     } catch (error) {
         console.error('Update client request error:', error);
         res.status(500).json({ error: 'Failed to update request' });
+    }
+});
+
+// Client sets up their account after approval (Public Endpoint)
+app.post('/api/client/setup', async (req, res) => {
+    try {
+        const { token, email, username, password } = req.body;
+        if (!token || !email || !username || !password) return res.status(400).json({ error: 'Missing required fields' });
+        
+        // Very important: Verify request exists, belongs to email, is approved and matches token
+        const request = await ClientRequest.findOne({ email, setupToken: token, status: 'approved' });
+        if (!request) return res.status(400).json({ error: 'Invalid or expired setup token! Or email mismatch.' });
+
+        // Check if email already used in Supabase users
+        const { data: existingUser } = await supabase.from('users').select('id').eq('email', email).single();
+        let finalUserId = existingUser?.id;
+
+        if (!existingUser) {
+            // Create a new Supabase auth user
+            const { data: authData, error: authErr } = await supabase.auth.admin.createUser({
+                email, password, email_confirm: true,
+                user_metadata: { username }
+            });
+            if (authErr) return res.status(400).json({ error: authErr.message });
+            
+            finalUserId = authData.user.id;
+            // Add to users table
+            await supabase.from('users').insert([{
+                id: finalUserId, email, username, profile_pic: '', bio: `Seller at ${request.businessName}`,
+                college: '', is_verified: true, followers_count: 0, following_count: 0
+            }]);
+        } else {
+            // User already has an account, maybe just update password? Just attach them.
+        }
+
+        // Update the client request to clear token and attach userId
+        await ClientRequest.findByIdAndUpdate(request._id, { userId: finalUserId, setupToken: null });
+
+        // Standard login (jwt) to return token
+        const userPayload = { id: finalUserId, email, username };
+        const jwtToken = jwt.sign(userPayload, process.env.JWT_SECRET || 'secret123', { expiresIn: '7d' });
+
+        res.json({ success: true, token: jwtToken, user: userPayload, message: 'Account successfully set up!' });
+    } catch (error) {
+        console.error('Client setup error:', error);
+        res.status(500).json({ error: 'Failed to set up account' });
     }
 });
 
