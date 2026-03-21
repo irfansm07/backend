@@ -250,33 +250,6 @@ const getNotifications = async (userId, limit = 20) => {
     } catch { return []; }
 };
 
-const sendEmail = async (to, subject, htmlContent) => {
-    try {
-        if (!process.env.BREVO_API_KEY) return console.log('⚠️ Brevo API key missing, email not sent');
-        const fetch = require('node-fetch') || global.fetch; // Use global fetch in Node 18+
-        const response = await fetch('https://api.brevo.com/v3/smtp/email', {
-            method: 'POST',
-            headers: {
-                'accept': 'application/json',
-                'api-key': process.env.BREVO_API_KEY,
-                'content-type': 'application/json'
-            },
-            body: JSON.stringify({
-                sender: { email: process.env.BREVO_FROM_EMAIL || 'noreply@vibexpert.online', name: process.env.BREVO_FROM_NAME || 'VibExpert' },
-                to: [{ email: to }],
-                subject: subject,
-                htmlContent: htmlContent
-            })
-        });
-        if (!response.ok) {
-            const errBody = await response.text();
-            console.error('⚠️ Brevo email failed:', errBody);
-        }
-    } catch (err) {
-        console.error('⚠️ Send email internal error:', err.message);
-    }
-};
-
 const markNotificationsRead = async (userId) => {
     try {
         const key = `notifications:${userId}`;
