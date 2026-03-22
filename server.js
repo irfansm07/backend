@@ -1667,7 +1667,8 @@ app.post('/api/forgot-password', async (req, res) => {
         }
         const { data: user } = await query.maybeSingle();
         
-        if (!user) return res.json({ success: true, message: 'If this account exists, you will receive a reset code.' });
+        if (!user) return res.status(404).json({ error: 'No active account found. If you just applied, please wait for an email to setup your account.' });
+        
         const code = generateCode();
         const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
         await supabase.from('codes').insert([{ user_id: user.id, code, type: 'reset', expires_at: expiresAt.toISOString() }]);
