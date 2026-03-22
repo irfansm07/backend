@@ -794,7 +794,12 @@ app.post('/api/client/apply', async (req, res) => {
 // Client checks their approval status
 app.get('/api/client/status', authenticateToken, async (req, res) => {
     try {
-        const request = await ClientRequest.findOne({ userId: req.user.id }).sort({ createdAt: -1 });
+        // First search by userId
+        let request = await ClientRequest.findOne({ userId: req.user.id }).sort({ createdAt: -1 });
+        // If not found, search by email (applications are created with userId: null before setup)
+        if (!request) {
+            request = await ClientRequest.findOne({ email: req.user.email }).sort({ createdAt: -1 });
+        }
         if (!request) return res.json({ success: true, status: 'none', request: null });
         res.json({ success: true, status: request.status, request });
     } catch (error) {
@@ -1616,9 +1621,12 @@ app.post('/api/login', async (req, res) => {
         const validPassword = await bcrypt.compare(password, user.password_hash);
         if (!validPassword) return res.status(401).json({ error: 'Invalid credentials' });
         
-        // 🔴 Check if user is banned
+        // 🔴 Check if user is banned (with timeout)
         try {
-            const bannedState = await BannedUser.findOne({ userId: user.id });
+            const bannedState = await Promise.race([
+                BannedUser.findOne({ userId: user.id }),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('DB Timeout')), 1500))
+            ]);
             if (bannedState) {
                 return res.status(403).json({ error: `Account Banned: ${bannedState.reason}` });
             }
@@ -1630,9 +1638,14 @@ app.post('/api/login', async (req, res) => {
             supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', user.id)
         ]);
         
-        // ✅ MongoDB failure won't break login
+        // ✅ MongoDB failure won't break login (with timeout)
         let postCount = 0;
-        try { postCount = await Post.countDocuments({ userId: user.id }); } catch (_) {}
+        try { 
+            postCount = await Promise.race([
+                Post.countDocuments({ userId: user.id }),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('DB Timeout')), 1500))
+            ]); 
+        } catch (_) {}
 
 
         res.json({ success: true, token, user: { id: user.id, username: user.username, email: user.email, college: user.college, communityJoined: user.community_joined, profilePic: user.profile_pic, profile_pic: user.profile_pic, cover_photo: user.cover_photo || null, registrationNumber: user.registration_number, badges: user.badges || [], bio: user.bio || '', isPremium: user.is_premium || false, subscriptionPlan: user.subscription_plan || null, followersCount: followersCount || 0, followingCount: followingCount || 0, postCount } });
