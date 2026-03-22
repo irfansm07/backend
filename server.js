@@ -1626,14 +1626,22 @@ app.post('/api/login', async (req, res) => {
 
 app.post('/api/forgot-password', async (req, res) => {
     try {
-        const { email } = req.body;
-        if (!email) return res.status(400).json({ error: 'Email required' });
-        const { data: user } = await supabase.from('users').select('id,username,email').eq('email', email).maybeSingle();
-        if (!user) return res.json({ success: true, message: 'If this email exists, you will receive a reset code.' });
+        const { email } = req.body; // could be email or username
+        if (!email) return res.status(400).json({ error: 'Email or Username required' });
+        
+        let query = supabase.from('users').select('id,username,email');
+        if (email.includes('@')) {
+            query = query.eq('email', email);
+        } else {
+            query = query.eq('username', email);
+        }
+        const { data: user } = await query.maybeSingle();
+        
+        if (!user) return res.json({ success: true, message: 'If this account exists, you will receive a reset code.' });
         const code = generateCode();
         const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
         await supabase.from('codes').insert([{ user_id: user.id, code, type: 'reset', expires_at: expiresAt.toISOString() }]);
-        sendEmail(email, '🔐 Password Reset Code - VibeXpert', `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;"><h1 style="color:#4F46E5;">Password Reset</h1><p>Hi ${user.username},</p><div style="background:#F3F4F6;padding:20px;text-align:center;border-radius:8px;margin:20px 0;"><h2 style="font-size:32px;letter-spacing:4px;">${code}</h2></div><p>Expires in 15 minutes.</p></div>`).catch(console.error);
+        sendEmail(user.email, '🔐 Password Reset Code - VibeXpert', `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;"><h1 style="color:#4F46E5;">Password Reset</h1><p>Hi ${user.username},</p><div style="background:#F3F4F6;padding:20px;text-align:center;border-radius:8px;margin:20px 0;"><h2 style="font-size:32px;letter-spacing:4px;">${code}</h2></div><p>Expires in 15 minutes.</p></div>`).catch(console.error);
         res.json({ success: true, message: 'Reset code sent to your email' });
     } catch (error) {
         res.status(500).json({ error: 'Failed to send reset code' });
@@ -1644,8 +1652,16 @@ app.post('/api/reset-password', async (req, res) => {
     try {
         const { email, code, newPassword } = req.body;
         if (!email || !code || !newPassword) return res.status(400).json({ error: 'All fields required' });
-        const { data: user } = await supabase.from('users').select('id').eq('email', email).maybeSingle();
-        if (!user) return res.status(400).json({ error: 'Invalid email' });
+        
+        let query = supabase.from('users').select('id');
+        if (email.includes('@')) {
+            query = query.eq('email', email);
+        } else {
+            query = query.eq('username', email);
+        }
+        const { data: user } = await query.maybeSingle();
+        
+        if (!user) return res.status(400).json({ error: 'Invalid user' });
         const { data: codeData } = await supabase.from('codes').select('*').eq('user_id', user.id).eq('code', code).eq('type', 'reset').gte('expires_at', new Date().toISOString()).maybeSingle();
         if (!codeData) return res.status(400).json({ error: 'Invalid or expired code' });
         const passwordHash = await bcrypt.hash(newPassword, 10);
