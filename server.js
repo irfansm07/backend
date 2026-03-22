@@ -1667,7 +1667,28 @@ app.post('/api/forgot-password', async (req, res) => {
         }
         const { data: user } = await query.maybeSingle();
         
-        if (!user) return res.status(404).json({ error: 'No active account found. If you just applied, please wait for an email to setup your account.' });
+        if (!user) {
+            // Check if they are a client who hasn't set up their account
+            const pendingClient = await ClientRequest.findOne({ email });
+            if (pendingClient) {
+                if (pendingClient.status === 'approved' && pendingClient.setupToken) {
+                    const setupLink = `https://vibexpert-client-portal.vercel.app/setup-account?token=${pendingClient.setupToken}&email=${encodeURIComponent(email)}`;
+                    const emailHtml = `
+                        <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
+                            <h2 style="color:#7c3aed;">Action Required: Setup Your Account</h2>
+                            <p>You requested a password reset, but you haven't finished setting up your seller account yet!</p>
+                            <p>Please click the link below to set your password and access your dashboard.</p>
+                            <a href="${setupLink}" style="display:inline-block;padding:12px 24px;background-color:#7c3aed;color:#ffffff;text-decoration:none;border-radius:8px;margin-top:20px;font-weight:bold;">Set Up Your Account</a>
+                        </div>
+                    `;
+                    sendEmail(email, 'Setup Your Seller Account - VibExpert', emailHtml).catch(console.error);
+                    return res.json({ success: true, message: 'We noticed you haven\'t set up your account yet. We just re-sent your setup link to your email!' });
+                } else {
+                    return res.status(404).json({ error: `Your seller application is currently: ${pendingClient.status}. You cannot reset your password yet.` });
+                }
+            }
+            return res.status(404).json({ error: 'No active account found. If you just applied, please wait for an email to setup your account.' });
+        }
         
         const code = generateCode();
         const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
