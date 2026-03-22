@@ -810,7 +810,11 @@ app.get('/api/admin/client-requests', authenticateToken, async (req, res) => {
         const requests = await ClientRequest.find().sort({ createdAt: -1 });
         // Enrich with user details from Supabase
         const enriched = await Promise.all(requests.map(async (r) => {
-            const { data: user } = await supabase.from('users').select('username,email,profile_pic,college').eq('id', r.userId).single();
+            let user = null;
+            if (r.userId) {
+                const { data } = await supabase.from('users').select('username,email,profile_pic,college').eq('id', r.userId).maybeSingle();
+                user = data;
+            }
             return { ...r.toObject(), user: user || {} };
         }));
         res.json({ success: true, requests: enriched });
@@ -882,7 +886,7 @@ app.post('/api/client/setup', async (req, res) => {
         if (!request) return res.status(400).json({ error: 'Invalid or expired setup token! Or email mismatch.' });
 
         // Check if email already used in Supabase users
-        const { data: existingUser } = await supabase.from('users').select('id').eq('email', email).single();
+        const { data: existingUser } = await supabase.from('users').select('id').eq('email', email).maybeSingle();
         let finalUserId = existingUser?.id;
 
         if (!existingUser) {
@@ -894,13 +898,17 @@ app.post('/api/client/setup', async (req, res) => {
             if (authErr) return res.status(400).json({ error: authErr.message });
             
             finalUserId = authData.user.id;
+            const passwordHash = await bcrypt.hash(password, 10);
+            
             // Add to users table
             await supabase.from('users').insert([{
-                id: finalUserId, email, username, profile_pic: '', bio: `Seller at ${request.businessName}`,
+                id: finalUserId, email, username, password_hash: passwordHash, profile_pic: '', bio: `Seller at ${request.businessName}`,
                 college: '', is_verified: true, followers_count: 0, following_count: 0
             }]);
         } else {
-            // User already has an account, maybe just update password? Just attach them.
+            // User already has an account, update password
+            const passwordHash = await bcrypt.hash(password, 10);
+            await supabase.from('users').update({ password_hash: passwordHash }).eq('id', existingUser.id);
         }
 
         // Update the client request to clear token and attach userId
@@ -1593,11 +1601,20 @@ app.post('/api/verify-email', async (req, res) => {
 app.post('/api/login', async (req, res) => {
     try {
         const { email, password } = req.body;
-        if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
-        const { data: user, error } = await supabase.from('users').select('*').eq('email', email).maybeSingle();
-        if (error || !user) return res.status(401).json({ error: 'Invalid email or password' });
+        if (!email || !password) return res.status(400).json({ error: 'Email/Username and password required' });
+        
+        let query = supabase.from('users').select('*');
+        if (email.includes('@')) {
+            query = query.eq('email', email);
+        } else {
+            query = query.eq('username', email);
+        }
+        
+        const { data: user, error } = await query.maybeSingle();
+        if (error || !user) return res.status(401).json({ error: 'Invalid credentials' });
+        
         const validPassword = await bcrypt.compare(password, user.password_hash);
-        if (!validPassword) return res.status(401).json({ error: 'Invalid email or password' });
+        if (!validPassword) return res.status(401).json({ error: 'Invalid credentials' });
         
         // 🔴 Check if user is banned
         try {
