@@ -765,8 +765,9 @@ app.post('/api/client/apply', async (req, res) => {
         if (!email || !businessName || !businessType || !description)
             return res.status(400).json({ error: 'Email, business name, type, and description are required' });
         
-        // Check if email already has a pending or approved request
-        const existing = await ClientRequest.findOne({ email, status: { $in: ['pending', 'approved'] } });
+        // Check if email already has a pending or approved request (case-insensitive)
+        const emailRegex = new RegExp('^' + email.trim() + '$', 'i');
+        const existing = await ClientRequest.findOne({ email: emailRegex, status: { $in: ['pending', 'approved'] } });
         if (existing) {
             if (existing.status === 'approved')
                 return res.status(400).json({ error: 'This email is already an approved client!' });
@@ -796,9 +797,15 @@ app.get('/api/client/status', authenticateToken, async (req, res) => {
     try {
         // First search by userId
         let request = await ClientRequest.findOne({ userId: req.user.id }).sort({ createdAt: -1 });
-        // If not found, search by email (applications are created with userId: null before setup)
-        if (!request) {
-            request = await ClientRequest.findOne({ email: req.user.email }).sort({ createdAt: -1 });
+        // If not found, search by email (case-insensitive)
+        if (!request && req.user.email) {
+            const emailRegex = new RegExp('^' + req.user.email.trim() + '$', 'i');
+            request = await ClientRequest.findOne({ email: emailRegex }).sort({ createdAt: -1 });
+            // Link userId if missing
+            if (request && !request.userId) {
+                request.userId = req.user.id;
+                await request.save();
+            }
         }
         if (!request) return res.json({ success: true, status: 'none', request: null });
         res.json({ success: true, status: request.status, request });
@@ -887,11 +894,12 @@ app.post('/api/client/setup', async (req, res) => {
         if (!token || !email || !username || !password) return res.status(400).json({ error: 'Missing required fields' });
         
         // Very important: Verify request exists, belongs to email, is approved and matches token
-        const request = await ClientRequest.findOne({ email, setupToken: token, status: 'approved' });
+        const emailRegex = new RegExp('^' + email.trim() + '$', 'i');
+        const request = await ClientRequest.findOne({ email: emailRegex, setupToken: token, status: 'approved' });
         if (!request) return res.status(400).json({ error: 'Invalid or expired setup token! Or email mismatch.' });
 
         // Check if email already used in Supabase users
-        const { data: existingUser } = await supabase.from('users').select('id').eq('email', email).maybeSingle();
+        const { data: existingUser } = await supabase.from('users').select('id').ilike('email', email.trim()).maybeSingle();
         let finalUserId = existingUser?.id;
 
         if (!existingUser) {
@@ -1610,9 +1618,9 @@ app.post('/api/login', async (req, res) => {
         
         let query = supabase.from('users').select('*');
         if (email.includes('@')) {
-            query = query.eq('email', email);
+            query = query.ilike('email', email.trim());
         } else {
-            query = query.eq('username', email);
+            query = query.ilike('username', email.trim());
         }
         
         const { data: user, error } = await query.maybeSingle();
@@ -1661,18 +1669,25 @@ app.post('/api/forgot-password', async (req, res) => {
         
         let query = supabase.from('users').select('id,username,email');
         if (email.includes('@')) {
-            query = query.eq('email', email);
+            query = query.ilike('email', email.trim());
         } else {
-            query = query.eq('username', email);
+            query = query.ilike('username', email.trim());
         }
         const { data: user } = await query.maybeSingle();
         
         if (!user) {
             // Check if they are a client who hasn't set up their account
-            const pendingClient = await ClientRequest.findOne({ email });
+            const emailRegex = new RegExp('^' + email.trim() + '$', 'i');
+            const pendingClient = await ClientRequest.findOne({ email: emailRegex }).sort({ createdAt: -1 });
             if (pendingClient) {
-                if (pendingClient.status === 'approved' && pendingClient.setupToken) {
-                    const setupLink = `https://vibexpert-client-portal.vercel.app/setup-account?token=${pendingClient.setupToken}&email=${encodeURIComponent(email)}`;
+                if (pendingClient.status === 'approved') {
+                    let tokenToUse = pendingClient.setupToken;
+                    // If approved but missing token, generate one
+                    if (!tokenToUse) {
+                        tokenToUse = require('crypto').randomBytes(24).toString('hex');
+                        await ClientRequest.findByIdAndUpdate(pendingClient._id, { setupToken: tokenToUse });
+                    }
+                    const setupLink = `https://vibexpert-client-portal.vercel.app/setup-account?token=${tokenToUse}&email=${encodeURIComponent(pendingClient.email)}`;
                     const emailHtml = `
                         <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
                             <h2 style="color:#7c3aed;">Action Required: Setup Your Account</h2>
@@ -1681,7 +1696,7 @@ app.post('/api/forgot-password', async (req, res) => {
                             <a href="${setupLink}" style="display:inline-block;padding:12px 24px;background-color:#7c3aed;color:#ffffff;text-decoration:none;border-radius:8px;margin-top:20px;font-weight:bold;">Set Up Your Account</a>
                         </div>
                     `;
-                    sendEmail(email, 'Setup Your Seller Account - VibExpert', emailHtml).catch(console.error);
+                    sendEmail(pendingClient.email, 'Setup Your Seller Account - VibExpert', emailHtml).catch(console.error);
                     return res.json({ success: true, message: 'We noticed you haven\'t set up your account yet. We just re-sent your setup link to your email!' });
                 } else {
                     return res.status(404).json({ error: `Your seller application is currently: ${pendingClient.status}. You cannot reset your password yet.` });
