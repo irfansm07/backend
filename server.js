@@ -1286,6 +1286,67 @@ app.get('/api/client/orders', authenticateToken, async (req, res) => {
     }
 });
 
+// Client: Send message about an order
+app.post('/api/client/orders/:orderId/message', authenticateToken, async (req, res) => {
+    try {
+        const { message } = req.body;
+        if (!message) return res.status(400).json({ error: 'Message is required' });
+
+        // Verify this client owns a product in the order
+        const { data: order } = await supabase.from('shop_orders').select('*, users (username, email)').eq('order_id', req.params.orderId).single();
+        if (!order) return res.status(404).json({ error: 'Order not found' });
+
+        const clientProducts = await ClientProduct.find({ clientId: req.user.id });
+        const productNames = clientProducts.map(p => p.name);
+        const items = JSON.parse(order.items || '[]');
+        const ownsProduct = items.some(item => productNames.includes(item.name));
+        if (!ownsProduct) return res.status(403).json({ error: 'Access denied — order does not contain your products' });
+
+        const msg = await OrderMessage.create({
+            orderId: req.params.orderId,
+            senderId: req.user.id,
+            senderRole: 'client',
+            message
+        });
+
+        // Notify the customer
+        if (order.user_id) {
+            await pushNotification(order.user_id, {
+                type: 'order_message',
+                message: `📦 Seller message about your order: ${message}`,
+                from: 'VibExpert Seller',
+                orderId: req.params.orderId
+            });
+        }
+
+        res.json({ success: true, message: msg });
+    } catch (error) {
+        console.error('Client order message error:', error);
+        res.status(500).json({ error: 'Failed to send message' });
+    }
+});
+
+// Client: Get messages for one of their orders
+app.get('/api/client/orders/:orderId/messages', authenticateToken, async (req, res) => {
+    try {
+        // Verify client owns a product in this order
+        const { data: order } = await supabase.from('shop_orders').select('*, users (username, email)').eq('order_id', req.params.orderId).single();
+        if (!order) return res.status(404).json({ error: 'Order not found' });
+
+        const clientProducts = await ClientProduct.find({ clientId: req.user.id });
+        const productNames = clientProducts.map(p => p.name);
+        const items = JSON.parse(order.items || '[]');
+        const ownsProduct = items.some(item => productNames.includes(item.name));
+        if (!ownsProduct) return res.status(403).json({ error: 'Access denied' });
+
+        const messages = await OrderMessage.find({ orderId: req.params.orderId }).sort({ createdAt: 1 });
+        res.json({ success: true, messages, order });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch messages' });
+    }
+});
+
+
 // Client: Get user's own seller requests (history)
 app.get('/api/user/seller-requests', authenticateToken, async (req, res) => {
     try {
