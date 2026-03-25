@@ -1722,9 +1722,9 @@ app.post('/api/reset-password', async (req, res) => {
         
         let query = supabase.from('users').select('id');
         if (email.includes('@')) {
-            query = query.eq('email', email);
+            query = query.ilike('email', email.trim());
         } else {
-            query = query.eq('username', email);
+            query = query.ilike('username', email.trim());
         }
         const { data: user } = await query.maybeSingle();
         
