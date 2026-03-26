@@ -196,6 +196,13 @@ const complaintSchema = new mongoose.Schema({
     resolvedAt: { type: Date, default: null }
 }, { timestamps: true });
 
+// Password Reset Codes
+const passwordResetCodeSchema = new mongoose.Schema({
+    email: { type: String, required: true, index: true },
+    code: { type: String, required: true },
+    createdAt: { type: Date, default: Date.now, expires: 900 } // Auto expires in 15 mins (900 secs)
+});
+
 // ── Models ────────────────────────────────────────────────────
 const Post            = mongoose.models.Post            || mongoose.model('Post',            postSchema);
 const PostLike        = mongoose.models.PostLike        || mongoose.model('PostLike',        postLikeSchema);
@@ -211,6 +218,7 @@ const ClientRequest   = mongoose.models.ClientRequest   || mongoose.model('Clien
 const ClientProduct   = mongoose.models.ClientProduct   || mongoose.model('ClientProduct',   clientProductSchema);
 const OrderMessage    = mongoose.models.OrderMessage    || mongoose.model('OrderMessage',    orderMessageSchema);
 const Complaint       = mongoose.models.Complaint       || mongoose.model('Complaint',       complaintSchema);
+const PasswordResetCode = mongoose.models.PasswordResetCode || mongoose.model('PasswordResetCode', passwordResetCodeSchema);
 
 module.exports = {
     connectMongo,
@@ -227,5 +235,6 @@ module.exports = {
     ClientRequest,
     ClientProduct,
     OrderMessage,
-    Complaint
+    Complaint,
+    PasswordResetCode
 };

@@ -27,7 +27,7 @@ const {
     RealVibe, RealVibeLike, RealVibeComment,
     BannedUser, PlatformNotification, SellerRequest,
     ClientRequest, ClientProduct, OrderMessage,
-    Complaint
+    Complaint, PasswordResetCode
 } = require('./config/mongodb');
 const redis = require('./config/redis');
 
@@ -976,6 +976,92 @@ app.post('/api/client/login', async (req, res) => {
     } catch (error) {
         console.error('Client login error:', error);
         res.status(500).json({ error: 'Login failed. Please try again.' });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
+// PASSWORD RESET
+// ══════════════════════════════════════════════════════════════
+
+// Request Password Reset Code
+app.post('/api/forgot-password', async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email) return res.status(400).json({ error: 'Email is required' });
+
+        // Check if user exists
+        const { data: user } = await supabase.from('users').select('id, email, username').ilike('email', email.trim()).maybeSingle();
+        if (!user) return res.status(404).json({ error: 'No account found with this email' });
+
+        // Generate 6-digit code
+        const code = generateCode();
+
+        // Delete any existing codes for this email and save new one
+        await PasswordResetCode.deleteMany({ email: email.trim().toLowerCase() });
+        await PasswordResetCode.create({ email: email.trim().toLowerCase(), code });
+
+        // Send Email
+        const html = `
+            <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
+                <h2 style="color:#7c3aed;">Password Reset Request</h2>
+                <p>Hi ${user.username},</p>
+                <p>We received a request to reset your VibExpert account password.</p>
+                <div style="background:#F3F4F6;padding:20px;border-radius:8px;text-align:center;font-size:24px;letter-spacing:4px;font-weight:bold;margin:20px 0;">
+                    ${code}
+                </div>
+                <p>This code will expire in 15 minutes.</p>
+                <p>If you didn't request this, you can safely ignore this email.</p>
+            </div>
+        `;
+
+        const sent = await sendEmail(user.email, 'VibExpert Password Reset Code', html);
+        if (!sent) return res.status(500).json({ error: 'Failed to send reset email. Please try again.' });
+
+        res.json({ success: true, message: 'Reset code sent to your email.' });
+    } catch (error) {
+        console.error('Forgot password error:', error);
+        res.status(500).json({ error: 'Failed to process password reset request' });
+    }
+});
+
+// Verify Code and Reset Password
+app.post('/api/reset-password', async (req, res) => {
+    try {
+        const { email, code, newPassword } = req.body;
+        if (!email || !code || !newPassword) return res.status(400).json({ error: 'Missing required fields' });
+        if (newPassword.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+
+        // Validate code
+        const resetRecord = await PasswordResetCode.findOne({ email: email.trim().toLowerCase(), code });
+        if (!resetRecord) return res.status(400).json({ error: 'Invalid or expired reset code' });
+
+        // Get User
+        const { data: user } = await supabase.from('users').select('id, email').ilike('email', email.trim()).maybeSingle();
+        if (!user) return res.status(404).json({ error: 'Account not found' });
+
+        // Update Supabase Auth if the user exists there too
+        try {
+            const { data: authUsers } = await supabase.auth.admin.listUsers();
+            const authUser = authUsers?.users?.find(u => u.email.toLowerCase() === email.trim().toLowerCase());
+            if (authUser) {
+                await supabase.auth.admin.updateUserById(authUser.id, { password: newPassword });
+            }
+        } catch (e) {
+            console.error('Supabase auth update error (non-critical if user only exists in public):', e.message);
+        }
+
+        // Hash and update password in users table
+        const passwordHash = await bcrypt.hash(newPassword, 10);
+        const { error: updateErr } = await supabase.from('users').update({ password_hash: passwordHash }).eq('id', user.id);
+        if (updateErr) throw updateErr;
+
+        // Cleanup used code
+        await PasswordResetCode.deleteOne({ _id: resetRecord._id });
+
+        res.json({ success: true, message: 'Password reset successfully' });
+    } catch (error) {
+        console.error('Reset password error:', error);
+        res.status(500).json({ error: 'Failed to reset password' });
     }
 });
 
