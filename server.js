@@ -370,7 +370,7 @@ function authenticateAdmin(req, res, next) {
 // ══════════════════════════════════════════════════════════════
 // BASIC ROUTES
 // ══════════════════════════════════════════════════════════════
-app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+app.get('/api/health', (req, res) => res.json({ status: 'ok', version: '1.0.1', timestamp: new Date().toISOString() }));
 app.get('/api/post-assets', (req, res) => res.json({ success: true, songs: availableSongs, stickers: availableStickers }));
 app.get('/api/music-library', (req, res) => res.json({ success: true, music: availableSongs }));
 app.get('/api/sticker-library', (req, res) => res.json({ success: true, stickers: availableStickers }));
