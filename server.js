@@ -774,6 +774,12 @@ app.post('/api/client/apply', async (req, res) => {
             return res.status(400).json({ error: 'This email already has a pending request. Please wait for admin review.' });
         }
 
+        // Check if the email belongs to an already registered user
+        const { data: existingUser } = await supabase.from('users').select('id').ilike('email', email.trim()).maybeSingle();
+        if (existingUser) {
+            return res.status(400).json({ error: 'This email is already registered! Please sign in to apply.' });
+        }
+
         const request = await ClientRequest.create({
             userId: null,
             email, businessName, businessType, phone: phone || '',
@@ -928,15 +934,51 @@ app.post('/api/client/setup', async (req, res) => {
         await ClientRequest.findByIdAndUpdate(request._id, { userId: finalUserId, setupToken: null });
 
         // Standard login (jwt) to return token
-        const userPayload = { id: finalUserId, email, username };
+        const userPayload = { userId: finalUserId, id: finalUserId, email, username };
         const jwtToken = jwt.sign(userPayload, process.env.JWT_SECRET || 'secret123', { expiresIn: '7d' });
 
-        res.json({ success: true, token: jwtToken, user: userPayload, message: 'Account successfully set up!' });
+        res.json({ success: true, token: jwtToken, user: { id: finalUserId, email, username }, message: 'Account successfully set up!' });
     } catch (error) {
         console.error('Client setup error:', error);
         res.status(500).json({ error: 'Failed to set up account' });
     }
 });
+
+// Client Login (Public Endpoint)
+app.post('/api/client/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
+
+        // Look up user in Supabase by email (case-insensitive)
+        const { data: user, error: userErr } = await supabase
+            .from('users')
+            .select('id, email, username, password_hash, profile_pic')
+            .ilike('email', email.trim())
+            .maybeSingle();
+
+        if (userErr || !user) return res.status(401).json({ error: 'Invalid email or password' });
+        if (!user.password_hash) return res.status(401).json({ error: 'Account not fully set up. Please use the setup link from your approval email.' });
+
+        // Verify password
+        const valid = await bcrypt.compare(password, user.password_hash);
+        if (!valid) return res.status(401).json({ error: 'Invalid email or password' });
+
+        // Sign JWT with userId so authenticateToken middleware works
+        const jwtToken = jwt.sign(
+            { userId: user.id, id: user.id, email: user.email, username: user.username },
+            process.env.JWT_SECRET || 'secret123',
+            { expiresIn: '7d' }
+        );
+
+        const userPayload = { id: user.id, email: user.email, username: user.username, profile_pic: user.profile_pic || '' };
+        res.json({ success: true, token: jwtToken, user: userPayload });
+    } catch (error) {
+        console.error('Client login error:', error);
+        res.status(500).json({ error: 'Login failed. Please try again.' });
+    }
+});
+
 // ══════════════════════════════════════════════════════════════
 // COMPLAINTS / SUPPORT TICKETS
 // ══════════════════════════════════════════════════════════════
@@ -1189,18 +1231,36 @@ app.delete('/api/admin/client-products/:id', authenticateToken, async (req, res)
 // ══════════════════════════════════════════════════════════════
 
 // Admin: Send message to user about an order
-app.post('/api/admin/orders/:orderId/message', authenticateToken, async (req, res) => {
+app.post('/api/admin/orders/:orderId/message', authenticateToken, (req, res, next) => {
+    if (req.headers['content-type']?.includes('multipart/form-data')) upload.single('media')(req, res, next);
+    else next();
+}, async (req, res) => {
     try {
         const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
         if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
         const { message } = req.body;
-        if (!message) return res.status(400).json({ error: 'Message is required' });
+        if (!message?.trim() && !req.file) return res.status(400).json({ error: 'Message or media is required' });
+
+        let mediaUrl = null, mediaType = null, mediaName = null;
+        if (req.file) {
+            const uploadResult = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/order-chat');
+            mediaUrl = uploadResult.secure_url;
+            mediaName = req.file.originalname || null;
+            if (req.file.mimetype.startsWith('video/')) mediaType = 'video';
+            else if (req.file.mimetype.startsWith('audio/')) mediaType = 'audio';
+            else if (req.file.mimetype === 'application/pdf') mediaType = 'pdf';
+            else if (req.file.mimetype.startsWith('application/') || req.file.mimetype.startsWith('text/')) mediaType = 'document';
+            else mediaType = 'image';
+        }
 
         const msg = await OrderMessage.create({
             orderId: req.params.orderId,
             senderId: req.user.id,
             senderRole: 'admin',
-            message
+            message: message?.trim() || '',
+            mediaUrl,
+            mediaType,
+            mediaName
         });
 
         // Get the order to find the user
@@ -1287,10 +1347,13 @@ app.get('/api/client/orders', authenticateToken, async (req, res) => {
 });
 
 // Client: Send message about an order
-app.post('/api/client/orders/:orderId/message', authenticateToken, async (req, res) => {
+app.post('/api/client/orders/:orderId/message', authenticateToken, (req, res, next) => {
+    if (req.headers['content-type']?.includes('multipart/form-data')) upload.single('media')(req, res, next);
+    else next();
+}, async (req, res) => {
     try {
         const { message } = req.body;
-        if (!message) return res.status(400).json({ error: 'Message is required' });
+        if (!message?.trim() && !req.file) return res.status(400).json({ error: 'Message or media is required' });
 
         // Verify this client owns a product in the order
         const { data: order } = await supabase.from('shop_orders').select('*, users (username, email)').eq('order_id', req.params.orderId).single();
@@ -1302,11 +1365,26 @@ app.post('/api/client/orders/:orderId/message', authenticateToken, async (req, r
         const ownsProduct = items.some(item => productNames.includes(item.name));
         if (!ownsProduct) return res.status(403).json({ error: 'Access denied — order does not contain your products' });
 
+        let mediaUrl = null, mediaType = null, mediaName = null;
+        if (req.file) {
+            const uploadResult = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/order-chat');
+            mediaUrl = uploadResult.secure_url;
+            mediaName = req.file.originalname || null;
+            if (req.file.mimetype.startsWith('video/')) mediaType = 'video';
+            else if (req.file.mimetype.startsWith('audio/')) mediaType = 'audio';
+            else if (req.file.mimetype === 'application/pdf') mediaType = 'pdf';
+            else if (req.file.mimetype.startsWith('application/') || req.file.mimetype.startsWith('text/')) mediaType = 'document';
+            else mediaType = 'image';
+        }
+
         const msg = await OrderMessage.create({
             orderId: req.params.orderId,
             senderId: req.user.id,
             senderRole: 'client',
-            message
+            message: message?.trim() || '',
+            mediaUrl,
+            mediaType,
+            mediaName
         });
 
         // Notify the customer
@@ -1322,6 +1400,59 @@ app.post('/api/client/orders/:orderId/message', authenticateToken, async (req, r
         res.json({ success: true, message: msg });
     } catch (error) {
         console.error('Client order message error:', error);
+        res.status(500).json({ error: 'Failed to send message' });
+    }
+});
+
+// Customer: Send message to seller/client about an order
+app.post('/api/orders/:orderId/message', authenticateToken, (req, res, next) => {
+    if (req.headers['content-type']?.includes('multipart/form-data')) upload.single('media')(req, res, next);
+    else next();
+}, async (req, res) => {
+    try {
+        const { message } = req.body;
+        if (!message?.trim() && !req.file) return res.status(400).json({ error: 'Message or media is required' });
+
+        const { data: order } = await supabase.from('shop_orders').select('*').eq('order_id', req.params.orderId).single();
+        if (!order) return res.status(404).json({ error: 'Order not found' });
+        if (order.user_id !== req.user.id) return res.status(403).json({ error: 'Access denied' });
+
+        let mediaUrl = null, mediaType = null, mediaName = null;
+        if (req.file) {
+            const uploadResult = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/order-chat');
+            mediaUrl = uploadResult.secure_url;
+            mediaName = req.file.originalname || null;
+            if (req.file.mimetype.startsWith('video/')) mediaType = 'video';
+            else if (req.file.mimetype.startsWith('audio/')) mediaType = 'audio';
+            else if (req.file.mimetype === 'application/pdf') mediaType = 'pdf';
+            else if (req.file.mimetype.startsWith('application/') || req.file.mimetype.startsWith('text/')) mediaType = 'document';
+            else mediaType = 'image';
+        }
+
+        const msg = await OrderMessage.create({
+            orderId: req.params.orderId,
+            senderId: req.user.id,
+            senderRole: 'user',
+            message: message?.trim() || '',
+            mediaUrl,
+            mediaType,
+            mediaName
+        });
+
+        // Notify possible seller/client participants linked with this order
+        const orderItems = JSON.parse(order.items || '[]');
+        const itemNames = orderItems.map(item => item.name);
+        const involvedClients = await ClientProduct.find({ name: { $in: itemNames } }).distinct('clientId');
+        await Promise.all((involvedClients || []).map((clientId) => pushNotification(clientId, {
+            type: 'order_message',
+            message: `📦 Customer sent a message about order ${req.params.orderId}`,
+            from: req.user.username || 'Customer',
+            orderId: req.params.orderId
+        })));
+
+        res.json({ success: true, message: msg });
+    } catch (error) {
+        console.error('Customer order message error:', error);
         res.status(500).json({ error: 'Failed to send message' });
     }
 });

@@ -174,6 +174,9 @@ const orderMessageSchema = new mongoose.Schema({
     senderId: { type: String, required: true },
     senderRole: { type: String, enum: ['admin', 'user', 'client'], required: true },
     message: { type: String, required: true },
+    mediaUrl: { type: String, default: null },
+    mediaType: { type: String, enum: ['image', 'video', 'audio', 'pdf', 'document', null], default: null },
+    mediaName: { type: String, default: null },
     read: { type: Boolean, default: false }
 }, { timestamps: true });
 
