@@ -370,7 +370,7 @@ function authenticateAdmin(req, res, next) {
 // ══════════════════════════════════════════════════════════════
 // BASIC ROUTES
 // ══════════════════════════════════════════════════════════════
-app.get('/api/health', (req, res) => res.json({ status: 'ok', version: '1.0.2', timestamp: new Date().toISOString() }));
+app.get('/api/health', (req, res) => res.json({ status: 'ok', version: '1.0.3', timestamp: new Date().toISOString() }));
 app.get('/api/post-assets', (req, res) => res.json({ success: true, songs: availableSongs, stickers: availableStickers }));
 app.get('/api/music-library', (req, res) => res.json({ success: true, music: availableSongs }));
 app.get('/api/sticker-library', (req, res) => res.json({ success: true, stickers: availableStickers }));
@@ -909,14 +909,33 @@ app.post('/api/client/setup', async (req, res) => {
         let finalUserId = existingUser?.id;
 
         if (!existingUser) {
-            // Create a new Supabase auth user
-            const { data: authData, error: authErr } = await supabase.auth.admin.createUser({
-                email, password, email_confirm: true,
-                user_metadata: { username }
-            });
-            if (authErr) return res.status(400).json({ error: authErr.message });
+            // First check if user exists in auth.users but not in public.users
+            try {
+                const { data: authUsers } = await supabase.auth.admin.listUsers();
+                const existingAuthUser = authUsers?.users?.find(u => u.email.toLowerCase() === email.trim().toLowerCase());
+                
+                if (existingAuthUser) {
+                    finalUserId = existingAuthUser.id;
+                    // Ensure password is correct for this auth user by updating it
+                    await supabase.auth.admin.updateUserById(finalUserId, { password });
+                } else {
+                    // Create a new Supabase auth user
+                    const { data: authData, error: authErr } = await supabase.auth.admin.createUser({
+                        email, password, email_confirm: true,
+                        user_metadata: { username }
+                    });
+                    if (authErr && !authErr.message.toLowerCase().includes('already registered')) {
+                        return res.status(400).json({ error: authErr.message });
+                    }
+                    if (authData?.user) finalUserId = authData.user.id;
+                }
+            } catch (e) {
+                console.error("Auth check logic failed:", e);
+                return res.status(500).json({ error: 'Auth check logic failed' });
+            }
             
-            finalUserId = authData.user.id;
+            if (!finalUserId) return res.status(400).json({ error: 'Failed to find or create auth user' });
+            
             const passwordHash = await bcrypt.hash(password, 10);
             
             // Add to users table
