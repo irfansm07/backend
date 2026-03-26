@@ -264,18 +264,6 @@ const markNotificationsRead = async (userId) => {
         });
         await redis.del(key);
         if (updated.length > 0) await redis.rpush(key, ...updated);
-    } catch (err) {
-        console.error('⚠️ Redis mark-read failed:', err.message);
-    }
-};
-
-// ══════════════════════════════════════════════════════════════
-// STATIC DATA
-// ══════════════════════════════════════════════════════════════
-const availableSongs = [
-    { id: 1, name: 'Chill Vibes', artist: 'LoFi Beats', duration: '2:30', emoji: '🎧', url: 'https://assets.mixkit.co/music/preview/mixkit-chill-vibes-239.mp3' },
-    { id: 2, name: 'Upbeat Energy', artist: 'Electronic Pop', duration: '3:15', emoji: '⚡', url: 'https://assets.mixkit.co/music/preview/mixkit-upbeat-energy-225.mp3' },
-    { id: 3, name: 'Dreamy Piano', artist: 'Classical', duration: '2:45', emoji: '🎹', url: 'https://assets.mixkit.co/music/preview/mixkit-dreamy-piano-1171.mp3' },
     { id: 4, name: 'Summer Vibes', artist: 'Tropical', duration: '3:30', emoji: '🏖️', url: 'https://assets.mixkit.co/music/preview/mixkit-summer-vibes-129.mp3' },
     { id: 5, name: 'Happy Day', artist: 'Pop Rock', duration: '2:50', emoji: '😊', url: 'https://assets.mixkit.co/music/preview/mixkit-happy-day-583.mp3' },
     { id: 6, name: 'Relaxing Guitar', artist: 'Acoustic', duration: '3:10', emoji: '🎸', url: 'https://assets.mixkit.co/music/preview/mixkit-relaxing-guitar-243.mp3' }
@@ -938,11 +926,16 @@ app.post('/api/client/setup', async (req, res) => {
             
             const passwordHash = await bcrypt.hash(password, 10);
             
-            // Add to users table
-            await supabase.from('users').insert([{
+            // Add to users table (use upsert to prevent conflicts with auth triggers)
+            const { error: insertErr } = await supabase.from('users').upsert([{
                 id: finalUserId, email, username, password_hash: passwordHash, profile_pic: '', bio: `Seller at ${request.businessName}`,
                 college: '', is_verified: true, followers_count: 0, following_count: 0
             }]);
+            if (insertErr) {
+                console.error("Supabase user insert/upsert error:", insertErr);
+                // We shouldn't stop here necessarily if the trigger already made it, but let's at least try to update instead
+                await supabase.from('users').update({ password_hash: passwordHash, username, is_verified: true }).eq('id', finalUserId);
+            }
         } else {
             // User already has an account, update password
             const passwordHash = await bcrypt.hash(password, 10);
@@ -1269,7 +1262,16 @@ app.delete('/api/client/products/:id', authenticateToken, async (req, res) => {
 // Public: Get all active client products (for vibexpert.shop)
 app.get('/api/shop/client-products', async (req, res) => {
     try {
-        const products = await ClientProduct.find({ status: 'active', inStock: true }).sort({ createdAt: -1 });
+        // Include products where inStock is true OR not explicitly set to false
+        // This handles products created before inStock field was added or with default values
+        const products = await ClientProduct.find({ 
+            status: 'active',
+            $or: [
+                { inStock: true },
+                { inStock: { $exists: false } },
+                { inStock: null }
+            ]
+        }).sort({ createdAt: -1 });
         // Enrich with client info
         const enriched = await Promise.all(products.map(async (p) => {
             const { data: user } = await supabase.from('users').select('username').eq('id', p.clientId).single();
