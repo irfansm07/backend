@@ -375,73 +375,130 @@ app.get('/api/post-assets', (req, res) => res.json({ success: true, songs: avail
 app.get('/api/music-library', (req, res) => res.json({ success: true, music: availableSongs }));
 app.get('/api/sticker-library', (req, res) => res.json({ success: true, stickers: availableStickers }));
 
+const CASHFREE_APP_ID = process.env.CASHFREE_APP_ID;
+const CASHFREE_SECRET_KEY = process.env.CASHFREE_SECRET_KEY;
+
 // ══════════════════════════════════════════════════════════════
-// PAYMENT ENDPOINTS (Supabase)
+// VIBEXPERT PAYMENT ENDPOINTS (Cashfree)
 // ══════════════════════════════════════════════════════════════
 app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
     try {
-        const { amount, planType, isFirstTime } = req.body;
+        const { amount, planType, isFirstTime, returnUrl } = req.body;
         if (!amount || !planType) return res.status(400).json({ error: 'Amount and plan type required' });
         if (amount < 1 || amount > 10000) return res.status(400).json({ error: 'Invalid amount' });
-        const options = {
-            amount: amount * 100, currency: 'INR',
-            receipt: `rcpt_${req.user.id.slice(-8)}_${Date.now()}`,
-            notes: { userId: req.user.id, username: req.user.username, planType, isFirstTime }
+
+        const orderId = `order_${req.user.id.slice(-8)}_${Date.now()}`;
+        const sanitizedUserId = req.user.id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 50) || "user123";
+
+        console.log('📦 Creating Cashfree order:', { orderId, amount, planType, userId: req.user.id });
+
+        const cashfreePayload = {
+            order_amount: amount,
+            order_currency: "INR",
+            order_id: orderId,
+            customer_details: {
+                customer_id: sanitizedUserId,
+                customer_phone: "9999999999",
+                customer_email: req.user.email || "test@vibexpert.online",
+                customer_name: req.user.username || "User"
+            },
+            order_meta: {
+                return_url: returnUrl || `https://vibexpert.online/?order_id={order_id}&planType=${planType}`
+            }
         };
-        const order = await razorpay.orders.create(options);
-        await supabase.from('payment_orders').insert([{
-            user_id: req.user.id, order_id: order.id, amount, plan_type: planType, status: 'created'
-        }]);
-        res.json({ success: true, orderId: order.id, amount, razorpayKeyId: process.env.RAZORPAY_KEY_ID });
+
+        const response = await axios.post('https://sandbox.cashfree.com/pg/orders', cashfreePayload, {
+            headers: {
+                'x-api-version': '2023-08-01',
+                'x-client-id': CASHFREE_APP_ID,
+                'x-client-secret': CASHFREE_SECRET_KEY,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        console.log('✅ Cashfree order created:', response.data?.order_id, '| Session:', response.data?.payment_session_id ? 'received' : 'MISSING');
+
+        // Store order record (non-blocking — don't fail if table doesn't exist yet)
+        try {
+            await supabase.from('payment_orders').insert([{
+                user_id: req.user.id, order_id: orderId, amount, plan_type: planType, status: 'created'
+            }]);
+        } catch (dbErr) {
+            console.warn('⚠️ payment_orders insert failed (table may not exist):', dbErr.message);
+        }
+
+        res.json({ success: true, payment_session_id: response.data.payment_session_id, orderId: orderId });
     } catch (error) {
-        console.error('❌ Create order error:', error);
-        res.status(500).json({ error: 'Failed to create payment order' });
+        console.error('❌ Create order error:', error.response?.data || error.message);
+        const detail = error.response?.data?.message || error.response?.data?.error || error.message;
+        res.status(500).json({ error: `Failed to create payment order: ${detail}` });
     }
 });
 
 app.post('/api/payment/verify', authenticateToken, async (req, res) => {
     try {
-        const { razorpay_order_id, razorpay_payment_id, razorpay_signature, planType } = req.body;
-        if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature)
-            return res.status(400).json({ error: 'Missing payment details' });
+        const { order_id, planType } = req.body;
+        if (!order_id) return res.status(400).json({ error: 'Missing order_id' });
 
-        const generated_signature = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-            .update(razorpay_order_id + '|' + razorpay_payment_id).digest('hex');
-        if (generated_signature !== razorpay_signature)
-            return res.status(400).json({ success: false, error: 'Invalid payment signature' });
+        console.log('🔍 Verifying payment:', { order_id, planType });
 
+        const response = await axios.get(`https://sandbox.cashfree.com/pg/orders/${order_id}`, {
+            headers: {
+                'x-api-version': '2023-08-01',
+                'x-client-id': CASHFREE_APP_ID,
+                'x-client-secret': CASHFREE_SECRET_KEY,
+            }
+        });
+
+        console.log('📋 Cashfree order status:', response.data.order_status);
+
+        if (response.data.order_status !== 'PAID') {
+            return res.status(400).json({ success: false, error: `Payment not completed. Status: ${response.data.order_status}` });
+        }
+
+        const actualPlanType = planType || response.data.order_tags?.planType;
         const plans = { noble: { posters: 5, videos: 1, days: 15 }, royal: { posters: 5, videos: 3, days: 23 } };
-        const plan = plans[planType];
+        const plan = plans[actualPlanType];
         if (!plan) return res.status(400).json({ error: 'Invalid plan type' });
         const endDate = new Date(Date.now() + plan.days * 24 * 60 * 60 * 1000);
 
-        await supabase.from('users').update({
-            subscription_plan: planType, subscription_start: new Date(), subscription_end: endDate,
+        const { error: userUpdateErr } = await supabase.from('users').update({
+            subscription_plan: actualPlanType, subscription_start: new Date(), subscription_end: endDate,
             is_premium: true, has_subscribed: true, posters_quota: plan.posters, videos_quota: plan.videos
         }).eq('id', req.user.id);
 
-        await supabase.from('payment_orders').update({
-            payment_id: razorpay_payment_id, signature: razorpay_signature, status: 'completed', updated_at: new Date()
-        }).eq('order_id', razorpay_order_id);
+        if (userUpdateErr) {
+            console.error('⚠️ User subscription update error:', userUpdateErr);
+        }
+
+        // Non-blocking — don't fail if payment_orders table doesn't exist
+        try {
+            await supabase.from('payment_orders').update({
+                status: 'completed', updated_at: new Date()
+            }).eq('order_id', order_id);
+        } catch (dbErr) {
+            console.warn('⚠️ payment_orders update failed:', dbErr.message);
+        }
 
         sendEmail(req.user.email, '🎉 Subscription Activated - VibeXpert', `
             <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
-              <h1 style="color:#4F46E5;">Welcome to ${planType === 'royal' ? 'Royal' : 'Noble'} Plan! 👑</h1>
+              <h1 style="color:#4F46E5;">Welcome to ${actualPlanType === 'royal' ? 'Royal' : 'Noble'} Plan! 👑</h1>
               <p>Hi ${req.user.username}, your subscription has been activated!</p>
               <div style="background:#F3F4F6;padding:20px;border-radius:8px;margin:20px 0;">
                 <ul style="list-style:none;padding:0;">
-                  <li>📦 Plan: <strong>${planType.toUpperCase()}</strong></li>
+                  <li>📦 Plan: <strong>${actualPlanType.toUpperCase()}</strong></li>
                   <li>📸 Posters: <strong>${plan.posters}</strong></li>
                   <li>🎥 Videos: <strong>${plan.videos}</strong></li>
                   <li>⏰ Valid until: <strong>${endDate.toLocaleDateString()}</strong></li>
                 </ul>
               </div>
-              <p>Payment ID: ${razorpay_payment_id}</p>
+              <p>Order ID: ${order_id}</p>
             </div>`);
 
-        res.json({ success: true, message: 'Payment verified and subscription activated', subscription: { plan: planType, endDate, posters: plan.posters, videos: plan.videos } });
+        console.log('✅ Subscription activated:', actualPlanType, 'for user:', req.user.id);
+        res.json({ success: true, message: 'Payment verified and subscription activated', subscription: { plan: actualPlanType, endDate, posters: plan.posters, videos: plan.videos } });
     } catch (error) {
-        console.error('❌ Payment verification error:', error);
+        console.error('❌ Payment verification error:', error.response?.data || error.message);
         res.status(500).json({ error: 'Payment verification failed' });
     }
 });
