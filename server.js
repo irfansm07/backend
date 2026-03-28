@@ -27,7 +27,7 @@ const {
     RealVibe, RealVibeLike, RealVibeComment,
     BannedUser, PlatformNotification, SellerRequest,
     ClientRequest, ClientProduct, OrderMessage,
-    Complaint, PasswordResetCode
+    Complaint
 } = require('./config/mongodb');
 const redis = require('./config/redis');
 
@@ -264,6 +264,18 @@ const markNotificationsRead = async (userId) => {
         });
         await redis.del(key);
         if (updated.length > 0) await redis.rpush(key, ...updated);
+    } catch (err) {
+        console.error('⚠️ Redis mark-read failed:', err.message);
+    }
+};
+
+// ══════════════════════════════════════════════════════════════
+// STATIC DATA
+// ══════════════════════════════════════════════════════════════
+const availableSongs = [
+    { id: 1, name: 'Chill Vibes', artist: 'LoFi Beats', duration: '2:30', emoji: '🎧', url: 'https://assets.mixkit.co/music/preview/mixkit-chill-vibes-239.mp3' },
+    { id: 2, name: 'Upbeat Energy', artist: 'Electronic Pop', duration: '3:15', emoji: '⚡', url: 'https://assets.mixkit.co/music/preview/mixkit-upbeat-energy-225.mp3' },
+    { id: 3, name: 'Dreamy Piano', artist: 'Classical', duration: '2:45', emoji: '🎹', url: 'https://assets.mixkit.co/music/preview/mixkit-dreamy-piano-1171.mp3' },
     { id: 4, name: 'Summer Vibes', artist: 'Tropical', duration: '3:30', emoji: '🏖️', url: 'https://assets.mixkit.co/music/preview/mixkit-summer-vibes-129.mp3' },
     { id: 5, name: 'Happy Day', artist: 'Pop Rock', duration: '2:50', emoji: '😊', url: 'https://assets.mixkit.co/music/preview/mixkit-happy-day-583.mp3' },
     { id: 6, name: 'Relaxing Guitar', artist: 'Acoustic', duration: '3:10', emoji: '🎸', url: 'https://assets.mixkit.co/music/preview/mixkit-relaxing-guitar-243.mp3' }
@@ -358,7 +370,7 @@ function authenticateAdmin(req, res, next) {
 // ══════════════════════════════════════════════════════════════
 // BASIC ROUTES
 // ══════════════════════════════════════════════════════════════
-app.get('/api/health', (req, res) => res.json({ status: 'ok', version: '1.0.3', timestamp: new Date().toISOString() }));
+app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 app.get('/api/post-assets', (req, res) => res.json({ success: true, songs: availableSongs, stickers: availableStickers }));
 app.get('/api/music-library', (req, res) => res.json({ success: true, music: availableSongs }));
 app.get('/api/sticker-library', (req, res) => res.json({ success: true, stickers: availableStickers }));
@@ -762,12 +774,6 @@ app.post('/api/client/apply', async (req, res) => {
             return res.status(400).json({ error: 'This email already has a pending request. Please wait for admin review.' });
         }
 
-        // Check if the email belongs to an already registered user
-        const { data: existingUser } = await supabase.from('users').select('id').ilike('email', email.trim()).maybeSingle();
-        if (existingUser) {
-            return res.status(400).json({ error: 'This email is already registered! Please sign in to apply.' });
-        }
-
         const request = await ClientRequest.create({
             userId: null,
             email, businessName, businessType, phone: phone || '',
@@ -897,45 +903,21 @@ app.post('/api/client/setup', async (req, res) => {
         let finalUserId = existingUser?.id;
 
         if (!existingUser) {
-            // First check if user exists in auth.users but not in public.users
-            try {
-                const { data: authUsers } = await supabase.auth.admin.listUsers();
-                const existingAuthUser = authUsers?.users?.find(u => u.email.toLowerCase() === email.trim().toLowerCase());
-                
-                if (existingAuthUser) {
-                    finalUserId = existingAuthUser.id;
-                    // Ensure password is correct for this auth user by updating it
-                    await supabase.auth.admin.updateUserById(finalUserId, { password });
-                } else {
-                    // Create a new Supabase auth user
-                    const { data: authData, error: authErr } = await supabase.auth.admin.createUser({
-                        email, password, email_confirm: true,
-                        user_metadata: { username }
-                    });
-                    if (authErr && !authErr.message.toLowerCase().includes('already registered')) {
-                        return res.status(400).json({ error: authErr.message });
-                    }
-                    if (authData?.user) finalUserId = authData.user.id;
-                }
-            } catch (e) {
-                console.error("Auth check logic failed:", e);
-                return res.status(500).json({ error: 'Auth check logic failed' });
-            }
+            // Create a new Supabase auth user
+            const { data: authData, error: authErr } = await supabase.auth.admin.createUser({
+                email, password, email_confirm: true,
+                user_metadata: { username }
+            });
+            if (authErr) return res.status(400).json({ error: authErr.message });
             
-            if (!finalUserId) return res.status(400).json({ error: 'Failed to find or create auth user' });
-            
+            finalUserId = authData.user.id;
             const passwordHash = await bcrypt.hash(password, 10);
             
-            // Add to users table (use upsert to prevent conflicts with auth triggers)
-            const { error: insertErr } = await supabase.from('users').upsert([{
+            // Add to users table
+            await supabase.from('users').insert([{
                 id: finalUserId, email, username, password_hash: passwordHash, profile_pic: '', bio: `Seller at ${request.businessName}`,
                 college: '', is_verified: true, followers_count: 0, following_count: 0
             }]);
-            if (insertErr) {
-                console.error("Supabase user insert/upsert error:", insertErr);
-                // We shouldn't stop here necessarily if the trigger already made it, but let's at least try to update instead
-                await supabase.from('users').update({ password_hash: passwordHash, username, is_verified: true }).eq('id', finalUserId);
-            }
         } else {
             // User already has an account, update password
             const passwordHash = await bcrypt.hash(password, 10);
@@ -946,137 +928,15 @@ app.post('/api/client/setup', async (req, res) => {
         await ClientRequest.findByIdAndUpdate(request._id, { userId: finalUserId, setupToken: null });
 
         // Standard login (jwt) to return token
-        const userPayload = { userId: finalUserId, id: finalUserId, email, username };
+        const userPayload = { id: finalUserId, email, username };
         const jwtToken = jwt.sign(userPayload, process.env.JWT_SECRET || 'secret123', { expiresIn: '7d' });
 
-        res.json({ success: true, token: jwtToken, user: { id: finalUserId, email, username }, message: 'Account successfully set up!' });
+        res.json({ success: true, token: jwtToken, user: userPayload, message: 'Account successfully set up!' });
     } catch (error) {
         console.error('Client setup error:', error);
         res.status(500).json({ error: 'Failed to set up account' });
     }
 });
-
-// Client Login (Public Endpoint)
-app.post('/api/client/login', async (req, res) => {
-    try {
-        const { email, password } = req.body;
-        if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
-
-        // Look up user in Supabase by email (case-insensitive)
-        const { data: user, error: userErr } = await supabase
-            .from('users')
-            .select('id, email, username, password_hash, profile_pic')
-            .ilike('email', email.trim())
-            .maybeSingle();
-
-        if (userErr || !user) return res.status(401).json({ error: 'Invalid email or password' });
-        if (!user.password_hash) return res.status(401).json({ error: 'Account not fully set up. Please use the setup link from your approval email.' });
-
-        // Verify password
-        const valid = await bcrypt.compare(password, user.password_hash);
-        if (!valid) return res.status(401).json({ error: 'Invalid email or password' });
-
-        // Sign JWT with userId so authenticateToken middleware works
-        const jwtToken = jwt.sign(
-            { userId: user.id, id: user.id, email: user.email, username: user.username },
-            process.env.JWT_SECRET || 'secret123',
-            { expiresIn: '7d' }
-        );
-
-        const userPayload = { id: user.id, email: user.email, username: user.username, profile_pic: user.profile_pic || '' };
-        res.json({ success: true, token: jwtToken, user: userPayload });
-    } catch (error) {
-        console.error('Client login error:', error);
-        res.status(500).json({ error: 'Login failed. Please try again.' });
-    }
-});
-
-// ══════════════════════════════════════════════════════════════
-// PASSWORD RESET
-// ══════════════════════════════════════════════════════════════
-
-// Request Password Reset Code
-app.post('/api/forgot-password', async (req, res) => {
-    try {
-        const { email } = req.body;
-        if (!email) return res.status(400).json({ error: 'Email is required' });
-
-        // Check if user exists
-        const { data: user } = await supabase.from('users').select('id, email, username').ilike('email', email.trim()).maybeSingle();
-        if (!user) return res.status(404).json({ error: 'No account found with this email' });
-
-        // Generate 6-digit code
-        const code = generateCode();
-
-        // Delete any existing codes for this email and save new one
-        await PasswordResetCode.deleteMany({ email: email.trim().toLowerCase() });
-        await PasswordResetCode.create({ email: email.trim().toLowerCase(), code });
-
-        // Send Email
-        const html = `
-            <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
-                <h2 style="color:#7c3aed;">Password Reset Request</h2>
-                <p>Hi ${user.username},</p>
-                <p>We received a request to reset your VibExpert account password.</p>
-                <div style="background:#F3F4F6;padding:20px;border-radius:8px;text-align:center;font-size:24px;letter-spacing:4px;font-weight:bold;margin:20px 0;">
-                    ${code}
-                </div>
-                <p>This code will expire in 15 minutes.</p>
-                <p>If you didn't request this, you can safely ignore this email.</p>
-            </div>
-        `;
-
-        const sent = await sendEmail(user.email, 'VibExpert Password Reset Code', html);
-        if (!sent) return res.status(500).json({ error: 'Failed to send reset email. Please try again.' });
-
-        res.json({ success: true, message: 'Reset code sent to your email.' });
-    } catch (error) {
-        console.error('Forgot password error:', error);
-        res.status(500).json({ error: 'Failed to process password reset request' });
-    }
-});
-
-// Verify Code and Reset Password
-app.post('/api/reset-password', async (req, res) => {
-    try {
-        const { email, code, newPassword } = req.body;
-        if (!email || !code || !newPassword) return res.status(400).json({ error: 'Missing required fields' });
-        if (newPassword.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
-
-        // Validate code
-        const resetRecord = await PasswordResetCode.findOne({ email: email.trim().toLowerCase(), code });
-        if (!resetRecord) return res.status(400).json({ error: 'Invalid or expired reset code' });
-
-        // Get User
-        const { data: user } = await supabase.from('users').select('id, email').ilike('email', email.trim()).maybeSingle();
-        if (!user) return res.status(404).json({ error: 'Account not found' });
-
-        // Update Supabase Auth if the user exists there too
-        try {
-            const { data: authUsers } = await supabase.auth.admin.listUsers();
-            const authUser = authUsers?.users?.find(u => u.email.toLowerCase() === email.trim().toLowerCase());
-            if (authUser) {
-                await supabase.auth.admin.updateUserById(authUser.id, { password: newPassword });
-            }
-        } catch (e) {
-            console.error('Supabase auth update error (non-critical if user only exists in public):', e.message);
-        }
-
-        // Hash and update password in users table
-        const passwordHash = await bcrypt.hash(newPassword, 10);
-        const { error: updateErr } = await supabase.from('users').update({ password_hash: passwordHash }).eq('id', user.id);
-        if (updateErr) throw updateErr;
-
-        // Cleanup used code
-        await PasswordResetCode.deleteOne({ _id: resetRecord._id });
-
-        res.json({ success: true, message: 'Password reset successfully' });
-    } catch (error) {
-        console.error('Reset password error:', error);
-        res.status(500).json({ error: 'Failed to reset password' });
-    }
-});
-
 // ══════════════════════════════════════════════════════════════
 // COMPLAINTS / SUPPORT TICKETS
 // ══════════════════════════════════════════════════════════════
@@ -1262,16 +1122,7 @@ app.delete('/api/client/products/:id', authenticateToken, async (req, res) => {
 // Public: Get all active client products (for vibexpert.shop)
 app.get('/api/shop/client-products', async (req, res) => {
     try {
-        // Include products where inStock is true OR not explicitly set to false
-        // This handles products created before inStock field was added or with default values
-        const products = await ClientProduct.find({ 
-            status: 'active',
-            $or: [
-                { inStock: true },
-                { inStock: { $exists: false } },
-                { inStock: null }
-            ]
-        }).sort({ createdAt: -1 });
+        const products = await ClientProduct.find({ status: 'active', inStock: true }).sort({ createdAt: -1 });
         // Enrich with client info
         const enriched = await Promise.all(products.map(async (p) => {
             const { data: user } = await supabase.from('users').select('username').eq('id', p.clientId).single();
@@ -1338,36 +1189,18 @@ app.delete('/api/admin/client-products/:id', authenticateToken, async (req, res)
 // ══════════════════════════════════════════════════════════════
 
 // Admin: Send message to user about an order
-app.post('/api/admin/orders/:orderId/message', authenticateToken, (req, res, next) => {
-    if (req.headers['content-type']?.includes('multipart/form-data')) upload.single('media')(req, res, next);
-    else next();
-}, async (req, res) => {
+app.post('/api/admin/orders/:orderId/message', authenticateToken, async (req, res) => {
     try {
         const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
         if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
         const { message } = req.body;
-        if (!message?.trim() && !req.file) return res.status(400).json({ error: 'Message or media is required' });
-
-        let mediaUrl = null, mediaType = null, mediaName = null;
-        if (req.file) {
-            const uploadResult = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/order-chat');
-            mediaUrl = uploadResult.secure_url;
-            mediaName = req.file.originalname || null;
-            if (req.file.mimetype.startsWith('video/')) mediaType = 'video';
-            else if (req.file.mimetype.startsWith('audio/')) mediaType = 'audio';
-            else if (req.file.mimetype === 'application/pdf') mediaType = 'pdf';
-            else if (req.file.mimetype.startsWith('application/') || req.file.mimetype.startsWith('text/')) mediaType = 'document';
-            else mediaType = 'image';
-        }
+        if (!message) return res.status(400).json({ error: 'Message is required' });
 
         const msg = await OrderMessage.create({
             orderId: req.params.orderId,
             senderId: req.user.id,
             senderRole: 'admin',
-            message: message?.trim() || '',
-            mediaUrl,
-            mediaType,
-            mediaName
+            message
         });
 
         // Get the order to find the user
@@ -1452,138 +1285,6 @@ app.get('/api/client/orders', authenticateToken, async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch client orders' });
     }
 });
-
-// Client: Send message about an order
-app.post('/api/client/orders/:orderId/message', authenticateToken, (req, res, next) => {
-    if (req.headers['content-type']?.includes('multipart/form-data')) upload.single('media')(req, res, next);
-    else next();
-}, async (req, res) => {
-    try {
-        const { message } = req.body;
-        if (!message?.trim() && !req.file) return res.status(400).json({ error: 'Message or media is required' });
-
-        // Verify this client owns a product in the order
-        const { data: order } = await supabase.from('shop_orders').select('*, users (username, email)').eq('order_id', req.params.orderId).single();
-        if (!order) return res.status(404).json({ error: 'Order not found' });
-
-        const clientProducts = await ClientProduct.find({ clientId: req.user.id });
-        const productNames = clientProducts.map(p => p.name);
-        const items = JSON.parse(order.items || '[]');
-        const ownsProduct = items.some(item => productNames.includes(item.name));
-        if (!ownsProduct) return res.status(403).json({ error: 'Access denied — order does not contain your products' });
-
-        let mediaUrl = null, mediaType = null, mediaName = null;
-        if (req.file) {
-            const uploadResult = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/order-chat');
-            mediaUrl = uploadResult.secure_url;
-            mediaName = req.file.originalname || null;
-            if (req.file.mimetype.startsWith('video/')) mediaType = 'video';
-            else if (req.file.mimetype.startsWith('audio/')) mediaType = 'audio';
-            else if (req.file.mimetype === 'application/pdf') mediaType = 'pdf';
-            else if (req.file.mimetype.startsWith('application/') || req.file.mimetype.startsWith('text/')) mediaType = 'document';
-            else mediaType = 'image';
-        }
-
-        const msg = await OrderMessage.create({
-            orderId: req.params.orderId,
-            senderId: req.user.id,
-            senderRole: 'client',
-            message: message?.trim() || '',
-            mediaUrl,
-            mediaType,
-            mediaName
-        });
-
-        // Notify the customer
-        if (order.user_id) {
-            await pushNotification(order.user_id, {
-                type: 'order_message',
-                message: `📦 Seller message about your order: ${message}`,
-                from: 'VibExpert Seller',
-                orderId: req.params.orderId
-            });
-        }
-
-        res.json({ success: true, message: msg });
-    } catch (error) {
-        console.error('Client order message error:', error);
-        res.status(500).json({ error: 'Failed to send message' });
-    }
-});
-
-// Customer: Send message to seller/client about an order
-app.post('/api/orders/:orderId/message', authenticateToken, (req, res, next) => {
-    if (req.headers['content-type']?.includes('multipart/form-data')) upload.single('media')(req, res, next);
-    else next();
-}, async (req, res) => {
-    try {
-        const { message } = req.body;
-        if (!message?.trim() && !req.file) return res.status(400).json({ error: 'Message or media is required' });
-
-        const { data: order } = await supabase.from('shop_orders').select('*').eq('order_id', req.params.orderId).single();
-        if (!order) return res.status(404).json({ error: 'Order not found' });
-        if (order.user_id !== req.user.id) return res.status(403).json({ error: 'Access denied' });
-
-        let mediaUrl = null, mediaType = null, mediaName = null;
-        if (req.file) {
-            const uploadResult = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/order-chat');
-            mediaUrl = uploadResult.secure_url;
-            mediaName = req.file.originalname || null;
-            if (req.file.mimetype.startsWith('video/')) mediaType = 'video';
-            else if (req.file.mimetype.startsWith('audio/')) mediaType = 'audio';
-            else if (req.file.mimetype === 'application/pdf') mediaType = 'pdf';
-            else if (req.file.mimetype.startsWith('application/') || req.file.mimetype.startsWith('text/')) mediaType = 'document';
-            else mediaType = 'image';
-        }
-
-        const msg = await OrderMessage.create({
-            orderId: req.params.orderId,
-            senderId: req.user.id,
-            senderRole: 'user',
-            message: message?.trim() || '',
-            mediaUrl,
-            mediaType,
-            mediaName
-        });
-
-        // Notify possible seller/client participants linked with this order
-        const orderItems = JSON.parse(order.items || '[]');
-        const itemNames = orderItems.map(item => item.name);
-        const involvedClients = await ClientProduct.find({ name: { $in: itemNames } }).distinct('clientId');
-        await Promise.all((involvedClients || []).map((clientId) => pushNotification(clientId, {
-            type: 'order_message',
-            message: `📦 Customer sent a message about order ${req.params.orderId}`,
-            from: req.user.username || 'Customer',
-            orderId: req.params.orderId
-        })));
-
-        res.json({ success: true, message: msg });
-    } catch (error) {
-        console.error('Customer order message error:', error);
-        res.status(500).json({ error: 'Failed to send message' });
-    }
-});
-
-// Client: Get messages for one of their orders
-app.get('/api/client/orders/:orderId/messages', authenticateToken, async (req, res) => {
-    try {
-        // Verify client owns a product in this order
-        const { data: order } = await supabase.from('shop_orders').select('*, users (username, email)').eq('order_id', req.params.orderId).single();
-        if (!order) return res.status(404).json({ error: 'Order not found' });
-
-        const clientProducts = await ClientProduct.find({ clientId: req.user.id });
-        const productNames = clientProducts.map(p => p.name);
-        const items = JSON.parse(order.items || '[]');
-        const ownsProduct = items.some(item => productNames.includes(item.name));
-        if (!ownsProduct) return res.status(403).json({ error: 'Access denied' });
-
-        const messages = await OrderMessage.find({ orderId: req.params.orderId }).sort({ createdAt: 1 });
-        res.json({ success: true, messages, order });
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to fetch messages' });
-    }
-});
-
 
 // Client: Get user's own seller requests (history)
 app.get('/api/user/seller-requests', authenticateToken, async (req, res) => {
@@ -2021,9 +1722,9 @@ app.post('/api/reset-password', async (req, res) => {
         
         let query = supabase.from('users').select('id');
         if (email.includes('@')) {
-            query = query.ilike('email', email.trim());
+            query = query.eq('email', email);
         } else {
-            query = query.ilike('username', email.trim());
+            query = query.eq('username', email);
         }
         const { data: user } = await query.maybeSingle();
         
@@ -3386,12 +3087,11 @@ app.use((req, res) => res.status(404).json({ error: 'Endpoint not found' }));
 // ══════════════════════════════════════════════════════════════
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
-    console.log(`🚀 VibeXpert Backend running on port ${PORT}`);
-    console.log(`✅ Supabase  → Users, Chat, DMs, Payments`);
-    console.log(`✅ MongoDB   → Posts, RealVibes`);
-    console.log(`✅ Cloudinary→ All media files`);
-    console.log(`✅ Redis     → Notifications`);
-    console.log(`✅ Socket.IO → Real-time events`);
-    console.log(`💳 Razorpay  → Payments active`);
-})
-;
+console.log(`🚀 VibeXpert Backend running on port ${PORT}`);
+console.log(`✅ Supabase  → Users, Chat, DMs, Payments`);
+console.log(`✅ MongoDB   → Posts, RealVibes`);
+console.log(`✅ Cloudinary→ All media files`);
+console.log(`✅ Redis     → Notifications`);
+console.log(`✅ Socket.IO → Real-time events`);
+console.log(`💳 Razorpay  → Payments active`);
+});
