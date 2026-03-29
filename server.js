@@ -1288,6 +1288,39 @@ app.get('/api/orders/:orderId/messages', authenticateToken, async (req, res) => 
     }
 });
 
+// Post a message for an order (Client or Admin)
+app.post('/api/orders/:orderId/messages', authenticateToken, async (req, res) => {
+    try {
+        const { message, senderRole } = req.body;
+        if (!message) return res.status(400).json({ error: 'Message is required' });
+
+        const msg = await OrderMessage.create({
+            orderId: req.params.orderId,
+            senderId: req.user.id,
+            senderRole: senderRole || 'client',
+            message
+        });
+
+        // Try to notify the other party
+        if (senderRole === 'client') {
+            const { data: order } = await supabase.from('shop_orders').select('user_id').eq('order_id', req.params.orderId).maybeSingle();
+            if (order && order.user_id !== req.user.id) {
+                await pushNotification(order.user_id, {
+                    type: 'order_message',
+                    message: `💬 Message from seller regarding order ${req.params.orderId}: ${message}`,
+                    from: 'VibExpert Seller',
+                    orderId: req.params.orderId
+                });
+            }
+        }
+
+        res.json({ success: true, message: msg });
+    } catch (error) {
+        console.error('Order message error:', error);
+        res.status(500).json({ error: 'Failed to send message' });
+    }
+});
+
 // Admin: Update order tracking info
 app.put('/api/admin/shop-orders/:orderId/tracking', authenticateToken, async (req, res) => {
     try {
