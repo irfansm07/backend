@@ -1586,7 +1586,7 @@ app.post('/api/user/profile-photo', authenticateToken, upload.single('profilePho
         res.json({ success: true, photoUrl });
     } catch (error) {
         console.error('Profile photo upload error:', error);
-        res.status(500).json({ error: 'Failed to upload profile photo' });
+        res.status(500).json({ error: 'Failed to upload profile photo', details: error.message || String(error) });
     }
 });
 
@@ -1612,7 +1612,7 @@ app.post('/api/user/cover-photo', authenticateToken, upload.single('coverPhoto')
         res.json({ success: true, photoUrl });
     } catch (error) {
         console.error('Cover photo upload error:', error);
-        res.status(500).json({ error: 'Failed to upload cover photo' });
+        res.status(500).json({ error: 'Failed to upload cover photo', details: error.message || String(error) });
     }
 });
 
