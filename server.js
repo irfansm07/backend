@@ -1079,7 +1079,7 @@ app.post('/api/client/products', authenticateToken, upload.array('images', 5), a
         const clientReq = await ClientRequest.findOne({ userId: req.user.id, status: 'approved' });
         if (!clientReq) return res.status(403).json({ error: 'You must be an approved client to add products' });
 
-        const { name, description, price, originalPrice, category, colors, sizes, badge, stockQuantity, discountPercent } = req.body;
+        const { name, description, price, originalPrice, category, colors, sizes, badge, stockQuantity, discountPercent, deliveryDays, deliveryNote } = req.body;
         if (!name || !description || !price || !category)
             return res.status(400).json({ error: 'Name, description, price, and category are required' });
 
@@ -1104,6 +1104,8 @@ app.post('/api/client/products', authenticateToken, upload.array('images', 5), a
             badge: badge || 'new',
             stockQuantity: parseInt(stockQuantity || '0'),
             discountPercent: parseFloat(discountPercent || '0'),
+            deliveryDays: parseInt(deliveryDays || '7'),
+            deliveryNote: deliveryNote || '',
             status: 'active'
         });
 
@@ -1130,7 +1132,7 @@ app.put('/api/client/products/:id', authenticateToken, upload.array('images', 5)
         const product = await ClientProduct.findOne({ _id: req.params.id, clientId: req.user.id });
         if (!product) return res.status(404).json({ error: 'Product not found' });
 
-        const { name, description, price, originalPrice, category, colors, sizes, badge, inStock, stockQuantity, discountPercent } = req.body;
+        const { name, description, price, originalPrice, category, colors, sizes, badge, inStock, stockQuantity, discountPercent, deliveryDays, deliveryNote } = req.body;
 
         // Upload new images if provided
         let images = product.images;
@@ -1154,6 +1156,8 @@ app.put('/api/client/products/:id', authenticateToken, upload.array('images', 5)
         if (inStock !== undefined) updates.inStock = inStock === 'true' || inStock === true;
         if (stockQuantity !== undefined) updates.stockQuantity = parseInt(stockQuantity);
         if (discountPercent !== undefined) updates.discountPercent = parseFloat(discountPercent);
+        if (deliveryDays !== undefined) updates.deliveryDays = parseInt(deliveryDays);
+        if (deliveryNote !== undefined) updates.deliveryNote = deliveryNote;
         if (req.files && req.files.length > 0) updates.images = images;
 
         const updated = await ClientProduct.findByIdAndUpdate(req.params.id, updates, { new: true });
@@ -1201,7 +1205,9 @@ app.get('/api/shop/client-products', async (req, res) => {
                 sellerName: user?.username || 'VibExpert Seller',
                 clientId: p.clientId,
                 discountPercent: p.discountPercent,
-                stockQuantity: p.stockQuantity
+                stockQuantity: p.stockQuantity,
+                deliveryDays: p.deliveryDays || 7,
+                deliveryNote: p.deliveryNote || ''
             };
         }));
         res.json({ success: true, products: enriched });
@@ -1288,29 +1294,61 @@ app.get('/api/orders/:orderId/messages', authenticateToken, async (req, res) => 
     }
 });
 
-// Post a message for an order (Client or Admin)
+// Post a message for an order (Client, Admin, or User/Buyer)
 app.post('/api/orders/:orderId/messages', authenticateToken, async (req, res) => {
     try {
         const { message, senderRole } = req.body;
         if (!message) return res.status(400).json({ error: 'Message is required' });
 
+        const role = senderRole || 'user';
         const msg = await OrderMessage.create({
             orderId: req.params.orderId,
             senderId: req.user.id,
-            senderRole: senderRole || 'client',
+            senderRole: role,
             message
         });
 
         // Try to notify the other party
-        if (senderRole === 'client') {
-            const { data: order } = await supabase.from('shop_orders').select('user_id').eq('order_id', req.params.orderId).maybeSingle();
-            if (order && order.user_id !== req.user.id) {
-                await pushNotification(order.user_id, {
-                    type: 'order_message',
-                    message: `💬 Message from seller regarding order ${req.params.orderId}: ${message}`,
-                    from: 'VibExpert Seller',
-                    orderId: req.params.orderId
-                });
+        const { data: order } = await supabase.from('shop_orders').select('user_id, items').eq('order_id', req.params.orderId).maybeSingle();
+
+        if (order) {
+            if (role === 'client') {
+                // Seller sent → notify buyer
+                if (order.user_id && order.user_id !== req.user.id) {
+                    await pushNotification(order.user_id, {
+                        type: 'order_message',
+                        message: `💬 Message from seller regarding your order: ${message}`,
+                        from: 'VibExpert Seller',
+                        orderId: req.params.orderId
+                    });
+                }
+            } else if (role === 'user') {
+                // Buyer sent → notify seller(s)
+                try {
+                    let items = [];
+                    try { items = JSON.parse(order.items || '[]'); } catch {}
+                    const clientIdsSeen = new Set();
+                    for (const item of items) {
+                        let clientProduct = null;
+                        if (item.productId || item.id) {
+                            try { clientProduct = await ClientProduct.findById(item.productId || item.id); } catch {}
+                        }
+                        if (!clientProduct && item.name) {
+                            clientProduct = await ClientProduct.findOne({ name: item.name, status: 'active' });
+                        }
+                        if (clientProduct && !clientIdsSeen.has(clientProduct.clientId)) {
+                            clientIdsSeen.add(clientProduct.clientId);
+                            await pushNotification(clientProduct.clientId, {
+                                type: 'order_message',
+                                message: `💬 Customer message about order ${req.params.orderId}: ${message}`,
+                                from: req.user.username || 'Customer',
+                                orderId: req.params.orderId
+                            });
+                        }
+                    }
+                } catch (notifyErr) {
+                    console.error('Buyer notify seller error (non-critical):', notifyErr.message);
+                }
             }
         }
 
@@ -1347,6 +1385,56 @@ app.put('/api/admin/shop-orders/:orderId/tracking', authenticateToken, async (re
         res.json({ success: true, message: 'Tracking info updated' });
     } catch (error) {
         console.error('Tracking update error:', error);
+        res.status(500).json({ error: 'Failed to update tracking' });
+    }
+});
+
+// Client (seller): Update order tracking info
+app.put('/api/client/orders/:orderId/tracking', authenticateToken, async (req, res) => {
+    try {
+        const { trackingId, trackingUrl, carrier, estimatedDelivery, currentPosition, status } = req.body;
+
+        // Verify this client owns a product in this order
+        const clientProducts = await ClientProduct.find({ clientId: req.user.id });
+        const productNames = clientProducts.map(p => p.name);
+        const { data: order } = await supabase.from('shop_orders').select('*').eq('order_id', req.params.orderId).single();
+        if (!order) return res.status(404).json({ error: 'Order not found' });
+        let items = [];
+        try { items = JSON.parse(order.items || '[]'); } catch {}
+        const ownsProduct = items.some(item => productNames.includes(item.name));
+        if (!ownsProduct) return res.status(403).json({ error: 'You do not have products in this order' });
+
+        const trackingInfo = JSON.stringify({
+            trackingId: trackingId || '',
+            trackingUrl: trackingUrl || '',
+            carrier: carrier || '',
+            estimatedDelivery: estimatedDelivery || '',
+            currentPosition: currentPosition || '',
+            updatedAt: new Date().toISOString(),
+            updatedBy: req.user.id
+        });
+
+        const updateData = { tracking_info: trackingInfo, updated_at: new Date().toISOString() };
+        if (status && ['processing', 'shipped', 'delivered'].includes(status)) {
+            updateData.status = status;
+        }
+
+        const { error } = await supabase.from('shop_orders').update(updateData).eq('order_id', req.params.orderId);
+        if (error) throw error;
+
+        // Notify buyer
+        if (order.user_id) {
+            await pushNotification(order.user_id, {
+                type: 'order_tracking',
+                message: `📦 Order update: ${currentPosition || 'Your order has been updated'} | Carrier: ${carrier || 'N/A'}${trackingId ? ` | Tracking: ${trackingId}` : ''}`,
+                from: 'VibExpert Shop',
+                orderId: req.params.orderId
+            });
+        }
+
+        res.json({ success: true, message: 'Tracking info updated successfully' });
+    } catch (error) {
+        console.error('Client tracking update error:', error);
         res.status(500).json({ error: 'Failed to update tracking' });
     }
 });

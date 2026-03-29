@@ -162,7 +162,9 @@ const clientProductSchema = new mongoose.Schema({
     discountPercent: { type: Number, default: 0 },
     status: { type: String, enum: ['active', 'inactive', 'pending_review'], default: 'active', index: true },
     rating: { type: Number, default: 0 },
-    reviews: { type: Number, default: 0 }
+    reviews: { type: Number, default: 0 },
+    deliveryDays: { type: Number, default: 7 },
+    deliveryNote: { type: String, default: '' }
 }, { timestamps: true });
 
 clientProductSchema.index({ clientId: 1, status: 1 });
