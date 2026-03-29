@@ -3317,6 +3317,36 @@ setInterval(cleanupOldExecutiveMessages, 60 * 60 * 1000);
 cleanupOldExecutiveMessages();
 
 // ══════════════════════════════════════════════════════════════
+// UNREAD COUNT ENDPOINTS (called by index.html pollBadges)
+// ══════════════════════════════════════════════════════════════
+app.get('/api/notifications/unread-count', authenticateToken, async (req, res) => {
+    try {
+        const notifications = await getNotifications(req.user.id, 50);
+        const count = notifications.filter(n => !n.read).length;
+        res.json({ success: true, count });
+    } catch (err) {
+        res.json({ success: true, count: 0 });
+    }
+});
+
+app.get('/api/dm/unread-count', authenticateToken, async (req, res) => {
+    try {
+        const uid = req.user.id;
+        const { data: convs } = await supabase
+            .from('dm_conversations')
+            .select('user1_id, unread_count_user1, unread_count_user2')
+            .or(`user1_id.eq.${uid},user2_id.eq.${uid}`);
+        const count = (convs || []).reduce((sum, c) => {
+            const unread = c.user1_id === uid ? (c.unread_count_user1 || 0) : (c.unread_count_user2 || 0);
+            return sum + unread;
+        }, 0);
+        res.json({ success: true, count });
+    } catch (err) {
+        res.json({ success: true, count: 0 });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
 // ERROR HANDLING
 // ══════════════════════════════════════════════════════════════
 app.use((err, req, res, next) => {
