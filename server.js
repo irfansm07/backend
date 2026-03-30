@@ -1581,12 +1581,14 @@ app.post('/api/user/profile-photo', authenticateToken, upload.single('profilePho
         if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
         const result = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/profiles');
         const photoUrl = result.secure_url;
-        const { data: updatedUser, error } = await supabase.from('users').update({ profile_pic: photoUrl }).eq('id', req.user.id).select().single();
+        const { error } = await supabase.from('users').update({ profile_pic: photoUrl }).eq('id', req.user.id);
         if (error) throw error;
-        res.json({ success: true, photoUrl: updatedUser.profile_pic || photoUrl });
+        
+        io.emit('profile_updated', { userId: req.user.id, profile_pic: photoUrl });
+        res.json({ success: true, url: photoUrl });
     } catch (error) {
-        console.error('Profile photo upload error:', error);
-        res.status(500).json({ error: 'Failed to upload profile photo: ' + (error.message || String(error)) });
+        console.error('Profile photo error:', error);
+        res.status(500).json({ error: 'Failed to upload photo' });
     }
 });
 
@@ -1594,28 +1596,43 @@ app.delete('/api/user/profile-photo', authenticateToken, async (req, res) => {
     try {
         const { error } = await supabase.from('users').update({ profile_pic: null }).eq('id', req.user.id);
         if (error) throw error;
-        res.json({ success: true });
+        io.emit('profile_updated', { userId: req.user.id, profile_pic: null });
+        res.json({ success: true, message: 'Profile photo removed' });
     } catch (error) {
         console.error('Profile photo remove error:', error);
-        res.status(500).json({ error: 'Failed to remove profile photo' });
+        res.status(500).json({ error: 'Failed to remove photo' });
     }
 });
 
-// ── Cover Photo Upload ────────────────────────────────────────────────────────
+// ── Cover Photo Upload ──────────────────────────────────────────────────────
 app.post('/api/user/cover-photo', authenticateToken, upload.single('coverPhoto'), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
         const result = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/covers');
         const photoUrl = result.secure_url;
-        const { data: updatedUser, error } = await supabase.from('users').update({ cover_photo: photoUrl }).eq('id', req.user.id).select().single();
+        
+        const { error } = await supabase.from('users').update({ cover_photo: photoUrl }).eq('id', req.user.id);
         if (error) throw error;
-        res.json({ success: true, photoUrl: updatedUser.cover_photo || photoUrl });
+        
+        io.emit('cover_updated', { userId: req.user.id, cover_photo: photoUrl });
+        res.json({ success: true, photoUrl });
     } catch (error) {
         console.error('Cover photo upload error:', error);
-        res.status(500).json({ error: 'Failed to upload cover photo: ' + (error.message || String(error)) });
+        res.status(500).json({ error: 'Failed to upload cover photo' });
     }
 });
 
+app.delete('/api/user/cover-photo', authenticateToken, async (req, res) => {
+    try {
+        const { error } = await supabase.from('users').update({ cover_photo: null }).eq('id', req.user.id);
+        if (error) throw error;
+        io.emit('cover_updated', { userId: req.user.id, cover_photo: null });
+        res.json({ success: true, message: 'Cover photo removed' });
+    } catch (error) {
+        console.error('Cover photo delete error:', error);
+        res.status(500).json({ error: 'Failed to delete cover photo' });
+    }
+});
 
 app.post('/api/follow/:userId', authenticateToken, async (req, res) => {
     try {
@@ -1876,7 +1893,7 @@ app.post('/api/login', async (req, res) => {
         } catch (_) {}
 
 
-        res.json({ success: true, token, user: { id: user.id, username: user.username, email: user.email, college: user.college, communityJoined: user.community_joined, profilePic: user.profile_pic, profile_pic: user.profile_pic, cover_photo: user.cover_photo || null, registrationNumber: user.registration_number, badges: user.badges || [], bio: user.bio || '', isPremium: user.is_premium || false, subscriptionPlan: user.subscription_plan || null, followersCount: followersCount || 0, followingCount: followingCount || 0, postCount } });
+        res.json({ success: true, token, user: { id: user.id, username: user.username, email: user.email, college: user.college, communityJoined: user.community_joined, profilePic: user.profile_pic, profile_pic: user.profile_pic, registrationNumber: user.registration_number, badges: user.badges || [], bio: user.bio || '', isPremium: user.is_premium || false, subscriptionPlan: user.subscription_plan || null, followersCount: followersCount || 0, followingCount: followingCount || 0, postCount } });
     } catch (error) {
         console.error('Login error:', error);
         res.status(500).json({ error: 'Login failed' });
@@ -2093,7 +2110,6 @@ app.post('/api/auth/google', async (req, res) => {
                 communityJoined: user.community_joined,
                 profilePic: user.profile_pic,
                 profile_pic: user.profile_pic,
-                cover_photo: user.cover_photo || null,
                 registrationNumber: user.registration_number,
                 badges: user.badges || [],
                 bio: user.bio || '',
@@ -3365,11 +3381,11 @@ app.use((req, res) => res.status(404).json({ error: 'Endpoint not found' }));
 // ══════════════════════════════════════════════════════════════
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
-console.log(`🚀 VibeXpert Backend running on port ${PORT}`);
-console.log(`✅ Supabase  → Users, Chat, DMs, Payments`);
-console.log(`✅ MongoDB   → Posts, RealVibes`);
-console.log(`✅ Cloudinary→ All media files`);
-console.log(`✅ Redis     → Notifications`);
-console.log(`✅ Socket.IO → Real-time events`);
-console.log(`💳 Razorpay  → Payments active`);
+    console.log(`🚀 VibeXpert Backend running on port ${PORT}`);
+    console.log(`✅ Supabase  → Users, Chat, DMs, Payments`);
+    console.log(`✅ MongoDB   → Posts, RealVibes`);
+    console.log(`✅ Cloudinary→ All media files`);
+    console.log(`✅ Redis     → Notifications`);
+    console.log(`✅ Socket.IO → Real-time events`);
+    console.log(`💳 Razorpay  → Payments active`);
 });
