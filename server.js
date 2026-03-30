@@ -1294,30 +1294,49 @@ app.get('/api/orders/:orderId/messages', authenticateToken, async (req, res) => 
     }
 });
 
-// Post a message for an order (Client, Admin, or User/Buyer)
-app.post('/api/orders/:orderId/messages', authenticateToken, async (req, res) => {
+// Post a message for an order (Client, Admin, or User/Buyer) — supports image attachment
+app.post('/api/orders/:orderId/messages', authenticateToken, upload.single('image'), async (req, res) => {
     try {
         const { message, senderRole } = req.body;
-        if (!message) return res.status(400).json({ error: 'Message is required' });
+        
+        // Upload image to Cloudinary if provided
+        let mediaUrl = null, mediaType = null, mediaName = null;
+        if (req.file) {
+            try {
+                const result = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/order-chat');
+                mediaUrl = result.secure_url;
+                mediaType = req.file.mimetype.startsWith('image/') ? 'image' : 'document';
+                mediaName = req.file.originalname;
+            } catch (uploadErr) {
+                console.error('Order chat image upload error:', uploadErr.message);
+                return res.status(500).json({ error: 'Failed to upload image' });
+            }
+        }
+
+        if (!message && !mediaUrl) return res.status(400).json({ error: 'Message or image is required' });
 
         const role = senderRole || 'user';
         const msg = await OrderMessage.create({
             orderId: req.params.orderId,
             senderId: req.user.id,
             senderRole: role,
-            message
+            message: message || (mediaUrl ? '📷 Photo' : ''),
+            mediaUrl,
+            mediaType,
+            mediaName
         });
 
         // Try to notify the other party
         const { data: order } = await supabase.from('shop_orders').select('user_id, items').eq('order_id', req.params.orderId).maybeSingle();
 
         if (order) {
+            const notifText = message || '📷 Sent a photo';
             if (role === 'client') {
                 // Seller sent → notify buyer
                 if (order.user_id && order.user_id !== req.user.id) {
                     await pushNotification(order.user_id, {
                         type: 'order_message',
-                        message: `💬 Message from seller regarding your order: ${message}`,
+                        message: `💬 Message from seller regarding your order: ${notifText}`,
                         from: 'VibExpert Seller',
                         orderId: req.params.orderId
                     });
@@ -1340,7 +1359,7 @@ app.post('/api/orders/:orderId/messages', authenticateToken, async (req, res) =>
                             clientIdsSeen.add(clientProduct.clientId);
                             await pushNotification(clientProduct.clientId, {
                                 type: 'order_message',
-                                message: `💬 Customer message about order ${req.params.orderId}: ${message}`,
+                                message: `💬 Customer message about order ${req.params.orderId}: ${notifText}`,
                                 from: req.user.username || 'Customer',
                                 orderId: req.params.orderId
                             });
