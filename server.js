@@ -1374,7 +1374,7 @@ app.post('/api/orders/:orderId/messages', authenticateToken, upload.single('imag
         res.json({ success: true, message: msg });
     } catch (error) {
         console.error('Order message error:', error);
-        res.status(500).json({ error: 'Failed to send message' });
+        res.status(500).json({ error: error.message || 'Failed to send message' });
     }
 });
 
