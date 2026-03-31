@@ -1073,7 +1073,15 @@ app.put('/api/admin/complaints/:id', authenticateToken, async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 
 // Client: Add a new product
-app.post('/api/client/products', authenticateToken, upload.array('images', 5), async (req, res) => {
+app.post('/api/client/products', authenticateToken, (req, res, next) => {
+    upload.array('images', 5)(req, res, (err) => {
+        if (err) {
+            console.error('Multer product upload error:', err.message);
+            return res.status(400).json({ error: `Image upload error: ${err.message}` });
+        }
+        next();
+    });
+}, async (req, res) => {
     try {
         // Verify client is approved
         const clientReq = await ClientRequest.findOne({ userId: req.user.id, status: 'approved' });
@@ -1087,8 +1095,13 @@ app.post('/api/client/products', authenticateToken, upload.array('images', 5), a
         const images = [];
         if (req.files && req.files.length > 0) {
             for (const file of req.files) {
-                const result = await uploadToCloudinary(file.buffer, file.mimetype, 'vibexpert/shop/client-products');
-                images.push({ url: result.secure_url, public_id: result.public_id });
+                try {
+                    const result = await uploadToCloudinary(file.buffer, file.mimetype, 'vibexpert/shop/client-products');
+                    images.push({ url: result.secure_url, public_id: result.public_id });
+                } catch (uploadErr) {
+                    console.error('Cloudinary upload error for product image:', uploadErr.message);
+                    return res.status(500).json({ error: `Failed to upload image: ${uploadErr.message}` });
+                }
             }
         }
 
@@ -1112,7 +1125,7 @@ app.post('/api/client/products', authenticateToken, upload.array('images', 5), a
         res.json({ success: true, product });
     } catch (error) {
         console.error('Add product error:', error);
-        res.status(500).json({ error: 'Failed to add product' });
+        res.status(500).json({ error: error.message || 'Failed to add product' });
     }
 });
 
@@ -1127,7 +1140,15 @@ app.get('/api/client/products', authenticateToken, async (req, res) => {
 });
 
 // Client: Update product
-app.put('/api/client/products/:id', authenticateToken, upload.array('images', 5), async (req, res) => {
+app.put('/api/client/products/:id', authenticateToken, (req, res, next) => {
+    upload.array('images', 5)(req, res, (err) => {
+        if (err) {
+            console.error('Multer product update upload error:', err.message);
+            return res.status(400).json({ error: `Image upload error: ${err.message}` });
+        }
+        next();
+    });
+}, async (req, res) => {
     try {
         const product = await ClientProduct.findOne({ _id: req.params.id, clientId: req.user.id });
         if (!product) return res.status(404).json({ error: 'Product not found' });
@@ -1295,7 +1316,15 @@ app.get('/api/orders/:orderId/messages', authenticateToken, async (req, res) => 
 });
 
 // Post a message for an order (Client, Admin, or User/Buyer) — supports image attachment
-app.post('/api/orders/:orderId/messages', authenticateToken, upload.single('image'), async (req, res) => {
+app.post('/api/orders/:orderId/messages', authenticateToken, (req, res, next) => {
+    upload.single('image')(req, res, (err) => {
+        if (err) {
+            console.error('Multer upload error:', err.message);
+            return res.status(400).json({ error: `Upload error: ${err.message}` });
+        }
+        next();
+    });
+}, async (req, res) => {
     try {
         const { message, senderRole } = req.body;
         
@@ -1309,18 +1338,19 @@ app.post('/api/orders/:orderId/messages', authenticateToken, upload.single('imag
                 mediaName = req.file.originalname;
             } catch (uploadErr) {
                 console.error('Order chat image upload error:', uploadErr.message);
-                return res.status(500).json({ error: 'Failed to upload image' });
+                return res.status(500).json({ error: 'Failed to upload image to cloud storage. Please try again.' });
             }
         }
 
         if (!message && !mediaUrl) return res.status(400).json({ error: 'Message or image is required' });
 
         const role = senderRole || 'user';
+        const msgText = (message && message.trim()) ? message.trim() : (mediaUrl ? '📷 Photo' : '');
         const msg = await OrderMessage.create({
             orderId: req.params.orderId,
             senderId: req.user.id,
             senderRole: role,
-            message: message || (mediaUrl ? '📷 Photo' : ''),
+            message: msgText,
             mediaUrl,
             mediaType,
             mediaName
@@ -1330,7 +1360,7 @@ app.post('/api/orders/:orderId/messages', authenticateToken, upload.single('imag
         const { data: order } = await supabase.from('shop_orders').select('user_id, items').eq('order_id', req.params.orderId).maybeSingle();
 
         if (order) {
-            const notifText = message || '📷 Sent a photo';
+            const notifText = (message && message.trim()) ? message.trim() : '📷 Sent a photo';
             if (role === 'client') {
                 // Seller sent → notify buyer
                 if (order.user_id && order.user_id !== req.user.id) {
