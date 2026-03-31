@@ -2462,7 +2462,7 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
         res.json({ success: true, post: enrichedPost, postCount, message: 'Post created successfully' });
     } catch (error) {
         console.error('❌ Create post error:', error);
-        res.status(500).json({ error: 'Failed to create post' });
+        res.status(500).json({ error: error.message || 'Failed to create post' });
     }
 });
 
