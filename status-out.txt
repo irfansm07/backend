@@ -1,0 +1,59 @@
+﻿On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add/rm <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   node_modules/.package-lock.json
+	modified:   node_modules/node-fetch/LICENSE.md
+	modified:   node_modules/node-fetch/README.md
+	deleted:    node_modules/node-fetch/browser.js
+	deleted:    node_modules/node-fetch/lib/index.es.js
+	deleted:    node_modules/node-fetch/lib/index.js
+	deleted:    node_modules/node-fetch/lib/index.mjs
+	deleted:    node_modules/node-fetch/node_modules/tr46/.npmignore
+	deleted:    node_modules/node-fetch/node_modules/tr46/index.js
+	deleted:    node_modules/node-fetch/node_modules/tr46/lib/.gitkeep
+	deleted:    node_modules/node-fetch/node_modules/tr46/lib/mappingTable.json
+	deleted:    node_modules/node-fetch/node_modules/tr46/package.json
+	deleted:    node_modules/node-fetch/node_modules/webidl-conversions/LICENSE.md
+	deleted:    node_modules/node-fetch/node_modules/webidl-conversions/README.md
+	deleted:    node_modules/node-fetch/node_modules/webidl-conversions/lib/index.js
+	deleted:    node_modules/node-fetch/node_modules/webidl-conversions/package.json
+	deleted:    node_modules/node-fetch/node_modules/whatwg-url/LICENSE.txt
+	deleted:    node_modules/node-fetch/node_modules/whatwg-url/README.md
+	deleted:    node_modules/node-fetch/node_modules/whatwg-url/lib/URL-impl.js
+	deleted:    node_modules/node-fetch/node_modules/whatwg-url/lib/URL.js
+	deleted:    node_modules/node-fetch/node_modules/whatwg-url/lib/public-api.js
+	deleted:    node_modules/node-fetch/node_modules/whatwg-url/lib/url-state-machine.js
+	deleted:    node_modules/node-fetch/node_modules/whatwg-url/lib/utils.js
+	deleted:    node_modules/node-fetch/node_modules/whatwg-url/package.json
+	modified:   node_modules/node-fetch/package.json
+	modified:   package-lock.json
+	modified:   package.json
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	agent_logs.txt
+	diff.txt
+	git_log.txt
+	git_status.txt
+	localstorage.txt
+	match.txt
+	message-test.js
+	node_modules/@mapbox/node-pre-gyp/node_modules/
+	node_modules/data-uri-to-buffer/
+	node_modules/fetch-blob/
+	node_modules/formdata-polyfill/
+	node_modules/node-domexception/
+	node_modules/node-fetch/@types/
+	node_modules/node-fetch/src/
+	node_modules/web-streams-polyfill/
+	push_utf8.txt
+	py_out.txt
+	py_out_endpoints.txt
+	py_out_vibemap.txt
+	status-out.txt
+	test_profile.txt
+
+no changes added to commit (use "git add" and/or "git commit -a")

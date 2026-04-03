@@ -1,0 +1,43 @@
+﻿
+> app.get('/api/profile/:u
+serId', 
+authenticateToken, async 
+(req, res) => {
+      try {
+          const { userId 
+} = req.params;
+          const 
+[userResult, 
+followersCountResult, 
+followingCountResult, 
+isFollowingResult, 
+isFollowedByResult, 
+likeCountResult, 
+isLikedResult] = await 
+Promise.all([
+              supabase.fro
+m('users').select('id,user
+name,email,registration_nu
+mber,college,profile_pic,c
+over_photo,bio,badges,comm
+unity_joined,created_at,no
+te').eq('id', 
+userId).single(),
+              supabase.fro
+m('followers').select('id'
+, { count: 'exact', head: 
+true 
+}).eq('following_id', 
+userId),
+              supabase.fro
+m('followers').select('id'
+, { count: 'exact', head: 
+true }).eq('follower_id', 
+userId),
+              supabase.fro
+m('followers').select('id'
+).eq('follower_id', req.us
+er.id).eq('following_id', 
+userId).maybeSingle(),
+
+

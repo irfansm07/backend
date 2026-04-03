@@ -1,0 +1,11 @@
+1255: app.post('/api/admin/orders/:orderId/message', authenticateToken, async (req, res) => {
+1288: app.get('/api/orders/:orderId/messages', authenticateToken, async (req, res) => {
+1298: app.post('/api/orders/:orderId/messages', authenticateToken, async (req, res) => {
+1525: app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
+1567: app.post('/api/profile/note', authenticateToken, async (req, res) => {
+1579: app.post('/api/user/profile-photo', authenticateToken, upload.single('profilePhoto'), async (req, res) => {
+2582: app.get('/api/community/messages', authenticateToken, async (req, res) => {
+2629: app.post('/api/community/messages', authenticateToken, (req, res, next) => {
+2828: app.get('/api/dm/messages/:otherId', authenticateToken, async (req, res) => {
+3119: app.get('/api/executive/messages', authenticateToken, async (req, res) => {
+3159: app.post('/api/executive/messages', authenticateToken, (req, res, next) => {

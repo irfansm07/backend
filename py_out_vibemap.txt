@@ -1,0 +1,95 @@
+223: // Covers: English, Hindi (roman), Punjabi, Tamil, Telugu, Kannada,
+1000: // Pulls cover_photo + profile_pic fresh
+1008: const _savedCover = currentUser.cover_photo || currentUser.coverPhoto || null;
+1012: _applyPhotosToDOM(_savedPic, _savedCover);
+1019: currentUser.cover_photo = data.user.cover_photo || _savedCover;
+1020: currentUser.coverPhoto  = currentUser.cover_photo;
+1057: _applyPhotosToDOM(currentUser.profile_pic, currentUser.cover_photo);
+1073: // ── Shared helper: apply profile pic + cover photo to every DOM slot ─────────
+1074: function _applyPhotosToDOM(picUrl, coverUrl) {
+1086: // Cover photo
+1087: const coverImg  = document.getElementById('profileCoverImg');
+1088: const coverWrap = document.getElementById('profileCoverPhoto');
+1089: if (coverImg) {
+1090: if (coverUrl) {
+1091: coverImg.src = coverUrl;
+1092: coverImg.style.display = 'block';
+1093: if (coverWrap) coverWrap.style.background = 'none';
+1095: coverImg.src = '';
+1096: coverImg.style.display = 'none';
+1097: if (coverWrap) coverWrap.style.background = '';
+2348: // This covers older sessions where communityJoined was never saved to localStorage
+3387: // Update target user object with ALL fresh fields including profile_pic, cover, hobbies
+3401: // Refresh cover photo
+3402: const coverImg = document.getElementById('profileCoverImg');
+3403: const coverWrap = document.getElementById('profileCoverPhoto');
+3404: const coverUrl = tu.cover_photo || tu.coverPhoto || null;
+3405: if (coverImg) {
+3406: if (coverUrl) { coverImg.src = coverUrl; coverImg.style.display = 'block'; if (coverWrap) coverWrap.style.background = 'none'; }
+3407: else { coverImg.src = ''; coverImg.style.display = 'none'; if (coverWrap) coverWrap.style.background = ''; }
+3520: // Avatar + cover — for own profile also check localStorage as fallback
+3525: const _resolvedCover = isOwn
+3526: ? (targetUser.cover_photo || targetUser.coverPhoto || (currentUser && (currentUser.cover_photo || currentUser.coverPhoto)) || null)
+3527: : (targetUser.cover_photo || targetUser.coverPhoto || null);
+3545: // Cover photo — render for ALL users (own + others)
+3546: const coverImg  = document.getElementById('profileCoverImg');
+3547: const coverWrap = document.getElementById('profileCoverPhoto');
+3548: if (coverImg) {
+3549: if (_resolvedCover) {
+3550: coverImg.src = _resolvedCover;
+3551: coverImg.style.display = 'block';
+3552: if (coverWrap) coverWrap.style.background = 'none';
+3554: coverImg.src = '';
+3555: coverImg.style.display = 'none';
+3556: if (coverWrap) coverWrap.style.background = '';
+3620: document.querySelectorAll('.edit-cover-btn, .avatar-edit-overlay, .btn-micro, .profile-edit-menu-wrap').forEach(btn => {
+4648: <img src="${item.image}" style="width:40px;height:40px;border-radius:6px;object-fit:cover;background:#000;">
+5382: const pic = c.users?.profile_pic ? '<img src="' + c.users.profile_pic + '" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">' : '👤';
+5429: const pic = currentUser.profile_pic ? '<img src="' + currentUser.profile_pic + '" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">' : '👤';
+6351: `<img src="${comment.users.profile_pic}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">` :
+8753: div.innerHTML = `<video src="${e.target.result}" style="width:100%;height:100%;object-fit:cover;"></video>`;
+8755: div.innerHTML = `<img src="${e.target.result}" style="width:100%;height:100%;object-fit:cover;">`;
+8975: // Cover photo
+8976: const _coverUrl = currentUser.cover_photo || currentUser.coverPhoto || null;
+8977: if (_coverUrl) {
+8978: const cover = document.getElementById('profileCover');
+8979: if (cover) {
+8980: cover.style.backgroundImage = `url('${_coverUrl}')`;
+8981: cover.style.backgroundSize = 'cover';
+8982: cover.style.backgroundPosition = 'center';
+9117: // Edit cover photo
+9118: function editCoverPhoto() {
+9119: const input = document.getElementById('coverPhotoInput');
+9123: // Handle cover photo upload
+9124: async function handleCoverPhotoUpload(event) {
+9141: const coverImg = document.getElementById('profileCoverImg');
+9142: const coverWrap = document.getElementById('profileCoverPhoto');
+9143: if (coverImg) {
+9144: coverImg.src = e.target.result;
+9145: coverImg.style.display = 'block';
+9146: if (coverWrap) coverWrap.style.background = 'none';
+9152: showMessage('📤 Uploading cover...', 'success');
+9155: formData.append('coverPhoto', file);
+9157: const data = await apiCall('/api/user/cover-photo', 'POST', formData);
+9160: currentUser.coverPhoto = data.photoUrl;
+9161: currentUser.cover_photo = data.photoUrl;
+9165: const coverImg = document.getElementById('profileCoverImg');
+9166: const coverWrap = document.getElementById('profileCoverPhoto');
+9167: if (coverImg) {
+9168: coverImg.src = data.photoUrl;
+9169: coverImg.style.display = 'block';
+9170: if (coverWrap) coverWrap.style.background = 'none';
+9175: window.currentProfileUser.cover_photo = data.photoUrl;
+9176: window.currentProfileUser.coverPhoto = data.photoUrl;
+9179: // Invalidate cache so other users see fresh cover on next visit
+9181: window._mpcCache[currentUser.id].cover_photo = data.photoUrl;
+9182: window._mpcCache[currentUser.id].coverPhoto = data.photoUrl;
+9185: showMessage('✅ Cover updated!', 'success');
+9187: showMessage('❌ Cover upload failed: ' + (data && data.error ? data.error : 'Unknown error'), 'error');
+9190: console.error('Cover upload error:', error);
+9191: showMessage('❌ Failed to upload cover: ' + error.message, 'error');
+11703: myAv.innerHTML = `<img src="${currentUser.profilePic}" style="width:100%;height:100%;object-fit:cover;border-radius:50%;">`;
+11933: avEl.innerHTML = `<img src="${currentUser.profilePic}" style="width:100%;height:100%;object-fit:cover;border-radius:50%;">`;
+12238: style="width:100%;height:80px;object-fit:cover;border-radius:6px;display:block;"
+12277: <img src="${preview}" alt="" loading="lazy" style="width:100%;height:80px;object-fit:cover;border-radius:6px;"
+13696: // ── Cover Photo Handler is defined above ──────────────────────────
