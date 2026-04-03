@@ -1328,21 +1328,25 @@ app.post('/api/orders/:orderId/messages', authenticateToken, (req, res, next) =>
     try {
         const { message, senderRole } = req.body;
         
+        console.log(`📨 Order message: orderId=${req.params.orderId}, role=${senderRole || 'user'}, hasFile=${!!req.file}, hasMessage=${!!message}, contentType=${req.headers['content-type']?.substring(0, 30)}`);
+        
         // Upload image to Cloudinary if provided
         let mediaUrl = null, mediaType = null, mediaName = null;
         if (req.file) {
             try {
+                console.log(`📸 Uploading chat image: ${req.file.originalname} (${req.file.mimetype}, ${(req.file.size / 1024).toFixed(1)}KB)`);
                 const result = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/order-chat');
                 mediaUrl = result.secure_url;
                 mediaType = req.file.mimetype.startsWith('image/') ? 'image' : 'document';
                 mediaName = req.file.originalname;
+                console.log(`✅ Chat image uploaded: ${mediaUrl}`);
             } catch (uploadErr) {
-                console.error('Order chat image upload error:', uploadErr.message);
+                console.error('❌ Order chat image upload error:', uploadErr.message, uploadErr.http_code || '');
                 return res.status(500).json({ error: 'Failed to upload image to cloud storage. Please try again.' });
             }
         }
 
-        if (!message && !mediaUrl) return res.status(400).json({ error: 'Message or image is required' });
+        if ((!message || !message.trim()) && !mediaUrl) return res.status(400).json({ error: 'Message or image is required' });
 
         const role = senderRole || 'user';
         const msgText = (message && message.trim()) ? message.trim() : (mediaUrl ? '📷 Photo' : '');
