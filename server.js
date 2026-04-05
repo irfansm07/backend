@@ -27,7 +27,7 @@ const {
     RealVibe, RealVibeLike, RealVibeComment,
     BannedUser, PlatformNotification, SellerRequest,
     ClientRequest, ClientProduct, OrderMessage,
-    Complaint
+    Complaint, Coupon
 } = require('./config/mongodb');
 const redis = require('./config/redis');
 
@@ -205,21 +205,28 @@ const razorpay = new Razorpay({
 // ══════════════════════════════════════════════════════════════
 // CLOUDINARY UPLOAD HELPER
 // ══════════════════════════════════════════════════════════════
-const uploadToCloudinary = (fileBuffer, mimeType, folder = 'vibexpert/general') => {
-    return new Promise((resolve, reject) => {
-        const resourceType = mimeType.startsWith('video/') ? 'video'
-            : mimeType.startsWith('audio/') ? 'video'
+const uploadToCloudinary = async (fileBuffer, mimeType, folder = 'vibexpert/general') => {
+    if (!fileBuffer || fileBuffer.length === 0) {
+        throw new Error('Empty file buffer — nothing to upload');
+    }
+    const resourceType = mimeType.startsWith('video/') ? 'video'
+        : mimeType.startsWith('audio/') ? 'video'
             : 'image';
 
-        const uploadStream = cloudinaryLib.uploader.upload_stream(
-            { resource_type: resourceType, folder, quality: 'auto', fetch_format: 'auto' },
-            (error, result) => { if (error) reject(error); else resolve(result); }
-        );
-        const readable = new Readable();
-        readable.push(fileBuffer);
-        readable.push(null);
-        readable.pipe(uploadStream);
-    });
+    // Convert buffer to base64 data URI for a single-request upload
+    const base64Data = fileBuffer.toString('base64');
+    const dataUri = `data:${mimeType};base64,${base64Data}`;
+
+    try {
+        const result = await cloudinaryLib.uploader.upload(dataUri, {
+            resource_type: resourceType,
+            folder
+        });
+        return result;
+    } catch (error) {
+        console.error(`❌ Cloudinary upload error [${folder}]:`, error.message, error.http_code || '');
+        throw error;
+    }
 };
 
 // ══════════════════════════════════════════════════════════════
@@ -231,7 +238,7 @@ const pushNotification = async (userId, notification) => {
             ...notification, id: `notif_${Date.now()}`, timestamp: Date.now(), read: false
         }));
         await redis.ltrim(`notifications:${userId}`, 0, 49);
-        
+
         // Emit socket event for real-time updates
         const targetSocketId = userSockets.get(userId);
         if (targetSocketId) {
@@ -326,14 +333,14 @@ const upload = multer({
     limits: { fileSize: 100 * 1024 * 1024, files: 10 },
     fileFilter: (req, file, cb) => {
         const allowed = [
-            'image/jpeg','image/jpg','image/png','image/gif','image/webp','image/svg+xml','image/bmp','image/tiff','image/heic',
-            'video/mp4','video/webm','video/ogg','video/quicktime','video/x-msvideo','video/x-matroska','video/mov',
-            'audio/mpeg','audio/mp3','audio/ogg','audio/wav','audio/webm','audio/aac','audio/flac','audio/mp4','audio/x-wav',
-            'application/pdf','application/msword',
+            'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml', 'image/bmp', 'image/tiff', 'image/heic',
+            'video/mp4', 'video/webm', 'video/ogg', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska', 'video/mov',
+            'audio/mpeg', 'audio/mp3', 'audio/ogg', 'audio/wav', 'audio/webm', 'audio/aac', 'audio/flac', 'audio/mp4', 'audio/x-wav',
+            'application/pdf', 'application/msword',
             'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            'application/vnd.ms-excel','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            'application/vnd.ms-powerpoint','application/vnd.openxmlformats-officedocument.presentationml.presentation',
-            'text/plain','text/csv','application/zip','application/x-rar-compressed','application/x-7z-compressed'
+            'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            'text/plain', 'text/csv', 'application/zip', 'application/x-rar-compressed', 'application/x-7z-compressed'
         ];
         if (allowed.includes(file.mimetype)) return cb(null, true);
         cb(new Error(`File type "${file.mimetype}" is not allowed.`));
@@ -371,6 +378,40 @@ function authenticateAdmin(req, res, next) {
 // BASIC ROUTES
 // ══════════════════════════════════════════════════════════════
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+
+// ── Cloudinary diagnostic (TEMPORARY) ─────────────────────────
+app.get('/api/debug/cloudinary', async (req, res) => {
+    const cfg = cloudinaryLib.config();
+    const info = {
+        cloud_name: cfg.cloud_name ? `SET (${cfg.cloud_name} | len:${cfg.cloud_name.length})` : 'MISSING',
+        api_key: cfg.api_key ? `SET (${cfg.api_key.slice(0, 4)}**** | len:${cfg.api_key.length})` : 'MISSING',
+        api_secret: cfg.api_secret ? `SET (${cfg.api_secret.slice(0, 4)}**** | len:${cfg.api_secret.length})` : 'MISSING',
+    };
+
+    let pingResult = null;
+    let pingError = null;
+    let usageResult = null;
+    let presetsResult = null;
+    try {
+        pingResult = await cloudinaryLib.api.ping();
+        usageResult = await cloudinaryLib.api.usage();
+        try { presetsResult = await cloudinaryLib.api.upload_presets(); } catch (e) { presetsResult = String(e); }
+    } catch (err) {
+        pingError = err.message || err.error?.message || String(err);
+    }
+
+    try {
+        const testResult = await cloudinaryLib.uploader.upload(
+            'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+            { folder: 'vibexpert/exec-media', resource_type: 'image' }
+        );
+        try { await cloudinaryLib.uploader.destroy(testResult.public_id); } catch { }
+        res.json({ success: true, message: 'Cloudinary upload works!', config: info, pingResult, usageResult, presetsResult, pingError, testUrl: testResult.secure_url });
+    } catch (err) {
+        const rawErr = typeof err === 'object' ? { ...err, msg: err.message, stack: err.stack, name: err.name, error_details: err.error } : String(err);
+        res.json({ success: false, message: `Cloudinary upload FAILED: ${err.message}`, httpCode: err.http_code, rawError: rawErr, pingResult, usageResult, presetsResult, pingError, config: info });
+    }
+});
 app.get('/api/post-assets', (req, res) => res.json({ success: true, songs: availableSongs, stickers: availableStickers }));
 app.get('/api/music-library', (req, res) => res.json({ success: true, music: availableSongs }));
 app.get('/api/sticker-library', (req, res) => res.json({ success: true, stickers: availableStickers }));
@@ -407,7 +448,8 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
             }
         };
 
-        const response = await axios.post('https://sandbox.cashfree.com/pg/orders', cashfreePayload, {
+        const CASHFREE_BASE_URL = process.env.CASHFREE_ENV === 'sandbox' ? 'https://sandbox.cashfree.com/pg' : 'https://api.cashfree.com/pg';
+        const response = await axios.post(`${CASHFREE_BASE_URL}/orders`, cashfreePayload, {
             headers: {
                 'x-api-version': '2023-08-01',
                 'x-client-id': CASHFREE_APP_ID,
@@ -442,7 +484,8 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
 
         console.log('🔍 Verifying payment:', { order_id, planType });
 
-        const response = await axios.get(`https://sandbox.cashfree.com/pg/orders/${order_id}`, {
+        const CASHFREE_BASE_URL = process.env.CASHFREE_ENV === 'sandbox' ? 'https://sandbox.cashfree.com/pg' : 'https://api.cashfree.com/pg';
+        const response = await axios.get(`${CASHFREE_BASE_URL}/orders/${order_id}`, {
             headers: {
                 'x-api-version': '2023-08-01',
                 'x-client-id': CASHFREE_APP_ID,
@@ -500,6 +543,26 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
     } catch (error) {
         console.error('❌ Payment verification error:', error.response?.data || error.message);
         res.status(500).json({ error: 'Payment verification failed' });
+    }
+});
+
+// Cashfree Webhook Endpoint (Required for Cashfree Onboarding Checklist)
+app.post('/api/cashfree/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+    try {
+        console.log('🔔 Received Cashfree Webhook!');
+        const signature = req.headers['x-webhook-signature'];
+        const timestamp = req.headers['x-webhook-timestamp'];
+
+        if (!signature || !timestamp) {
+            console.log('⚠️ Missing Cashfree signature headers, returning 200 OK for checklist test.');
+        } else {
+            console.log(`✅ Webhook signature present.`);
+        }
+
+        res.status(200).send('Webhook Received');
+    } catch (error) {
+        console.error('❌ Webhook error:', error.message);
+        res.status(500).send('Error');
     }
 });
 
@@ -566,7 +629,7 @@ app.post('/api/shop/verify-payment', authenticateToken, async (req, res) => {
         // ── Notify each seller/client whose product was ordered ──
         try {
             let shippingInfo = {};
-            try { shippingInfo = JSON.parse(orderData.shipping_address || '{}'); } catch {}
+            try { shippingInfo = JSON.parse(orderData.shipping_address || '{}'); } catch { }
             const buyerName = shippingInfo.fullName || shippingInfo.name || req.user.username;
             const buyerPhone = shippingInfo.phone || shippingInfo.mobile || 'Not provided';
             const buyerAddress = [shippingInfo.address, shippingInfo.city, shippingInfo.state, shippingInfo.pincode || shippingInfo.zip].filter(Boolean).join(', ') || 'Not provided';
@@ -578,7 +641,7 @@ app.post('/api/shop/verify-payment', authenticateToken, async (req, res) => {
                 // Try to find the product by name or id in ClientProduct collection
                 let clientProduct = null;
                 if (item.productId || item.id) {
-                    try { clientProduct = await ClientProduct.findById(item.productId || item.id); } catch {}
+                    try { clientProduct = await ClientProduct.findById(item.productId || item.id); } catch { }
                 }
                 if (!clientProduct && item.name) {
                     clientProduct = await ClientProduct.findOne({ name: item.name, status: 'active' });
@@ -645,6 +708,75 @@ app.get('/api/shop/orders', authenticateToken, async (req, res) => {
     }
 });
 
+// ── Shop: List available coupons ──────────────────────────────
+app.get('/api/shop/coupons', async (req, res) => {
+    try {
+        const coupons = await Coupon.find({ isActive: true }).lean();
+        const now = new Date();
+        const valid = coupons.filter(c => {
+            if (c.expiryDate && new Date(c.expiryDate) < now) return false;
+            if (c.maxUses > 0 && c.usedCount >= c.maxUses) return false;
+            return true;
+        });
+        // Attach seller name
+        const enriched = await Promise.all(valid.map(async (c) => {
+            let sellerName = 'VibExpert';
+            try {
+                const { data: seller } = await supabase.from('users').select('username').eq('id', c.clientId).single();
+                if (seller) sellerName = seller.username;
+            } catch { }
+            return {
+                id: c._id,
+                code: c.code,
+                discountType: c.discountType,
+                discountValue: c.discountValue,
+                minOrderAmount: c.minOrderAmount,
+                sellerName,
+                expiryDate: c.expiryDate || null
+            };
+        }));
+        res.json({ success: true, coupons: enriched });
+    } catch (error) {
+        console.error('Shop coupons list error:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch coupons' });
+    }
+});
+
+// ── Shop: Validate & apply a coupon ──────────────────────────
+app.post('/api/shop/coupons/validate', async (req, res) => {
+    try {
+        const { code, orderTotal } = req.body;
+        if (!code) return res.status(400).json({ valid: false, error: 'Coupon code is required' });
+        const coupon = await Coupon.findOne({ code: code.toUpperCase().trim(), isActive: true });
+        if (!coupon) return res.json({ valid: false, error: 'Invalid coupon code' });
+        if (coupon.expiryDate && new Date(coupon.expiryDate) < new Date())
+            return res.json({ valid: false, error: 'This coupon has expired' });
+        if (coupon.maxUses > 0 && coupon.usedCount >= coupon.maxUses)
+            return res.json({ valid: false, error: 'This coupon has reached its usage limit' });
+        if (orderTotal < coupon.minOrderAmount)
+            return res.json({ valid: false, error: `Minimum order amount is ₹${coupon.minOrderAmount}` });
+        let discount = 0;
+        if (coupon.discountType === 'percent') {
+            discount = Math.round((orderTotal * coupon.discountValue) / 100);
+        } else {
+            discount = coupon.discountValue;
+        }
+        discount = Math.min(discount, orderTotal);
+        res.json({
+            valid: true,
+            coupon: {
+                code: coupon.code,
+                discountType: coupon.discountType,
+                discountValue: coupon.discountValue,
+                discount
+            }
+        });
+    } catch (error) {
+        console.error('Coupon validation error:', error);
+        res.status(500).json({ valid: false, error: 'Failed to validate coupon' });
+    }
+});
+
 // ══════════════════════════════════════════════════════════════
 // ADMIN SHOP ENDPOINTS (Supabase)
 // ══════════════════════════════════════════════════════════════
@@ -707,7 +839,7 @@ app.get('/api/admin/stats', authenticateToken, async (req, res) => {
             supabase.from('shop_orders').select('id', { count: 'exact', head: true }).eq('status', 'paid')
         ]);
         let postCount = 0;
-        try { postCount = await Post.countDocuments(); } catch (_) {}
+        try { postCount = await Post.countDocuments(); } catch (_) { }
         res.json({
             success: true,
             stats: {
@@ -799,7 +931,7 @@ app.post('/api/admin/notifications', authenticateToken, async (req, res) => {
         if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
         const { title, message } = req.body;
         const notif = await PlatformNotification.create({ title, message, createdBy: req.user.id });
-        
+
         // Push to all active users we can fetch 
         const { data: users } = await supabase.from('users').select('id');
         if (users) {
@@ -812,6 +944,109 @@ app.post('/api/admin/notifications', authenticateToken, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════
+// COMPLAINT & FEEDBACK ENDPOINTS
+// ══════════════════════════════════════════════════════════════
+
+// User submits a complaint (from vibexpert.online)
+app.post('/api/complaint', authenticateToken, async (req, res) => {
+    try {
+        const { text } = req.body;
+        if (!text || !text.trim()) return res.status(400).json({ error: 'Complaint text is required' });
+        const complaint = await Complaint.create({
+            userId: req.user.id,
+            email: req.user.email,
+            name: req.user.username || 'User',
+            type: 'support',
+            subject: 'User Complaint',
+            message: text.trim(),
+            source: 'online',
+            status: 'open'
+        });
+        res.json({ success: true, complaint, message: 'Complaint submitted successfully!' });
+    } catch (error) {
+        console.error('❌ Complaint submit error:', error.message);
+        res.status(500).json({ error: 'Failed to submit complaint' });
+    }
+});
+
+// User submits feedback (from vibexpert.online)
+app.post('/api/feedback', authenticateToken, async (req, res) => {
+    try {
+        const { subject, message } = req.body;
+        if (!subject || !message) return res.status(400).json({ error: 'Subject and message are required' });
+        const feedback = await Complaint.create({
+            userId: req.user.id,
+            email: req.user.email,
+            name: req.user.username || 'User',
+            type: 'feedback',
+            subject: subject.trim(),
+            message: message.trim(),
+            source: 'online',
+            status: 'open'
+        });
+        res.json({ success: true, feedback, message: 'Feedback submitted successfully!' });
+    } catch (error) {
+        console.error('❌ Feedback submit error:', error.message);
+        res.status(500).json({ error: 'Failed to submit feedback' });
+    }
+});
+
+// Admin: Get all complaints & feedback
+app.get('/api/admin/complaints', authenticateToken, async (req, res) => {
+    try {
+        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
+        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        const complaints = await Complaint.find().sort({ createdAt: -1 });
+        res.json({ success: true, complaints });
+    } catch (error) {
+        console.error('❌ Admin complaints fetch error:', error.message);
+        res.status(500).json({ error: 'Failed to fetch complaints' });
+    }
+});
+
+// Admin: Respond to / update a complaint
+app.put('/api/admin/complaints/:id', authenticateToken, async (req, res) => {
+    try {
+        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
+        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        const { status, adminResponse } = req.body;
+        const updateData = {};
+        if (status) updateData.status = status;
+        if (adminResponse) {
+            updateData.adminResponse = adminResponse;
+            updateData.resolvedAt = new Date();
+        }
+        const updated = await Complaint.findByIdAndUpdate(req.params.id, updateData, { new: true });
+        if (!updated) return res.status(404).json({ error: 'Complaint not found' });
+
+        // Send email notification to user if admin responded
+        if (adminResponse && updated.email) {
+            sendEmail(updated.email, `Re: ${updated.subject} — VibExpert Support`, `
+                <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
+                    <h1 style="color:#7c3aed;">Response from VibExpert Support</h1>
+                    <p>Hi ${updated.name},</p>
+                    <p>We've reviewed your ${updated.type === 'feedback' ? 'feedback' : 'complaint'} and here is our response:</p>
+                    <div style="background:#F3F4F6;padding:20px;border-radius:8px;margin:20px 0;">
+                        <p style="font-style:italic;color:#374151;">"${updated.message}"</p>
+                    </div>
+                    <div style="background:#EDE9FE;padding:20px;border-radius:8px;margin:20px 0;">
+                        <h3 style="margin-top:0;color:#7c3aed;">Admin Response:</h3>
+                        <p style="color:#374151;">${adminResponse}</p>
+                    </div>
+                    <p>Thank you for reaching out to us!</p>
+                    <p style="color:#6B7280;font-size:12px;">— VibExpert Team</p>
+                </div>
+            `);
+        }
+
+        res.json({ success: true, complaint: updated, message: 'Complaint updated successfully!' });
+    } catch (error) {
+        console.error('❌ Admin complaint update error:', error.message);
+        res.status(500).json({ error: 'Failed to update complaint' });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
 // CLIENT REGISTRATION / APPROVAL FLOW
 // ══════════════════════════════════════════════════════════════
 
@@ -821,7 +1056,7 @@ app.post('/api/client/apply', async (req, res) => {
         const { email, businessName, businessType, phone, description, gstNumber, address } = req.body;
         if (!email || !businessName || !businessType || !description)
             return res.status(400).json({ error: 'Email, business name, type, and description are required' });
-        
+
         // Check if email already has a pending or approved request (case-insensitive)
         const emailRegex = new RegExp('^' + email.trim() + '$', 'i');
         const existing = await ClientRequest.findOne({ email: emailRegex, status: { $in: ['pending', 'approved'] } });
@@ -838,8 +1073,8 @@ app.post('/api/client/apply', async (req, res) => {
             status: 'pending'
         });
 
-        res.json({ 
-            success: true, 
+        res.json({
+            success: true,
             request,
             message: 'Your application has been submitted successfully! You will receive an email once the admin reviews it.'
         });
@@ -949,14 +1184,15 @@ app.post('/api/client/setup', async (req, res) => {
     try {
         const { token, email, username, password } = req.body;
         if (!token || !email || !username || !password) return res.status(400).json({ error: 'Missing required fields' });
-        
+
         // Very important: Verify request exists, belongs to email, is approved and matches token
         const emailRegex = new RegExp('^' + email.trim() + '$', 'i');
         const request = await ClientRequest.findOne({ email: emailRegex, setupToken: token, status: 'approved' });
         if (!request) return res.status(400).json({ error: 'Invalid or expired setup token! Or email mismatch.' });
 
         // Check if email already used in Supabase users
-        const { data: existingUser } = await supabase.from('users').select('id').ilike('email', email.trim()).maybeSingle();
+        const { data: existingUserList, error: checkListErr } = await supabase.from('users').select('id').ilike('email', email.trim()).limit(1);
+        const existingUser = existingUserList && existingUserList.length > 0 ? existingUserList[0] : null;
         let finalUserId = existingUser?.id;
 
         if (!existingUser) {
@@ -965,13 +1201,26 @@ app.post('/api/client/setup', async (req, res) => {
                 email, password, email_confirm: true,
                 user_metadata: { username }
             });
-            if (authErr) return res.status(400).json({ error: authErr.message });
-            
-            finalUserId = authData.user.id;
+
+            if (authErr) {
+                if (authErr.message.toLowerCase().includes('already been registered') || authErr.message.toLowerCase().includes('already registered')) {
+                     const { data: signData, error: signErr } = await supabase.auth.signInWithPassword({ email, password });
+                     if (signData && signData.user) {
+                         finalUserId = signData.user.id;
+                     } else {
+                         return res.status(400).json({ error: 'An account with this email exists but is disconnected. Please contact support to reset it.' });
+                     }
+                } else {
+                     return res.status(400).json({ error: authErr.message });
+                }
+            } else {
+                finalUserId = authData.user.id;
+            }
+
             const passwordHash = await bcrypt.hash(password, 10);
-            
-            // Add to users table
-            await supabase.from('users').insert([{
+
+            // Add to users table (upsert to be safe)
+            await supabase.from('users').upsert([{
                 id: finalUserId, email, username, password_hash: passwordHash, profile_pic: '', bio: `Seller at ${request.businessName}`,
                 college: '', is_verified: true, followers_count: 0, following_count: 0
             }]);
@@ -1002,14 +1251,14 @@ app.post('/api/client/setup', async (req, res) => {
 app.post('/api/complaints', async (req, res) => {
     try {
         const { userId, email, name, type, subject, message, source } = req.body;
-        if (!email || !name || !subject || !message || !source) 
+        if (!email || !name || !subject || !message || !source)
             return res.status(400).json({ error: 'Required fields missing' });
-        
-        const complaint = await Complaint.create({ 
-            userId: userId || null, 
-            email, name, 
-            type: type || 'support', 
-            subject, message, source 
+
+        const complaint = await Complaint.create({
+            userId: userId || null,
+            email, name,
+            type: type || 'support',
+            subject, message, source
         });
         res.json({ success: true, complaint, message: 'Your complaint/support ticket has been submitted successfully.' });
     } catch (error) {
@@ -1023,7 +1272,7 @@ app.get('/api/admin/complaints', authenticateToken, async (req, res) => {
     try {
         const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
         if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
-        
+
         const complaints = await Complaint.find().sort({ createdAt: -1 });
         res.json({ success: true, complaints });
     } catch (error) {
@@ -1036,16 +1285,16 @@ app.put('/api/admin/complaints/:id', authenticateToken, async (req, res) => {
     try {
         const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
         if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
-        
+
         const { status, adminResponse } = req.body;
         const complaint = await Complaint.findById(req.params.id);
         if (!complaint) return res.status(404).json({ error: 'Complaint not found' });
-        
+
         complaint.status = status || complaint.status;
         if (adminResponse && adminResponse !== complaint.adminResponse) {
             complaint.adminResponse = adminResponse;
             complaint.resolvedAt = new Date();
-            
+
             // Email user about the response
             const emailHtml = `
                 <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
@@ -1096,7 +1345,7 @@ app.post('/api/client/products', authenticateToken, (req, res, next) => {
         if (req.files && req.files.length > 0) {
             for (const file of req.files) {
                 try {
-                    const result = await uploadToCloudinary(file.buffer, file.mimetype, 'vibexpert/shop/client-products');
+                    const result = await uploadToCloudinary(file.buffer, file.mimetype, 'vibexpert/products');
                     images.push({ url: result.secure_url, public_id: result.public_id });
                 } catch (uploadErr) {
                     console.error('Cloudinary upload error for product image:', uploadErr.message);
@@ -1160,8 +1409,13 @@ app.put('/api/client/products/:id', authenticateToken, (req, res, next) => {
         if (req.files && req.files.length > 0) {
             images = [];
             for (const file of req.files) {
-                const result = await uploadToCloudinary(file.buffer, file.mimetype, 'vibexpert/shop/client-products');
-                images.push({ url: result.secure_url, public_id: result.public_id });
+                try {
+                    const result = await uploadToCloudinary(file.buffer, file.mimetype, 'vibexpert/products');
+                    images.push({ url: result.secure_url, public_id: result.public_id });
+                } catch (uploadErr) {
+                    console.error('Cloudinary upload error for product update:', uploadErr.message);
+                    return res.status(500).json({ error: `Failed to upload image: ${uploadErr.message}` });
+                }
             }
         }
 
@@ -1204,7 +1458,7 @@ app.delete('/api/client/products/:id', authenticateToken, async (req, res) => {
 // Public: Get all active client products (for vibexpert.shop)
 app.get('/api/shop/client-products', async (req, res) => {
     try {
-        const products = await ClientProduct.find({ status: 'active', inStock: true }).sort({ createdAt: -1 });
+        const products = await ClientProduct.find({ status: 'active' }).sort({ createdAt: -1 });
         // Enrich with client info
         const enriched = await Promise.all(products.map(async (p) => {
             const { data: user } = await supabase.from('users').select('username').eq('id', p.clientId).single();
@@ -1258,13 +1512,159 @@ app.delete('/api/admin/client-products/:id', authenticateToken, async (req, res)
     try {
         const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
         if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
-        
+
         const deleted = await ClientProduct.findByIdAndDelete(req.params.id);
         if (!deleted) return res.status(404).json({ error: 'Product not found' });
-        
+
         res.json({ success: true, message: 'Product successfully deleted by admin.' });
     } catch (error) {
         res.status(500).json({ error: 'Failed to delete product' });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
+// COUPON MANAGEMENT
+// ══════════════════════════════════════════════════════════════
+
+// Client: Create a coupon
+app.post('/api/client/coupons', authenticateToken, async (req, res) => {
+    try {
+        const clientReq = await ClientRequest.findOne({ userId: req.user.id, status: 'approved' });
+        if (!clientReq) return res.status(403).json({ error: 'You must be an approved client to create coupons' });
+
+        const { code, discountType, discountValue, minOrderAmount, maxUses, expiryDate } = req.body;
+        if (!code || !discountType || !discountValue)
+            return res.status(400).json({ error: 'Code, discount type, and discount value are required' });
+
+        // Check for duplicate code from this client
+        const existing = await Coupon.findOne({ clientId: req.user.id, code: code.toUpperCase() });
+        if (existing) return res.status(400).json({ error: 'You already have a coupon with this code' });
+
+        const coupon = await Coupon.create({
+            clientId: req.user.id,
+            code: code.toUpperCase().trim(),
+            discountType,
+            discountValue: parseFloat(discountValue),
+            minOrderAmount: parseFloat(minOrderAmount || '0'),
+            maxUses: parseInt(maxUses || '0'),
+            expiryDate: expiryDate ? new Date(expiryDate) : null,
+            isActive: true
+        });
+
+        res.json({ success: true, coupon });
+    } catch (error) {
+        console.error('Create coupon error:', error);
+        res.status(500).json({ error: error.message || 'Failed to create coupon' });
+    }
+});
+
+// Client: Get their coupons
+app.get('/api/client/coupons', authenticateToken, async (req, res) => {
+    try {
+        const coupons = await Coupon.find({ clientId: req.user.id }).sort({ createdAt: -1 });
+        res.json({ success: true, coupons });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch coupons' });
+    }
+});
+
+// Client: Delete a coupon
+app.delete('/api/client/coupons/:id', authenticateToken, async (req, res) => {
+    try {
+        const coupon = await Coupon.findOne({ _id: req.params.id, clientId: req.user.id });
+        if (!coupon) return res.status(404).json({ error: 'Coupon not found' });
+        await Coupon.findByIdAndDelete(req.params.id);
+        res.json({ success: true, message: 'Coupon deleted' });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to delete coupon' });
+    }
+});
+
+// Client: Toggle coupon active/inactive
+app.put('/api/client/coupons/:id/toggle', authenticateToken, async (req, res) => {
+    try {
+        const coupon = await Coupon.findOne({ _id: req.params.id, clientId: req.user.id });
+        if (!coupon) return res.status(404).json({ error: 'Coupon not found' });
+        coupon.isActive = !coupon.isActive;
+        await coupon.save();
+        res.json({ success: true, coupon });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to toggle coupon' });
+    }
+});
+
+// Public: Get all active coupons (for vibexpert.shop — suggested coupons)
+app.get('/api/shop/coupons', async (req, res) => {
+    try {
+        const now = new Date();
+        const coupons = await Coupon.find({
+            isActive: true,
+            $or: [{ expiryDate: null }, { expiryDate: { $gt: now } }],
+            $or: [{ maxUses: 0 }, { $expr: { $lt: ['$usedCount', '$maxUses'] } }]
+        }).sort({ createdAt: -1 }).limit(20);
+
+        // Enrich with seller name
+        const enriched = await Promise.all(coupons.map(async (c) => {
+            const { data: user } = await supabase.from('users').select('username').eq('id', c.clientId).single();
+            return {
+                id: c._id,
+                code: c.code,
+                discountType: c.discountType,
+                discountValue: c.discountValue,
+                minOrderAmount: c.minOrderAmount,
+                expiryDate: c.expiryDate,
+                sellerName: user?.username || 'VibExpert Seller'
+            };
+        }));
+
+        res.json({ success: true, coupons: enriched });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch coupons' });
+    }
+});
+
+// Public: Validate a coupon code
+app.post('/api/shop/coupons/validate', async (req, res) => {
+    try {
+        const { code, orderTotal } = req.body;
+        if (!code) return res.status(400).json({ error: 'Coupon code is required' });
+
+        const now = new Date();
+        const coupon = await Coupon.findOne({ code: code.toUpperCase().trim(), isActive: true });
+        if (!coupon) return res.status(404).json({ valid: false, error: 'Invalid coupon code' });
+
+        // Check expiry
+        if (coupon.expiryDate && coupon.expiryDate < now)
+            return res.status(400).json({ valid: false, error: 'This coupon has expired' });
+
+        // Check max uses
+        if (coupon.maxUses > 0 && coupon.usedCount >= coupon.maxUses)
+            return res.status(400).json({ valid: false, error: 'This coupon has reached its usage limit' });
+
+        // Check min order amount
+        if (orderTotal && coupon.minOrderAmount > 0 && orderTotal < coupon.minOrderAmount)
+            return res.status(400).json({ valid: false, error: `Minimum order amount is ₹${coupon.minOrderAmount}` });
+
+        // Calculate discount
+        let discount = 0;
+        if (coupon.discountType === 'percent') {
+            discount = orderTotal ? Math.round((orderTotal * coupon.discountValue) / 100) : coupon.discountValue;
+        } else {
+            discount = coupon.discountValue;
+        }
+
+        res.json({
+            valid: true,
+            coupon: {
+                code: coupon.code,
+                discountType: coupon.discountType,
+                discountValue: coupon.discountValue,
+                minOrderAmount: coupon.minOrderAmount,
+                discount
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to validate coupon' });
     }
 });
 
@@ -1327,23 +1727,37 @@ app.post('/api/orders/:orderId/messages', authenticateToken, (req, res, next) =>
 }, async (req, res) => {
     try {
         const { message, senderRole } = req.body;
-        
-        console.log(`📨 Order message: orderId=${req.params.orderId}, role=${senderRole || 'user'}, hasFile=${!!req.file}, hasMessage=${!!message}, contentType=${req.headers['content-type']?.substring(0, 30)}`);
-        
+
+        console.log(`📨 Order message: orderId=${req.params.orderId}, sender=${req.user.id}, role=${senderRole || 'user'}, hasFile=${!!req.file}, fileSize=${req.file ? (req.file.size / 1024).toFixed(1) + 'KB' : 'N/A'}, hasMessage=${!!message}`);
+
         // Upload image to Cloudinary if provided
         let mediaUrl = null, mediaType = null, mediaName = null;
         if (req.file) {
+            console.log(`📸 Uploading chat image: ${req.file.originalname} (${req.file.mimetype}, ${(req.file.size / 1024).toFixed(1)}KB, buffer=${req.file.buffer ? req.file.buffer.length + 'B' : 'MISSING'})`);
+
+            if (!req.file.buffer || req.file.buffer.length === 0) {
+                return res.status(400).json({ error: 'Image file is empty. Please select another image.' });
+            }
+
+            // Try Cloudinary upload first, fall back to base64 data URI
             try {
-                console.log(`📸 Uploading chat image: ${req.file.originalname} (${req.file.mimetype}, ${(req.file.size / 1024).toFixed(1)}KB)`);
                 const result = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/order-chat');
                 mediaUrl = result.secure_url;
-                mediaType = req.file.mimetype.startsWith('image/') ? 'image' : 'document';
-                mediaName = req.file.originalname;
-                console.log(`✅ Chat image uploaded: ${mediaUrl}`);
+                console.log(`✅ Chat image uploaded to Cloudinary: ${mediaUrl}`);
             } catch (uploadErr) {
-                console.error('❌ Order chat image upload error:', uploadErr.message, uploadErr.http_code || '');
-                return res.status(500).json({ error: 'Failed to upload image to cloud storage. Please try again.' });
+                console.warn(`⚠️ Cloudinary upload failed (${uploadErr.http_code || 'unknown'}): ${uploadErr.message}. Using base64 fallback.`);
+                // Fallback: store as base64 data URI (works for images under ~5MB)
+                if (req.file.size <= 5 * 1024 * 1024) {
+                    mediaUrl = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+                    console.log(`✅ Chat image stored as base64 (${(mediaUrl.length / 1024).toFixed(1)}KB data URI)`);
+                } else {
+                    return res.status(500).json({
+                        error: 'Image upload temporarily unavailable and file is too large for fallback. Please try a smaller image.',
+                    });
+                }
             }
+            mediaType = req.file.mimetype.startsWith('image/') ? 'image' : 'document';
+            mediaName = req.file.originalname;
         }
 
         if ((!message || !message.trim()) && !mediaUrl) return res.status(400).json({ error: 'Message or image is required' });
@@ -1360,31 +1774,31 @@ app.post('/api/orders/:orderId/messages', authenticateToken, (req, res, next) =>
             mediaName
         });
 
-        // Try to notify the other party
-        const { data: order } = await supabase.from('shop_orders').select('user_id, items').eq('order_id', req.params.orderId).maybeSingle();
+        // Try to notify the other party (non-blocking)
+        try {
+            const { data: order } = await supabase.from('shop_orders').select('user_id, items').eq('order_id', req.params.orderId).maybeSingle();
 
-        if (order) {
-            const notifText = (message && message.trim()) ? message.trim() : '📷 Sent a photo';
-            if (role === 'client') {
-                // Seller sent → notify buyer
-                if (order.user_id && order.user_id !== req.user.id) {
-                    await pushNotification(order.user_id, {
-                        type: 'order_message',
-                        message: `💬 Message from seller regarding your order: ${notifText}`,
-                        from: 'VibExpert Seller',
-                        orderId: req.params.orderId
-                    });
-                }
-            } else if (role === 'user') {
-                // Buyer sent → notify seller(s)
-                try {
+            if (order) {
+                const notifText = (message && message.trim()) ? message.trim() : '📷 Sent a photo';
+                if (role === 'client') {
+                    // Seller sent → notify buyer
+                    if (order.user_id && order.user_id !== req.user.id) {
+                        await pushNotification(order.user_id, {
+                            type: 'order_message',
+                            message: `💬 Message from seller regarding your order: ${notifText}`,
+                            from: 'VibExpert Seller',
+                            orderId: req.params.orderId
+                        });
+                    }
+                } else if (role === 'user') {
+                    // Buyer sent → notify seller(s)
                     let items = [];
-                    try { items = JSON.parse(order.items || '[]'); } catch {}
+                    try { items = JSON.parse(order.items || '[]'); } catch { }
                     const clientIdsSeen = new Set();
                     for (const item of items) {
                         let clientProduct = null;
                         if (item.productId || item.id) {
-                            try { clientProduct = await ClientProduct.findById(item.productId || item.id); } catch {}
+                            try { clientProduct = await ClientProduct.findById(item.productId || item.id); } catch { }
                         }
                         if (!clientProduct && item.name) {
                             clientProduct = await ClientProduct.findOne({ name: item.name, status: 'active' });
@@ -1399,15 +1813,15 @@ app.post('/api/orders/:orderId/messages', authenticateToken, (req, res, next) =>
                             });
                         }
                     }
-                } catch (notifyErr) {
-                    console.error('Buyer notify seller error (non-critical):', notifyErr.message);
                 }
             }
+        } catch (notifyErr) {
+            console.error('Notification error (non-critical):', notifyErr.message);
         }
 
         res.json({ success: true, message: msg });
     } catch (error) {
-        console.error('Order message error:', error);
+        console.error('Order message error:', error.message, error.stack?.split('\n').slice(0, 3).join(' | '));
         res.status(500).json({ error: error.message || 'Failed to send message' });
     }
 });
@@ -1453,7 +1867,7 @@ app.put('/api/client/orders/:orderId/tracking', authenticateToken, async (req, r
         const { data: order } = await supabase.from('shop_orders').select('*').eq('order_id', req.params.orderId).single();
         if (!order) return res.status(404).json({ error: 'Order not found' });
         let items = [];
-        try { items = JSON.parse(order.items || '[]'); } catch {}
+        try { items = JSON.parse(order.items || '[]'); } catch { }
         const ownsProduct = items.some(item => productNames.includes(item.name));
         if (!ownsProduct) return res.status(403).json({ error: 'You do not have products in this order' });
 
@@ -1498,12 +1912,12 @@ app.get('/api/client/orders', authenticateToken, async (req, res) => {
         // Get all products by this client
         const clientProducts = await ClientProduct.find({ clientId: req.user.id });
         const productNames = clientProducts.map(p => p.name);
-        
+
         // Get all shop orders and filter for ones containing this client's products
         const { data: allOrders } = await supabase.from('shop_orders')
             .select('*, users (username, email)')
             .order('created_at', { ascending: false });
-        
+
         const relevantOrders = (allOrders || []).filter(order => {
             try {
                 const items = JSON.parse(order.items || '[]');
@@ -1514,6 +1928,62 @@ app.get('/api/client/orders', authenticateToken, async (req, res) => {
         res.json({ success: true, orders: relevantOrders });
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch client orders' });
+    }
+});
+
+// ── Client: List own coupons ─────────────────────────────────
+app.get('/api/client/coupons', authenticateToken, async (req, res) => {
+    try {
+        const coupons = await Coupon.find({ clientId: req.user.id }).sort({ createdAt: -1 });
+        res.json({ success: true, coupons });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch coupons' });
+    }
+});
+
+// ── Client: Create a coupon ──────────────────────────────────
+app.post('/api/client/coupons', authenticateToken, async (req, res) => {
+    try {
+        const { code, discountType, discountValue, minOrderAmount, maxUses, expiryDate } = req.body;
+        if (!code || !discountValue) return res.status(400).json({ error: 'Code and discount value are required' });
+        const existing = await Coupon.findOne({ code: code.toUpperCase().trim() });
+        if (existing) return res.status(400).json({ error: 'A coupon with this code already exists' });
+        const coupon = await Coupon.create({
+            clientId: req.user.id,
+            code: code.toUpperCase().trim(),
+            discountType: discountType || 'percent',
+            discountValue: Number(discountValue),
+            minOrderAmount: Number(minOrderAmount) || 0,
+            maxUses: Number(maxUses) || 0,
+            expiryDate: expiryDate || null
+        });
+        res.json({ success: true, coupon });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to create coupon' });
+    }
+});
+
+// ── Client: Delete a coupon ──────────────────────────────────
+app.delete('/api/client/coupons/:id', authenticateToken, async (req, res) => {
+    try {
+        const coupon = await Coupon.findOneAndDelete({ _id: req.params.id, clientId: req.user.id });
+        if (!coupon) return res.status(404).json({ error: 'Coupon not found' });
+        res.json({ success: true, message: 'Coupon deleted' });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to delete coupon' });
+    }
+});
+
+// ── Client: Toggle coupon active/inactive ────────────────────
+app.put('/api/client/coupons/:id/toggle', authenticateToken, async (req, res) => {
+    try {
+        const coupon = await Coupon.findOne({ _id: req.params.id, clientId: req.user.id });
+        if (!coupon) return res.status(404).json({ error: 'Coupon not found' });
+        coupon.isActive = !coupon.isActive;
+        await coupon.save();
+        res.json({ success: true, coupon });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to toggle coupon' });
     }
 });
 
@@ -1592,7 +2062,7 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
 
         // Get post count from MongoDB — won't crash profile if Mongo is down
         let postCount = 0;
-        try { postCount = await Post.countDocuments({ userId }); } catch (_) {}
+        try { postCount = await Post.countDocuments({ userId }); } catch (_) { }
 
         const isMutualFollow = !!isFollowingResult.data && !!isFollowedByResult.data;
         res.json({ success: true, user: { ...user, postCount, followersCount: followersCountResult.count || 0, followingCount: followingCountResult.count || 0, profileLikes: likeCountResult.count || 0, isProfileLiked: !!isLikedResult.data, isFollowing: !!isFollowingResult.data, isFollowedBy: !!isFollowedByResult.data, isMutualFollow } });
@@ -1636,7 +2106,7 @@ app.post('/api/user/profile-photo', authenticateToken, upload.single('profilePho
         const photoUrl = result.secure_url;
         const { error } = await supabase.from('users').update({ profile_pic: photoUrl }).eq('id', req.user.id);
         if (error) throw error;
-        
+
         io.emit('profile_updated', { userId: req.user.id, profile_pic: photoUrl });
         res.json({ success: true, url: photoUrl });
     } catch (error) {
@@ -1663,10 +2133,10 @@ app.post('/api/user/cover-photo', authenticateToken, upload.single('coverPhoto')
         if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
         const result = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/covers');
         const photoUrl = result.secure_url;
-        
+
         const { error } = await supabase.from('users').update({ cover_photo: photoUrl }).eq('id', req.user.id);
         if (error) throw error;
-        
+
         io.emit('cover_updated', { userId: req.user.id, cover_photo: photoUrl });
         res.json({ success: true, photoUrl });
     } catch (error) {
@@ -1841,7 +2311,7 @@ app.post('/api/verify-email', async (req, res) => {
 
         const cached = signupOtpCache.get(email);
         if (!cached) return res.status(400).json({ error: 'No verification pending or code expired' });
-        
+
         if (Date.now() > cached.expiresAt) {
             signupOtpCache.delete(email);
             return res.status(400).json({ error: 'Verification code expired' });
@@ -1863,7 +2333,7 @@ app.post('/api/login', async (req, res) => {
     try {
         const { email, password } = req.body;
         if (!email || !password) return res.status(400).json({ error: 'Email/Username and password required' });
-        
+
         const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
         const isAdminEmail = email.includes('@') && ADMIN_EMAILS.includes(email.trim().toLowerCase());
 
@@ -1873,7 +2343,7 @@ app.post('/api/login', async (req, res) => {
         } else {
             query = query.ilike('username', email.trim());
         }
-        
+
         let { data: user, error } = await query.maybeSingle();
 
         // ── Admin auto-provision: ensure admin accounts always exist ──
@@ -1905,7 +2375,7 @@ app.post('/api/login', async (req, res) => {
         }
 
         if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-        
+
         let validPassword = await bcrypt.compare(password, user.password_hash);
 
         // ── Admin password fix: if hash is stale, update it ──
@@ -1918,7 +2388,7 @@ app.post('/api/login', async (req, res) => {
         }
 
         if (!validPassword) return res.status(401).json({ error: 'Invalid credentials' });
-        
+
         // 🔴 Check if user is banned (with timeout)
         try {
             const bannedState = await Promise.race([
@@ -1928,22 +2398,22 @@ app.post('/api/login', async (req, res) => {
             if (bannedState) {
                 return res.status(403).json({ error: `Account Banned: ${bannedState.reason}` });
             }
-        } catch (_) {}
+        } catch (_) { }
 
         const token = jwt.sign({ userId: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '30d' });
         const [{ count: followersCount }, { count: followingCount }] = await Promise.all([
             supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', user.id),
             supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', user.id)
         ]);
-        
+
         // ✅ MongoDB failure won't break login (with timeout)
         let postCount = 0;
-        try { 
+        try {
             postCount = await Promise.race([
                 Post.countDocuments({ userId: user.id }),
                 new Promise((_, reject) => setTimeout(() => reject(new Error('DB Timeout')), 1500))
-            ]); 
-        } catch (_) {}
+            ]);
+        } catch (_) { }
 
 
         res.json({ success: true, token, user: { id: user.id, username: user.username, email: user.email, college: user.college, communityJoined: user.community_joined, profilePic: user.profile_pic, profile_pic: user.profile_pic, registrationNumber: user.registration_number, badges: user.badges || [], bio: user.bio || '', isPremium: user.is_premium || false, subscriptionPlan: user.subscription_plan || null, followersCount: followersCount || 0, followingCount: followingCount || 0, postCount } });
@@ -1971,7 +2441,7 @@ app.post('/api/change-password', authenticateToken, async (req, res) => {
         // Also update Supabase Auth password
         try {
             await supabase.auth.admin.updateUserById(req.user.id, { password: newPassword });
-        } catch (_) {}
+        } catch (_) { }
 
         res.json({ success: true, message: 'Password changed successfully' });
     } catch (error) {
@@ -1984,7 +2454,7 @@ app.post('/api/forgot-password', async (req, res) => {
     try {
         const { email } = req.body; // could be email or username
         if (!email) return res.status(400).json({ error: 'Email or Username required' });
-        
+
         let query = supabase.from('users').select('id,username,email');
         if (email.includes('@')) {
             query = query.ilike('email', email.trim());
@@ -1992,7 +2462,7 @@ app.post('/api/forgot-password', async (req, res) => {
             query = query.ilike('username', email.trim());
         }
         const { data: user } = await query.maybeSingle();
-        
+
         if (!user) {
             // Check if they are a client who hasn't set up their account
             const emailRegex = new RegExp('^' + email.trim() + '$', 'i');
@@ -2022,7 +2492,7 @@ app.post('/api/forgot-password', async (req, res) => {
             }
             return res.status(404).json({ error: 'No active account found. If you just applied, please wait for an email to setup your account.' });
         }
-        
+
         const code = generateCode();
         const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
         await supabase.from('codes').insert([{ user_id: user.id, code, type: 'reset', expires_at: expiresAt.toISOString() }]);
@@ -2037,7 +2507,7 @@ app.post('/api/reset-password', async (req, res) => {
     try {
         const { email, code, newPassword } = req.body;
         if (!email || !code || !newPassword) return res.status(400).json({ error: 'All fields required' });
-        
+
         let query = supabase.from('users').select('id');
         if (email.includes('@')) {
             query = query.eq('email', email);
@@ -2045,7 +2515,7 @@ app.post('/api/reset-password', async (req, res) => {
             query = query.eq('username', email);
         }
         const { data: user } = await query.maybeSingle();
-        
+
         if (!user) return res.status(400).json({ error: 'Invalid user' });
         const { data: codeData } = await supabase.from('codes').select('*').eq('user_id', user.id).eq('code', code).eq('type', 'reset').gte('expires_at', new Date().toISOString()).maybeSingle();
         if (!codeData) return res.status(400).json({ error: 'Invalid or expired code' });
@@ -2150,7 +2620,7 @@ app.post('/api/auth/google', async (req, res) => {
         ]);
 
         let postCount = 0;
-        try { postCount = await Post.countDocuments({ userId: user.id }); } catch (_) {}
+        try { postCount = await Post.countDocuments({ userId: user.id }); } catch (_) { }
 
         res.json({
             success: true,
@@ -2318,7 +2788,7 @@ app.get('/api/posts/liked', authenticateToken, async (req, res) => {
             PostLike.find({ userId: req.user.id }).sort({ createdAt: -1 }).limit(50),
             RealVibeLike.find({ userId: req.user.id }).sort({ createdAt: -1 }).limit(50)
         ]);
-        
+
         console.log(`Debug: User ${req.user.id} has ${postLikes.length} post likes and ${vibeLikes.length} vibe likes`);
 
         const postIds = postLikes.map(l => l.postId);
@@ -2331,7 +2801,7 @@ app.get('/api/posts/liked', authenticateToken, async (req, res) => {
 
         const postMap = {};
         posts.forEach(p => { postMap[p._id.toString()] = p; });
-        
+
         const vibeMap = {};
         vibes.forEach(v => { vibeMap[v._id.toString()] = v; });
 
@@ -2357,7 +2827,7 @@ app.get('/api/posts/liked', authenticateToken, async (req, res) => {
                     RealVibeComment.countDocuments({ vibeId: vibe._id }),
                     RealVibeLike.findOne({ vibeId: vibe._id, userId: req.user.id })
                 ]);
-                
+
                 // Get user info from Supabase
                 const { data: userData } = await supabase.from('users').select('id,username,profile_pic,college').eq('id', vibe.userId).maybeSingle();
 
@@ -2492,7 +2962,7 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
 
         io.emit('new_post', enrichedPost);
         let postCount = 0;
-        try { postCount = await Post.countDocuments({ userId: req.user.id }); } catch (_) {}
+        try { postCount = await Post.countDocuments({ userId: req.user.id }); } catch (_) { }
         res.json({ success: true, post: enrichedPost, postCount, message: 'Post created successfully' });
     } catch (error) {
         console.error('❌ Create post error:', error);
@@ -2598,7 +3068,7 @@ app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
         await PostShare.create({ postId, userId: req.user.id });
         const shareCount = await PostShare.countDocuments({ postId });
         io.emit('post_shared', { postId, shareCount });
-        
+
         // Push notification to post owner
         const post = await Post.findById(postId);
         if (post && post.userId !== req.user.id) {
@@ -2828,10 +3298,10 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
         } catch (convErr) { console.error('⚠️ Conversation update failed:', convErr.message); }
 
         let replyToData = null;
-        try { if (dm.reply_to_id) { const { data: r } = await supabase.from('direct_messages').select('id,content,sender_id,media_type').eq('id', dm.reply_to_id).single(); replyToData = r || null; } } catch {}
+        try { if (dm.reply_to_id) { const { data: r } = await supabase.from('direct_messages').select('id,content,sender_id,media_type').eq('id', dm.reply_to_id).single(); replyToData = r || null; } } catch { }
 
         const payload = { ...dm, reply_to: replyToData, senderUser: { id: req.user.id, username: req.user.username, profile_pic: req.user.profile_pic } };
-        try { const rSock = userSockets.get(receiverId); if (rSock) io.to(rSock).emit('new_dm', payload); } catch {}
+        try { const rSock = userSockets.get(receiverId); if (rSock) io.to(rSock).emit('new_dm', payload); } catch { }
 
         // Push notification
         await pushNotification(receiverId, { type: 'new_dm', message: `${req.user.username} sent you a message`, from: req.user.id, fromUsername: req.user.username });
@@ -2912,10 +3382,10 @@ app.get('/api/dm/messages/:otherId', authenticateToken, async (req, res) => {
         }
         const enriched = messages.map(m => ({ ...m, reply_to: m.reply_to_id ? (replyMap[m.reply_to_id] || null) : null }));
         supabase.from('direct_messages').update({ is_read: true }).eq('sender_id', otherId).eq('receiver_id', uid).eq('is_read', false)
-            .then(() => { const s = userSockets.get(otherId); if (s) io.to(s).emit('dm_read', { readBy: uid, conversationWith: uid }); }).catch(() => {});
+            .then(() => { const s = userSockets.get(otherId); if (s) io.to(s).emit('dm_read', { readBy: uid, conversationWith: uid }); }).catch(() => { });
         const [u1, u2] = [uid, otherId].sort();
         const unreadField = u1 === uid ? 'unread_count_user1' : 'unread_count_user2';
-        supabase.from('dm_conversations').update({ [unreadField]: 0 }).eq('user1_id', u1).eq('user2_id', u2).then(() => {}).catch(() => {});
+        supabase.from('dm_conversations').update({ [unreadField]: 0 }).eq('user1_id', u1).eq('user2_id', u2).then(() => { }).catch(() => { });
         res.json({ success: true, messages: enriched });
     } catch (error) {
         res.status(500).json({ error: 'Failed to load messages' });
@@ -2955,7 +3425,8 @@ const enrichVibes = async (vibes, currentUserId) => {
             RealVibeLike.findOne({ vibeId, userId: currentUserId })
         ]);
         const hoursLeft = Math.max(0, Math.ceil((new Date(vibe.expiresAt) - new Date()) / (1000 * 60 * 60)));
-        return { ...vibe.toObject(), id: vibe._id.toString(), users: userMap[vibe.userId] || { id: vibe.userId, username: 'User', profile_pic: null, college: null }, like_count: likeCount, comment_count: commentCount, is_liked: !!isLiked, hours_left: hoursLeft };
+        const obj = vibe.toObject();
+        return { ...obj, id: vibe._id.toString(), media_url: obj.mediaUrl, media_type: obj.mediaType, plan_type: obj.planType, user_id: obj.userId, users: userMap[vibe.userId] || { id: vibe.userId, username: 'User', profile_pic: null, college: null }, like_count: likeCount, comment_count: commentCount, is_liked: !!isLiked, hours_left: hoursLeft };
     }));
 };
 
@@ -2967,6 +3438,16 @@ app.get('/api/realvibes', authenticateToken, async (req, res) => {
         res.json({ success: true, vibes: enriched });
     } catch (error) {
         res.status(500).json({ error: 'Failed to load RealVibes' });
+    }
+});
+
+// TEMP: one-time migration — approve all pending vibes
+app.post('/api/realvibes/approve-all-pending', authenticateToken, async (req, res) => {
+    try {
+        const result = await RealVibe.updateMany({ status: 'pending' }, { $set: { status: 'approved', reviewedAt: new Date() } });
+        res.json({ success: true, message: `Approved ${result.modifiedCount} pending vibes` });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to approve pending vibes' });
     }
 });
 
@@ -2993,11 +3474,26 @@ app.post('/api/realvibes', authenticateToken, upload.single('media'), async (req
             userId: req.user.id, caption: caption.trim(),
             mediaUrl: vibeResult.secure_url, mediaPublicId: vibeResult.public_id,
             mediaType: isVideo ? 'video' : 'image', planType: plan, visibility,
-            status: 'pending', expiresAt
+            status: 'approved', expiresAt
         });
 
-        const enriched = { ...vibe.toObject(), id: vibe._id.toString(), like_count: 0, comment_count: 0, is_liked: false, hours_left: daysToExpire * 24, users: { id: req.user.id, username: req.user.username, profile_pic: req.user.profile_pic, college: req.user.college } };
-        res.json({ success: true, vibe: enriched, pending: true, message: 'Your post is under review. You will be notified once it is approved!' });
+        // Also create a Post in Zero Velocity feed
+        try {
+            const autoPost = await Post.create({
+                userId: req.user.id,
+                content: caption.trim() || '✦ RealVibe',
+                media: [{ url: vibeResult.secure_url, public_id: vibeResult.public_id, type: isVideo ? 'video' : 'image' }],
+                postedTo: visibility === 'community' ? 'community' : 'profile',
+                college: (visibility === 'community') ? req.user.college : null,
+                music: null, stickers: [], is_real_vibe: true
+            });
+            io.emit('new_post', { ...autoPost.toObject(), id: autoPost._id.toString(), like_count: 0, comment_count: 0, share_count: 0, is_liked: false, users: { id: req.user.id, username: req.user.username, profile_pic: req.user.profile_pic || null, college: req.user.college || null } });
+        } catch (postErr) {
+            console.error('⚠️ Auto-post to Zero Velocity failed (non-critical):', postErr.message);
+        }
+
+        const enriched = { ...vibe.toObject(), id: vibe._id.toString(), media_url: vibeResult.secure_url, media_type: isVideo ? 'video' : 'image', plan_type: plan, user_id: req.user.id, like_count: 0, comment_count: 0, is_liked: false, hours_left: daysToExpire * 24, users: { id: req.user.id, username: req.user.username, profile_pic: req.user.profile_pic, college: req.user.college } };
+        res.json({ success: true, vibe: enriched, pending: false, message: 'Your RealVibe is now live!' });
     } catch (error) {
         res.status(500).json({ error: 'Failed to create RealVibe' });
     }
@@ -3259,7 +3755,7 @@ app.post('/api/executive/messages', authenticateToken, (req, res, next) => {
         if (insertError) throw insertError;
         let pollData = null;
         if (poll_question && inserted) {
-            let options = []; try { options = JSON.parse(poll_options || '[]'); } catch {}
+            let options = []; try { options = JSON.parse(poll_options || '[]'); } catch { }
             const { data: poll } = await supabase.from('executive_polls').insert([{ message_id: inserted.id, question: poll_question, options }]).select('*').single();
             pollData = poll ? { ...poll, executive_poll_votes: [] } : null;
         }
