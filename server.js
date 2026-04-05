@@ -1191,44 +1191,39 @@ app.post('/api/client/setup', async (req, res) => {
         if (!request) return res.status(400).json({ error: 'Invalid or expired setup token! Or email mismatch.' });
 
         // Check if email already used in Supabase users
-        const { data: existingUser } = await supabase.from('users').select('id').ilike('email', email.trim()).maybeSingle();
+        const { data: existingUserList, error: checkListErr } = await supabase.from('users').select('id').ilike('email', email.trim()).limit(1);
+        const existingUser = existingUserList && existingUserList.length > 0 ? existingUserList[0] : null;
         let finalUserId = existingUser?.id;
 
         if (!existingUser) {
-            let finalUserIdToInsert;
             // Create a new Supabase auth user
             const { data: authData, error: authErr } = await supabase.auth.admin.createUser({
                 email, password, email_confirm: true,
                 user_metadata: { username }
             });
 
-            if (authErr && authErr.message.toLowerCase().includes('already been registered')) {
-                // If it partially failed before, we can recover the auth user by signing in
-                const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({ email, password });
-                if (signInData?.user) {
-                    finalUserIdToInsert = signInData.user.id;
+            if (authErr) {
+                if (authErr.message.toLowerCase().includes('already been registered') || authErr.message.toLowerCase().includes('already registered')) {
+                     const { data: signData, error: signErr } = await supabase.auth.signInWithPassword({ email, password });
+                     if (signData && signData.user) {
+                         finalUserId = signData.user.id;
+                     } else {
+                         return res.status(400).json({ error: 'An account with this email exists but is disconnected. Please contact support to reset it.' });
+                     }
                 } else {
-                    return res.status(400).json({ error: 'Email partially registered. Please use the password you entered on your first attempt.' });
+                     return res.status(400).json({ error: authErr.message });
                 }
-            } else if (authErr) {
-                return res.status(400).json({ error: authErr.message });
             } else {
-                finalUserIdToInsert = authData.user.id;
+                finalUserId = authData.user.id;
             }
 
-            finalUserId = finalUserIdToInsert;
             const passwordHash = await bcrypt.hash(password, 10);
 
-            // Add to users table
-            const { error: insertErr } = await supabase.from('users').insert([{
+            // Add to users table (upsert to be safe)
+            await supabase.from('users').upsert([{
                 id: finalUserId, email, username, password_hash: passwordHash, profile_pic: '', bio: `Seller at ${request.businessName}`,
-                college: '', is_verified: true, followers_count: 0, following_count: 0, registration_number: 'req_' + request._id
+                college: '', is_verified: true, followers_count: 0, following_count: 0
             }]);
-
-            if (insertErr) {
-                if (insertErr.code === '23505') return res.status(400).json({ error: 'Username is already taken. Please choose another username.' });
-                return res.status(500).json({ error: 'Failed to create user profile in database: ' + insertErr.message });
-            }
         } else {
             // User already has an account, update password
             const passwordHash = await bcrypt.hash(password, 10);
@@ -2349,10 +2344,11 @@ app.post('/api/login', async (req, res) => {
             query = query.ilike('username', email.trim());
         }
 
-        let { data: user, error } = await query.maybeSingle();
+        let { data: usersData, error } = await query.limit(1);
+        let user = usersData && usersData.length > 0 ? usersData[0] : null;
 
         // ── Admin auto-provision: ensure admin accounts always exist ──
-        if (isAdminEmail && (!user || error)) {
+        if (isAdminEmail && !user) {
             console.log(`🔧 Auto-provisioning admin account for ${email.trim()}`);
             const passwordHash = await bcrypt.hash(password, 10);
             const adminUsername = email.trim().split('@')[0];
@@ -2372,8 +2368,8 @@ app.post('/api/login', async (req, res) => {
                     college: '', is_verified: true, followers_count: 0, following_count: 0
                 }], { onConflict: 'email' });
                 // Re-fetch
-                const { data: freshUser } = await supabase.from('users').select('*').ilike('email', email.trim()).maybeSingle();
-                user = freshUser;
+                const { data: freshUserList } = await supabase.from('users').select('*').ilike('email', email.trim()).limit(1);
+                user = freshUserList && freshUserList.length > 0 ? freshUserList[0] : null;
             } catch (provisionErr) {
                 console.error('Admin provision error:', provisionErr.message);
             }
@@ -2466,7 +2462,8 @@ app.post('/api/forgot-password', async (req, res) => {
         } else {
             query = query.ilike('username', email.trim());
         }
-        const { data: user } = await query.maybeSingle();
+        const { data: usersData } = await query.limit(1);
+        const user = usersData && usersData.length > 0 ? usersData[0] : null;
 
         if (!user) {
             // Check if they are a client who hasn't set up their account
@@ -2519,7 +2516,8 @@ app.post('/api/reset-password', async (req, res) => {
         } else {
             query = query.eq('username', email);
         }
-        const { data: user } = await query.maybeSingle();
+        const { data: usersData } = await query.limit(1);
+        const user = usersData && usersData.length > 0 ? usersData[0] : null;
 
         if (!user) return res.status(400).json({ error: 'Invalid user' });
         const { data: codeData } = await supabase.from('codes').select('*').eq('user_id', user.id).eq('code', code).eq('type', 'reset').gte('expires_at', new Date().toISOString()).maybeSingle();
