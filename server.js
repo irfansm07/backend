@@ -1191,39 +1191,44 @@ app.post('/api/client/setup', async (req, res) => {
         if (!request) return res.status(400).json({ error: 'Invalid or expired setup token! Or email mismatch.' });
 
         // Check if email already used in Supabase users
-        const { data: existingUserList, error: checkListErr } = await supabase.from('users').select('id').ilike('email', email.trim()).limit(1);
-        const existingUser = existingUserList && existingUserList.length > 0 ? existingUserList[0] : null;
+        const { data: existingUser } = await supabase.from('users').select('id').ilike('email', email.trim()).maybeSingle();
         let finalUserId = existingUser?.id;
 
         if (!existingUser) {
+            let finalUserIdToInsert;
             // Create a new Supabase auth user
             const { data: authData, error: authErr } = await supabase.auth.admin.createUser({
                 email, password, email_confirm: true,
                 user_metadata: { username }
             });
 
-            if (authErr) {
-                if (authErr.message.toLowerCase().includes('already been registered') || authErr.message.toLowerCase().includes('already registered')) {
-                     const { data: signData, error: signErr } = await supabase.auth.signInWithPassword({ email, password });
-                     if (signData && signData.user) {
-                         finalUserId = signData.user.id;
-                     } else {
-                         return res.status(400).json({ error: 'An account with this email exists but is disconnected. Please contact support to reset it.' });
-                     }
+            if (authErr && authErr.message.toLowerCase().includes('already been registered')) {
+                // If it partially failed before, we can recover the auth user by signing in
+                const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({ email, password });
+                if (signInData?.user) {
+                    finalUserIdToInsert = signInData.user.id;
                 } else {
-                     return res.status(400).json({ error: authErr.message });
+                    return res.status(400).json({ error: 'Email partially registered. Please use the password you entered on your first attempt.' });
                 }
+            } else if (authErr) {
+                return res.status(400).json({ error: authErr.message });
             } else {
-                finalUserId = authData.user.id;
+                finalUserIdToInsert = authData.user.id;
             }
 
+            finalUserId = finalUserIdToInsert;
             const passwordHash = await bcrypt.hash(password, 10);
 
-            // Add to users table (upsert to be safe)
-            await supabase.from('users').upsert([{
+            // Add to users table
+            const { error: insertErr } = await supabase.from('users').insert([{
                 id: finalUserId, email, username, password_hash: passwordHash, profile_pic: '', bio: `Seller at ${request.businessName}`,
-                college: '', is_verified: true, followers_count: 0, following_count: 0
+                college: '', is_verified: true, followers_count: 0, following_count: 0, registration_number: 'req_' + request._id
             }]);
+
+            if (insertErr) {
+                if (insertErr.code === '23505') return res.status(400).json({ error: 'Username is already taken. Please choose another username.' });
+                return res.status(500).json({ error: 'Failed to create user profile in database: ' + insertErr.message });
+            }
         } else {
             // User already has an account, update password
             const passwordHash = await bcrypt.hash(password, 10);
