@@ -38,6 +38,7 @@ const postSchema = new mongoose.Schema({
     college:  { type: String, default: null },
     music:    { type: mongoose.Schema.Types.Mixed, default: null },
     stickers: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    is_real_vibe: { type: Boolean, default: false },
     updatedAt: { type: Date }
 }, { timestamps: true });
 
@@ -205,6 +206,22 @@ const passwordResetCodeSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now, expires: 900 } // Auto expires in 15 mins (900 secs)
 });
 
+// Coupons (created by sellers/clients)
+const couponSchema = new mongoose.Schema({
+    clientId: { type: String, required: true, index: true },
+    code: { type: String, required: true },
+    discountType: { type: String, enum: ['percent', 'fixed'], required: true },
+    discountValue: { type: Number, required: true },
+    minOrderAmount: { type: Number, default: 0 },
+    maxUses: { type: Number, default: 0 }, // 0 = unlimited
+    usedCount: { type: Number, default: 0 },
+    expiryDate: { type: Date, default: null },
+    isActive: { type: Boolean, default: true }
+}, { timestamps: true });
+
+couponSchema.index({ code: 1 });
+couponSchema.index({ clientId: 1, isActive: 1 });
+
 // ── Models ────────────────────────────────────────────────────
 const Post            = mongoose.models.Post            || mongoose.model('Post',            postSchema);
 const PostLike        = mongoose.models.PostLike        || mongoose.model('PostLike',        postLikeSchema);
@@ -221,6 +238,7 @@ const ClientProduct   = mongoose.models.ClientProduct   || mongoose.model('Clien
 const OrderMessage    = mongoose.models.OrderMessage    || mongoose.model('OrderMessage',    orderMessageSchema);
 const Complaint       = mongoose.models.Complaint       || mongoose.model('Complaint',       complaintSchema);
 const PasswordResetCode = mongoose.models.PasswordResetCode || mongoose.model('PasswordResetCode', passwordResetCodeSchema);
+const Coupon          = mongoose.models.Coupon          || mongoose.model('Coupon',          couponSchema);
 
 module.exports = {
     connectMongo,
@@ -238,5 +256,6 @@ module.exports = {
     ClientProduct,
     OrderMessage,
     Complaint,
-    PasswordResetCode
+    PasswordResetCode,
+    Coupon
 };
