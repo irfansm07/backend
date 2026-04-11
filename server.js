@@ -1191,40 +1191,48 @@ app.post('/api/client/setup', async (req, res) => {
         if (!request) return res.status(400).json({ error: 'Invalid or expired setup token! Or email mismatch.' });
 
         // Check if email already used in Supabase users
-        const { data: existingUserList, error: checkListErr } = await supabase.from('users').select('id').ilike('email', email.trim()).limit(1);
-        if (checkListErr) {
-            console.error('Client setup: users table check failed:', checkListErr.message);
-        }
+        const { data: existingUserList } = await supabase.from('users').select('id').ilike('email', email.trim()).limit(1);
         const existingUser = existingUserList && existingUserList.length > 0 ? existingUserList[0] : null;
         let finalUserId = existingUser?.id;
 
         const passwordHash = await bcrypt.hash(password, 10);
 
-        if (!existingUser) {
-            // Create a new Supabase auth user
+        if (existingUser) {
+            // User already has an account in users table — just update their password
+            finalUserId = existingUser.id;
+            await supabase.from('users').update({ password_hash: passwordHash }).eq('id', existingUser.id);
+
+            // Also update Supabase Auth password so both stay in sync
+            try {
+                await supabase.auth.admin.updateUserById(existingUser.id, { password });
+            } catch (authUpdateErr) {
+                console.error('Client setup: auth password sync failed (non-critical):', authUpdateErr.message);
+            }
+        } else {
+            // No user in users table — create one
+
+            // Step 1: Ensure Supabase Auth user exists
             const { data: authData, error: authErr } = await supabase.auth.admin.createUser({
-                email, password, email_confirm: true,
+                email: email.trim(), password, email_confirm: true,
                 user_metadata: { username }
             });
 
             if (authErr) {
-                if (authErr.message.toLowerCase().includes('already been registered') || authErr.message.toLowerCase().includes('already registered')) {
-                    // Email exists in Supabase Auth but NOT in our users table.
-                    // Look up the auth user and update their password instead of signInWithPassword
-                    // (signIn would fail because the new password doesn't match the old auth password)
+                if (authErr.message.toLowerCase().includes('already') && authErr.message.toLowerCase().includes('registered')) {
+                    // Email exists in Supabase Auth but NOT in our users table
+                    // Find the auth user and update their password
                     try {
                         const { data: listData } = await supabase.auth.admin.listUsers();
                         const authUser = (listData?.users || []).find(u => u.email?.toLowerCase() === email.trim().toLowerCase());
                         if (authUser) {
                             finalUserId = authUser.id;
-                            // Update the auth user's password to match the new one
                             await supabase.auth.admin.updateUserById(finalUserId, { password });
                         } else {
-                            return res.status(400).json({ error: 'An account with this email exists in auth but could not be found. Please contact support.' });
+                            return res.status(400).json({ error: 'Auth account issue. Please contact support.' });
                         }
                     } catch (lookupErr) {
                         console.error('Client setup: auth user lookup failed:', lookupErr.message);
-                        return res.status(400).json({ error: 'An account with this email exists but is disconnected. Please contact support to reset it.' });
+                        return res.status(400).json({ error: 'Auth account issue. Please contact support.' });
                     }
                 } else {
                     return res.status(400).json({ error: authErr.message });
@@ -1233,44 +1241,32 @@ app.post('/api/client/setup', async (req, res) => {
                 finalUserId = authData.user.id;
             }
 
-            // Add to users table (upsert to be safe) — MUST check for errors
+            // Step 2: Create the user record in the users table
             const { error: upsertErr } = await supabase.from('users').upsert([{
                 id: finalUserId, email: email.trim(), username, password_hash: passwordHash, profile_pic: '', bio: `Seller at ${request.businessName}`,
                 college: '', is_verified: true, followers_count: 0, following_count: 0
             }], { onConflict: 'id' });
 
             if (upsertErr) {
-                console.error('Client setup: users upsert FAILED:', upsertErr.message, upsertErr.code);
-                // Fallback: try insert instead of upsert
-                const { error: insertErr } = await supabase.from('users').insert([{
-                    id: finalUserId, email: email.trim(), username, password_hash: passwordHash, profile_pic: '', bio: `Seller at ${request.businessName}`,
-                    college: '', is_verified: true, followers_count: 0, following_count: 0
-                }]);
-                if (insertErr) {
-                    console.error('Client setup: users insert also FAILED:', insertErr.message, insertErr.code);
-                    return res.status(500).json({ error: 'Failed to create user record. Please try again or contact support.' });
+                console.error('Client setup: upsert failed:', upsertErr.message);
+                // Upsert failed — likely email unique constraint (email exists with different id)
+                // Re-check for the user by email and just update their password
+                const { data: retryList } = await supabase.from('users').select('id').ilike('email', email.trim()).limit(1);
+                if (retryList && retryList.length > 0) {
+                    finalUserId = retryList[0].id;
+                    await supabase.from('users').update({ password_hash: passwordHash, username }).eq('id', finalUserId);
+                } else {
+                    // Last resort: try insert without specifying id
+                    const { data: inserted, error: insertErr } = await supabase.from('users').insert([{
+                        id: finalUserId, email: email.trim(), username, password_hash: passwordHash, profile_pic: '', bio: `Seller at ${request.businessName}`,
+                        college: '', is_verified: true, followers_count: 0, following_count: 0
+                    }]).select('id').single();
+                    if (insertErr) {
+                        console.error('Client setup: insert also failed:', insertErr.message);
+                        return res.status(500).json({ error: 'Failed to create account. Please contact support.' });
+                    }
+                    finalUserId = inserted.id;
                 }
-            }
-
-            // Verify the user was actually created
-            const { data: verifyList } = await supabase.from('users').select('id').eq('id', finalUserId).limit(1);
-            if (!verifyList || verifyList.length === 0) {
-                console.error('Client setup: user record NOT found after upsert! userId:', finalUserId);
-                return res.status(500).json({ error: 'Account creation could not be verified. Please try again.' });
-            }
-        } else {
-            // User already has an account, update password
-            const { error: updateErr } = await supabase.from('users').update({ password_hash: passwordHash }).eq('id', existingUser.id);
-            if (updateErr) {
-                console.error('Client setup: password update FAILED for existing user:', updateErr.message);
-                return res.status(500).json({ error: 'Failed to update password. Please try again.' });
-            }
-
-            // Also update Supabase Auth password so both stay in sync
-            try {
-                await supabase.auth.admin.updateUserById(existingUser.id, { password });
-            } catch (authUpdateErr) {
-                console.error('Client setup: auth password sync failed (non-critical):', authUpdateErr.message);
             }
         }
 
