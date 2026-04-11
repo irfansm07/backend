@@ -1192,8 +1192,13 @@ app.post('/api/client/setup', async (req, res) => {
 
         // Check if email already used in Supabase users
         const { data: existingUserList, error: checkListErr } = await supabase.from('users').select('id').ilike('email', email.trim()).limit(1);
+        if (checkListErr) {
+            console.error('Client setup: users table check failed:', checkListErr.message);
+        }
         const existingUser = existingUserList && existingUserList.length > 0 ? existingUserList[0] : null;
         let finalUserId = existingUser?.id;
+
+        const passwordHash = await bcrypt.hash(password, 10);
 
         if (!existingUser) {
             // Create a new Supabase auth user
@@ -1204,10 +1209,21 @@ app.post('/api/client/setup', async (req, res) => {
 
             if (authErr) {
                 if (authErr.message.toLowerCase().includes('already been registered') || authErr.message.toLowerCase().includes('already registered')) {
-                    const { data: signData, error: signErr } = await supabase.auth.signInWithPassword({ email, password });
-                    if (signData && signData.user) {
-                        finalUserId = signData.user.id;
-                    } else {
+                    // Email exists in Supabase Auth but NOT in our users table.
+                    // Look up the auth user and update their password instead of signInWithPassword
+                    // (signIn would fail because the new password doesn't match the old auth password)
+                    try {
+                        const { data: listData } = await supabase.auth.admin.listUsers();
+                        const authUser = (listData?.users || []).find(u => u.email?.toLowerCase() === email.trim().toLowerCase());
+                        if (authUser) {
+                            finalUserId = authUser.id;
+                            // Update the auth user's password to match the new one
+                            await supabase.auth.admin.updateUserById(finalUserId, { password });
+                        } else {
+                            return res.status(400).json({ error: 'An account with this email exists in auth but could not be found. Please contact support.' });
+                        }
+                    } catch (lookupErr) {
+                        console.error('Client setup: auth user lookup failed:', lookupErr.message);
                         return res.status(400).json({ error: 'An account with this email exists but is disconnected. Please contact support to reset it.' });
                     }
                 } else {
@@ -1217,24 +1233,52 @@ app.post('/api/client/setup', async (req, res) => {
                 finalUserId = authData.user.id;
             }
 
-            const passwordHash = await bcrypt.hash(password, 10);
-
-            // Add to users table (upsert to be safe)
-            await supabase.from('users').upsert([{
-                id: finalUserId, email, username, password_hash: passwordHash, profile_pic: '', bio: `Seller at ${request.businessName}`,
+            // Add to users table (upsert to be safe) — MUST check for errors
+            const { error: upsertErr } = await supabase.from('users').upsert([{
+                id: finalUserId, email: email.trim(), username, password_hash: passwordHash, profile_pic: '', bio: `Seller at ${request.businessName}`,
                 college: '', is_verified: true, followers_count: 0, following_count: 0
-            }]);
+            }], { onConflict: 'id' });
+
+            if (upsertErr) {
+                console.error('Client setup: users upsert FAILED:', upsertErr.message, upsertErr.code);
+                // Fallback: try insert instead of upsert
+                const { error: insertErr } = await supabase.from('users').insert([{
+                    id: finalUserId, email: email.trim(), username, password_hash: passwordHash, profile_pic: '', bio: `Seller at ${request.businessName}`,
+                    college: '', is_verified: true, followers_count: 0, following_count: 0
+                }]);
+                if (insertErr) {
+                    console.error('Client setup: users insert also FAILED:', insertErr.message, insertErr.code);
+                    return res.status(500).json({ error: 'Failed to create user record. Please try again or contact support.' });
+                }
+            }
+
+            // Verify the user was actually created
+            const { data: verifyList } = await supabase.from('users').select('id').eq('id', finalUserId).limit(1);
+            if (!verifyList || verifyList.length === 0) {
+                console.error('Client setup: user record NOT found after upsert! userId:', finalUserId);
+                return res.status(500).json({ error: 'Account creation could not be verified. Please try again.' });
+            }
         } else {
             // User already has an account, update password
-            const passwordHash = await bcrypt.hash(password, 10);
-            await supabase.from('users').update({ password_hash: passwordHash }).eq('id', existingUser.id);
+            const { error: updateErr } = await supabase.from('users').update({ password_hash: passwordHash }).eq('id', existingUser.id);
+            if (updateErr) {
+                console.error('Client setup: password update FAILED for existing user:', updateErr.message);
+                return res.status(500).json({ error: 'Failed to update password. Please try again.' });
+            }
+
+            // Also update Supabase Auth password so both stay in sync
+            try {
+                await supabase.auth.admin.updateUserById(existingUser.id, { password });
+            } catch (authUpdateErr) {
+                console.error('Client setup: auth password sync failed (non-critical):', authUpdateErr.message);
+            }
         }
 
         // Update the client request to clear token and attach userId
         await ClientRequest.findByIdAndUpdate(request._id, { userId: finalUserId, setupToken: null });
 
         // Standard login (jwt) to return token
-        const userPayload = { id: finalUserId, email, username };
+        const userPayload = { id: finalUserId, email: email.trim(), username };
         const jwtToken = jwt.sign(userPayload, process.env.JWT_SECRET || 'secret123', { expiresIn: '7d' });
 
         res.json({ success: true, token: jwtToken, user: userPayload, message: 'Account successfully set up!' });
