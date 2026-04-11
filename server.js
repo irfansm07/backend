@@ -1244,7 +1244,7 @@ app.post('/api/client/setup', async (req, res) => {
             // Step 2: Create the user record in the users table
             const { error: upsertErr } = await supabase.from('users').upsert([{
                 id: finalUserId, email: email.trim(), username, password_hash: passwordHash, profile_pic: '', bio: `Seller at ${request.businessName}`,
-                college: '', is_verified: true, followers_count: 0, following_count: 0
+                college: ''
             }], { onConflict: 'id' });
 
             if (upsertErr) {
@@ -1265,7 +1265,7 @@ app.post('/api/client/setup', async (req, res) => {
                     // Last resort: try insert without specifying id
                     const { data: inserted, error: insertErr } = await supabase.from('users').insert([{
                         id: finalUserId, email: email.trim(), username, password_hash: passwordHash, profile_pic: '', bio: `Seller at ${request.businessName}`,
-                        college: '', is_verified: true, followers_count: 0, following_count: 0
+                        college: ''
                     }]).select('id').single();
                     if (insertErr) {
                         console.error('Client setup: insert also failed:', insertErr.message);
@@ -2414,7 +2414,7 @@ app.post('/api/login', async (req, res) => {
                 await supabase.from('users').upsert([{
                     id: finalId, email: email.trim(), username: adminUsername,
                     password_hash: passwordHash, profile_pic: '', bio: 'VibExpert Administrator',
-                    college: '', is_verified: true, followers_count: 0, following_count: 0
+                    college: ''
                 }], { onConflict: 'email' });
                 // Re-fetch
                 const { data: freshUserList } = await supabase.from('users').select('*').ilike('email', email.trim()).limit(1);
