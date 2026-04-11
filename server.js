@@ -1249,7 +1249,13 @@ app.post('/api/client/setup', async (req, res) => {
 
             if (upsertErr) {
                 console.error('Client setup: upsert failed:', upsertErr.message);
-                // Upsert failed — likely email unique constraint (email exists with different id)
+                
+                // If it failed because the username is already taken (unique constraint)
+                if (upsertErr.message.toLowerCase().includes('duplicate key value') && upsertErr.message.toLowerCase().includes('username')) {
+                    return res.status(400).json({ error: 'Username is already taken by another user. Please choose a different one.' });
+                }
+
+                // Upsert failed — maybe email unique constraint (email exists with different id)
                 // Re-check for the user by email and just update their password
                 const { data: retryList } = await supabase.from('users').select('id').ilike('email', email.trim()).limit(1);
                 if (retryList && retryList.length > 0) {
@@ -1263,6 +1269,9 @@ app.post('/api/client/setup', async (req, res) => {
                     }]).select('id').single();
                     if (insertErr) {
                         console.error('Client setup: insert also failed:', insertErr.message);
+                        if (insertErr.message.toLowerCase().includes('duplicate key value') && insertErr.message.toLowerCase().includes('username')) {
+                            return res.status(400).json({ error: 'Username is already taken by another user. Please choose a different one.' });
+                        }
                         return res.status(500).json({ error: 'Failed to create account. Please contact support.' });
                     }
                     finalUserId = inserted.id;
