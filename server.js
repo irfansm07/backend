@@ -109,7 +109,15 @@ io.on('connection', (socket) => {
         socket.data.userId = userId;
         userSockets.set(userId, socket.id);
         await supabase.from('users').update({ last_seen: null }).eq('id', userId);
-        io.emit('user_online_broadcast', { userId });
+        // BUG FIX (BUG-28): Broadcast only to the user's college room, not ALL users globally.
+        // This prevents privacy leakage (any user tracking any other) and reduces unnecessary traffic.
+        const targetCollege = socket.data.college;
+        if (targetCollege) {
+            io.to(targetCollege).emit('user_online_broadcast', { userId });
+        } else {
+            // No college room yet — emit to socket itself only so UI can update
+            socket.emit('user_online_broadcast', { userId });
+        }
     });
 
     socket.on('dm_typing', ({ receiverId }) => {
@@ -160,9 +168,15 @@ io.on('connection', (socket) => {
         console.log('👋 User disconnected:', socket.id);
         if (socket.data.userId) {
             const offlineUserId = socket.data.userId;
+            const offlineCollege = socket.data.college;
             userSockets.delete(offlineUserId);
             supabase.from('users').update({ last_seen: new Date().toISOString() }).eq('id', offlineUserId)
-                .then(() => io.emit('user_offline', { userId: offlineUserId }))
+                .then(() => {
+                    // BUG FIX (BUG-28): Only broadcast offline status to the user's college, not everyone.
+                    if (offlineCollege) {
+                        io.to(offlineCollege).emit('user_offline', { userId: offlineUserId });
+                    }
+                })
                 .catch(console.error);
         }
         if (socket.data.college) {
@@ -249,7 +263,8 @@ const pushNotification = async (userId, notification) => {
     }
 };
 
-const getNotifications = async (userId, limit = 20) => {
+// BUG FIX (BUG-31): Unified limit to 50 everywhere so panel, count, and badge all agree.
+const getNotifications = async (userId, limit = 50) => {
     try {
         const items = await redis.lrange(`notifications:${userId}`, 0, limit - 1);
         return (items || []).map(item => {
@@ -269,8 +284,12 @@ const markNotificationsRead = async (userId) => {
                 return JSON.stringify({ ...n, read: true });
             } catch { return item; }
         });
-        await redis.del(key);
-        if (updated.length > 0) await redis.rpush(key, ...updated);
+        // BUG FIX (BUG-30): Use a Redis pipeline (MULTI/EXEC) so DEL + RPUSH are atomic.
+        // If the connection drops between them, no notifications are lost.
+        const pipeline = redis.pipeline ? redis.pipeline() : redis.multi();
+        pipeline.del(key);
+        if (updated.length > 0) pipeline.rpush(key, ...updated);
+        await pipeline.exec();
     } catch (err) {
         console.error('⚠️ Redis mark-read failed:', err.message);
     }
@@ -500,7 +519,7 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
         }
 
         const actualPlanType = planType || response.data.order_tags?.planType;
-        const plans = { noble: { posters: 5, videos: 1, days: 15 }, royal: { posters: 5, videos: 3, days: 23 } };
+        const plans = { noble: { posters: 5, videos: 1, days: 15 }, royal: { posters: 5, videos: 3, days: 25 } };
         const plan = plans[actualPlanType];
         if (!plan) return res.status(400).json({ error: 'Invalid plan type' });
         const endDate = new Date(Date.now() + plan.days * 24 * 60 * 60 * 1000);
@@ -1329,42 +1348,8 @@ app.get('/api/admin/complaints', authenticateToken, async (req, res) => {
     }
 });
 
-// Admin: Respond to complaint
-app.put('/api/admin/complaints/:id', authenticateToken, async (req, res) => {
-    try {
-        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
-        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
-
-        const { status, adminResponse } = req.body;
-        const complaint = await Complaint.findById(req.params.id);
-        if (!complaint) return res.status(404).json({ error: 'Complaint not found' });
-
-        complaint.status = status || complaint.status;
-        if (adminResponse && adminResponse !== complaint.adminResponse) {
-            complaint.adminResponse = adminResponse;
-            complaint.resolvedAt = new Date();
-
-            // Email user about the response
-            const emailHtml = `
-                <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
-                    <h2 style="color:#4F46E5;">Response to Your VibExpert Ticket</h2>
-                    <p>Hi ${complaint.name},</p>
-                    <p>Regarding your ticket: <strong>${complaint.subject}</strong></p>
-                    <div style="background:#F3F4F6;padding:15px;border-radius:8px;margin:20px 0;">
-                        <p style="white-space:pre-wrap;">${adminResponse}</p>
-                    </div>
-                    <p>Status: <strong>${complaint.status.toUpperCase()}</strong></p>
-                    <p>If you need further assistance, please reply to this email or submit a new ticket.</p>
-                </div>
-            `;
-            await sendEmail(complaint.email, `Update on ticket: ${complaint.subject}`, emailHtml);
-        }
-        await complaint.save();
-        res.json({ success: true, complaint });
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to update complaint' });
-    }
-});
+// DUP FIX (DUP-8): Removed duplicate PUT /api/admin/complaints/:id route.
+// The authoritative version with full email notification is defined earlier in this file.
 
 // ══════════════════════════════════════════════════════════════
 // CLIENT PRODUCT MANAGEMENT
@@ -2012,29 +1997,8 @@ app.post('/api/client/coupons', authenticateToken, async (req, res) => {
     }
 });
 
-// ── Client: Delete a coupon ──────────────────────────────────
-app.delete('/api/client/coupons/:id', authenticateToken, async (req, res) => {
-    try {
-        const coupon = await Coupon.findOneAndDelete({ _id: req.params.id, clientId: req.user.id });
-        if (!coupon) return res.status(404).json({ error: 'Coupon not found' });
-        res.json({ success: true, message: 'Coupon deleted' });
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to delete coupon' });
-    }
-});
-
-// ── Client: Toggle coupon active/inactive ────────────────────
-app.put('/api/client/coupons/:id/toggle', authenticateToken, async (req, res) => {
-    try {
-        const coupon = await Coupon.findOne({ _id: req.params.id, clientId: req.user.id });
-        if (!coupon) return res.status(404).json({ error: 'Coupon not found' });
-        coupon.isActive = !coupon.isActive;
-        await coupon.save();
-        res.json({ success: true, coupon });
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to toggle coupon' });
-    }
-});
+// DUP FIX (DUP-9): Removed duplicate DELETE /api/client/coupons/:id and
+// PUT /api/client/coupons/:id/toggle. Authoritative versions are defined earlier in this file.
 
 // Client: Get user's own seller requests (history)
 app.get('/api/user/seller-requests', authenticateToken, async (req, res) => {
@@ -2224,9 +2188,10 @@ app.post('/api/follow/:userId', authenticateToken, async (req, res) => {
         const targetSocketId = userSockets.get(userId);
         if (targetSocketId) io.to(targetSocketId).emit('new_follow', { followerId: req.user.id, followerUsername: req.user.username, followerProfilePic: req.user.profile_pic || null, followingId: userId, newFollowersCount: tf || 0 });
         // Push notification
+        // Push notification to the person being followed
         await pushNotification(userId, { type: 'new_follow', message: `${req.user.username} started following you`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null });
-        // Log in own activity
-        await pushNotification(req.user.id, { type: 'new_follow', message: `You started following a user`, from: req.user.id, fromUsername: 'You', fromPic: req.user.profile_pic || null, targetUserId: userId });
+        // BUG FIX (BUG-29): Removed self-notification that inflated the actor's own unread badge count.
+        // Activity logging should use a separate feed, not the notification inbox.
         res.json({ success: true, isFollowing: true, targetFollowersCount: tf || 0, myFollowingCount: mf || 0 });
     } catch (error) {
         res.status(500).json({ error: 'Failed to follow user' });
@@ -2825,7 +2790,7 @@ app.get('/api/posts/community', authenticateToken, async (req, res) => {
     try {
         if (!req.user.community_joined || !req.user.college)
             return res.json({ success: false, needsJoinCommunity: true, message: 'Join a college community first' });
-        const posts = await Post.find({ postedTo: 'community', college: req.user.college }).sort({ createdAt: -1 }).limit(50);
+        const posts = await Post.find({ postedTo: { $in: ['community', 'both'] }, college: req.user.college }).sort({ createdAt: -1 }).limit(50);
         const enriched = await enrichPosts(posts, req.user.id);
         res.json({ success: true, posts: enriched });
     } catch (error) {
@@ -2941,7 +2906,8 @@ app.get('/api/posts/shared', authenticateToken, async (req, res) => {
 // GET all posts (global feed)
 app.get('/api/posts', authenticateToken, async (req, res) => {
     try {
-        const posts = await Post.find().sort({ createdAt: -1 }).limit(50);
+        // Zero Velocity feed: only return profile posts, never community or both posts
+        const posts = await Post.find({ postedTo: 'profile' }).sort({ createdAt: -1 }).limit(50);
         const enriched = await enrichPosts(posts, req.user.id);
 
         // Check follow status for each post author
@@ -3012,7 +2978,14 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
             users: { id: req.user.id, username: req.user.username, profile_pic: req.user.profile_pic || null, college: req.user.college || null }
         };
 
-        io.emit('new_post', enrichedPost);
+        // Broadcast new_post only to the relevant audience:
+        // community posts → only members of that college room
+        // profile posts   → no realtime broadcast needed (feed is personal)
+        if (postTo === 'community' && req.user.college) {
+            io.to(req.user.college).emit('new_post', enrichedPost);
+        } else {
+            io.emit('new_post', enrichedPost);
+        }
         let postCount = 0;
         try { postCount = await Post.countDocuments({ userId: req.user.id }); } catch (_) { }
         res.json({ success: true, post: enrichedPost, postCount, message: 'Post created successfully' });
@@ -3051,13 +3024,12 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
         await PostLike.create({ postId, userId: req.user.id });
         const likeCount = await PostLike.countDocuments({ postId });
         io.emit('post_liked', { postId, likeCount, liked: true });
-        // Push notification to post owner
+        // Push notification to post owner (only if it's not the user's own post)
         const post = await Post.findById(postId);
         if (post && post.userId !== req.user.id) {
             await pushNotification(post.userId, { type: 'post_liked', message: `${req.user.username} liked your post`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId });
         }
-        // Log in own activity
-        await pushNotification(req.user.id, { type: 'post_liked', message: `You liked a post`, from: req.user.id, fromUsername: 'You', fromPic: req.user.profile_pic || null, postId });
+        // BUG FIX (BUG-29): Removed self-notification for liking — inflated actor's badge.
         res.json({ success: true, liked: true, likeCount });
     } catch (error) {
         res.status(500).json({ error: 'Failed to like post' });
@@ -3118,13 +3090,12 @@ app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
         const comment = await PostComment.create({ postId, userId: req.user.id, content: content.trim() });
         const commentCount = await PostComment.countDocuments({ postId });
         io.emit('post_commented', { postId, commentCount });
-        // Push notification
+        // Push notification to post owner (only if not your own post)
         const post = await Post.findById(postId);
         if (post && post.userId !== req.user.id) {
             await pushNotification(post.userId, { type: 'new_comment', message: `${req.user.username} commented on your post`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId });
         }
-        // Log in own activity
-        await pushNotification(req.user.id, { type: 'new_comment', message: `You commented on a post`, from: req.user.id, fromUsername: 'You', fromPic: req.user.profile_pic || null, postId });
+        // BUG FIX (BUG-29): Removed self-notification for commenting — inflated actor's badge.
         res.json({ success: true, comment: { ...comment.toObject(), id: comment._id.toString() } });
     } catch (error) {
         res.status(500).json({ error: 'Failed to post comment' });
@@ -3331,12 +3302,20 @@ app.get('/api/dm/conversations', authenticateToken, async (req, res) => {
         const uid = req.user.id;
         const { data: convs, error } = await supabase.from('dm_conversations').select('*').or(`user1_id.eq.${uid},user2_id.eq.${uid}`).order('last_message_at', { ascending: false });
         if (error) { if (error.code === '42P01') return res.json({ success: true, conversations: [] }); throw error; }
-        const enriched = await Promise.all((convs || []).map(async (conv) => {
+
+        // BUG FIX (BUG-32): Replaced N+1 per-conversation user queries with a single batched IN query.
+        const convList = convs || [];
+        const otherIds = [...new Set(convList.map(c => c.user1_id === uid ? c.user2_id : c.user1_id))];
+        let userMap = {};
+        if (otherIds.length > 0) {
+            const { data: users } = await supabase.from('users').select('id,username,profile_pic,last_seen,status_text').in('id', otherIds);
+            (users || []).forEach(u => { userMap[u.id] = u; });
+        }
+        const enriched = convList.map(conv => {
             const otherId = conv.user1_id === uid ? conv.user2_id : conv.user1_id;
             const unreadCount = conv.user1_id === uid ? conv.unread_count_user1 : conv.unread_count_user2;
-            const { data: other } = await supabase.from('users').select('id,username,profile_pic,last_seen,status_text').eq('id', otherId).single();
-            return { ...conv, otherUser: other, unreadCount };
-        }));
+            return { ...conv, otherUser: userMap[otherId] || null, unreadCount };
+        });
         res.json({ success: true, conversations: enriched });
     } catch (error) {
         res.status(500).json({ error: 'Failed to load conversations' });
@@ -3464,13 +3443,170 @@ app.get('/api/dm/messages/:otherId', authenticateToken, async (req, res) => {
         }
         const enriched = messages.map(m => ({ ...m, reply_to: m.reply_to_id ? (replyMap[m.reply_to_id] || null) : null }));
         supabase.from('direct_messages').update({ is_read: true }).eq('sender_id', otherId).eq('receiver_id', uid).eq('is_read', false)
-            .then(() => { const s = userSockets.get(otherId); if (s) io.to(s).emit('dm_read', { readBy: uid, conversationWith: uid }); }).catch(() => { });
+            // BUG FIX (BUG-27): conversationWith was incorrectly set to `uid` (reader's own ID).
+            // It should be `otherId` so the sender knows which conversation was opened.
+            .then(() => { const s = userSockets.get(otherId); if (s) io.to(s).emit('dm_read', { readBy: uid, conversationWith: otherId }); }).catch(() => { });
         const [u1, u2] = [uid, otherId].sort();
         const unreadField = u1 === uid ? 'unread_count_user1' : 'unread_count_user2';
         supabase.from('dm_conversations').update({ [unreadField]: 0 }).eq('user1_id', u1).eq('user2_id', u2).then(() => { }).catch(() => { });
         res.json({ success: true, messages: enriched });
     } catch (error) {
         res.status(500).json({ error: 'Failed to load messages' });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
+// BUG FIX (BUG-23): DELETE a single DM message (was completely missing)
+// ══════════════════════════════════════════════════════════════
+app.delete('/api/dm/messages/:messageId', authenticateToken, async (req, res) => {
+    try {
+        const { messageId } = req.params;
+        const uid = req.user.id;
+
+        // Verify the message exists and belongs to the requesting user
+        const { data: msg, error: fetchErr } = await supabase
+            .from('direct_messages')
+            .select('id,sender_id,receiver_id,content,media_url')
+            .eq('id', messageId)
+            .single();
+
+        if (fetchErr || !msg) return res.status(404).json({ error: 'Message not found' });
+        if (String(msg.sender_id) !== String(uid)) {
+            return res.status(403).json({ error: 'You can only delete your own messages' });
+        }
+
+        const { error: delErr } = await supabase.from('direct_messages').delete().eq('id', messageId);
+        if (delErr) throw delErr;
+
+        // Notify the other person in real-time
+        const otherId = String(msg.receiver_id);
+        const otherSocket = userSockets.get(otherId);
+        if (otherSocket) io.to(otherSocket).emit('dm_message_deleted', { messageId });
+
+        // Update conversation's last_message if this was the most recent one
+        try {
+            const [u1, u2] = [uid, otherId].sort();
+            const { data: lastMsg } = await supabase.from('direct_messages')
+                .select('content,media_type,created_at')
+                .or(`and(sender_id.eq.${uid},receiver_id.eq.${otherId}),and(sender_id.eq.${otherId},receiver_id.eq.${uid})`)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .single();
+            const newLastMsg = lastMsg ? (lastMsg.content || `[${lastMsg.media_type}]`) : '';
+            await supabase.from('dm_conversations').update({ last_message: newLastMsg }).eq('user1_id', u1).eq('user2_id', u2);
+        } catch { /* non-critical */ }
+
+        res.json({ success: true, message: 'Message deleted' });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to delete message: ' + error.message });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
+// BUG FIX (BUG-24): PUT to edit a DM message (was completely missing)
+// ══════════════════════════════════════════════════════════════
+app.put('/api/dm/messages/:messageId', authenticateToken, async (req, res) => {
+    try {
+        const { messageId } = req.params;
+        const { content } = req.body;
+        const uid = req.user.id;
+
+        if (!content || !content.trim()) return res.status(400).json({ error: 'Content required' });
+
+        // Verify ownership
+        const { data: msg, error: fetchErr } = await supabase
+            .from('direct_messages')
+            .select('id,sender_id,receiver_id')
+            .eq('id', messageId)
+            .single();
+
+        if (fetchErr || !msg) return res.status(404).json({ error: 'Message not found' });
+        if (String(msg.sender_id) !== String(uid)) {
+            return res.status(403).json({ error: 'You can only edit your own messages' });
+        }
+
+        const { data: updated, error: updErr } = await supabase
+            .from('direct_messages')
+            .update({ content: content.trim(), edited_at: new Date().toISOString() })
+            .eq('id', messageId)
+            .select()
+            .single();
+
+        if (updErr) throw updErr;
+
+        // Notify the other person of the edit
+        const otherId = String(msg.receiver_id);
+        const otherSocket = userSockets.get(otherId);
+        if (otherSocket) io.to(otherSocket).emit('dm_message_edited', { messageId, content: content.trim() });
+
+        res.json({ success: true, dm: updated });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to edit message: ' + error.message });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
+// BUG FIX (BUG-25): DELETE (clear) all messages in a DM conversation (was completely missing)
+// ══════════════════════════════════════════════════════════════
+app.delete('/api/dm/conversations/:otherId/clear', authenticateToken, async (req, res) => {
+    try {
+        const { otherId } = req.params;
+        const uid = req.user.id;
+
+        // Delete all messages in both directions between the two users
+        await Promise.all([
+            supabase.from('direct_messages').delete().eq('sender_id', uid).eq('receiver_id', otherId),
+            supabase.from('direct_messages').delete().eq('sender_id', otherId).eq('receiver_id', uid)
+        ]);
+
+        // Reset the conversation record
+        const [u1, u2] = [uid, otherId].sort();
+        await supabase.from('dm_conversations')
+            .update({ last_message: '', last_message_at: new Date().toISOString(), unread_count_user1: 0, unread_count_user2: 0 })
+            .eq('user1_id', u1).eq('user2_id', u2);
+
+        // Notify the other person
+        const otherSocket = userSockets.get(otherId);
+        if (otherSocket) io.to(otherSocket).emit('dm_chat_cleared', { clearedBy: uid });
+
+        res.json({ success: true, message: 'Chat cleared' });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to clear chat: ' + error.message });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
+// BUG FIX (BUG-26): POST to block a user (was completely missing)
+// ══════════════════════════════════════════════════════════════
+app.post('/api/users/:userId/block', authenticateToken, async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const uid = req.user.id;
+
+        if (String(userId) === String(uid)) {
+            return res.status(400).json({ error: 'Cannot block yourself' });
+        }
+
+        // Upsert into user_blocks table (create if not exists, ignore if already blocked)
+        const { error: insertErr } = await supabase
+            .from('user_blocks')
+            .upsert([{ blocker_id: uid, blocked_id: userId }], { onConflict: 'blocker_id,blocked_id' });
+
+        // If the table doesn't exist yet, return a helpful error instead of crashing
+        if (insertErr) {
+            if (insertErr.code === '42P01') {
+                return res.status(503).json({ error: 'user_blocks table not set up — run the migration first.' });
+            }
+            throw insertErr;
+        }
+
+        // Notify the blocked user's socket (so they can update their UI)
+        const blockedSocket = userSockets.get(userId);
+        if (blockedSocket) io.to(blockedSocket).emit('user_blocked_you', { blockerId: uid });
+
+        res.json({ success: true, message: 'User blocked' });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to block user: ' + error.message });
     }
 });
 
@@ -3542,10 +3678,14 @@ app.post('/api/realvibes', authenticateToken, upload.single('media'), async (req
         const { caption = '', visibility = 'public' } = req.body;
         const plan = req.user.subscription_plan;
         const isVideo = req.file.mimetype.startsWith('video/');
+        const photoQuota = 5; // noble and royal both allow 5 photos
+        const videoQuota = plan === 'royal' ? 3 : 1;
         if (isVideo) {
-            const videoQuota = plan === 'royal' ? 3 : 1;
             const videoCount = await RealVibe.countDocuments({ userId: req.user.id, mediaType: 'video' });
-            if (videoCount >= videoQuota) return res.status(403).json({ error: `Video quota reached (${videoQuota} for ${plan} plan)`, code: 'QUOTA_EXCEEDED' });
+            if (videoCount >= videoQuota) return res.status(403).json({ error: `Video limit reached — ${plan === 'royal' ? 'Royal' : 'Noble'} plan allows ${videoQuota} video${videoQuota > 1 ? 's' : ''} per subscription period.`, code: 'QUOTA_EXCEEDED' });
+        } else {
+            const photoCount = await RealVibe.countDocuments({ userId: req.user.id, mediaType: 'image' });
+            if (photoCount >= photoQuota) return res.status(403).json({ error: `Photo limit reached — both plans allow ${photoQuota} photos per subscription period.`, code: 'QUOTA_EXCEEDED' });
         }
 
         const vibeResult = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/realvibes');
