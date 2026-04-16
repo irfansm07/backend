@@ -3074,7 +3074,18 @@ app.get('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
         const { data: users } = await supabase.from('users').select('id,username,profile_pic').in('id', userIds);
         const userMap = {};
         (users || []).forEach(u => { userMap[u.id] = u; });
-        const enriched = comments.map(c => ({ ...c.toObject(), id: c._id.toString(), users: userMap[c.userId] || { id: c.userId, username: 'User', profile_pic: null } }));
+        const enriched = comments.map(c => {
+            const likesUsers = c.likes_users || [];
+            return {
+                ...c.toObject(),
+                id: c._id.toString(),
+                users: userMap[c.userId] || { id: c.userId, username: 'User', profile_pic: null },
+                is_liked: likesUsers.includes(req.user.id),
+                liked: likesUsers.includes(req.user.id),
+                like_count: likesUsers.length,
+                likeCount: likesUsers.length
+            };
+        });
         res.json({ success: true, comments: enriched });
     } catch (error) {
         res.status(500).json({ error: 'Failed to load comments' });
@@ -3770,7 +3781,18 @@ app.get('/api/realvibes/:vibeId/comments', authenticateToken, async (req, res) =
         const { data: users } = await supabase.from('users').select('id,username,profile_pic').in('id', userIds);
         const userMap = {};
         (users || []).forEach(u => { userMap[u.id] = u; });
-        const enriched = comments.map(c => ({ ...c.toObject(), id: c._id.toString(), users: userMap[c.userId] || { id: c.userId, username: 'User', profile_pic: null } }));
+        const enriched = comments.map(c => {
+            const likesUsers = c.likes_users || [];
+            return {
+                ...c.toObject(),
+                id: c._id.toString(),
+                users: userMap[c.userId] || { id: c.userId, username: 'User', profile_pic: null },
+                is_liked: likesUsers.includes(req.user.id),
+                liked: likesUsers.includes(req.user.id),
+                like_count: likesUsers.length,
+                likeCount: likesUsers.length
+            };
+        });
         res.json({ success: true, comments: enriched });
     } catch (error) {
         res.status(500).json({ error: 'Failed to load comments' });
