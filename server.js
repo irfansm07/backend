@@ -4354,13 +4354,19 @@ app.post('/api/vxai/chat', vxAiRateLimit, async (req, res) => {
         // Cap history to last 10 turns (20 messages) to control token usage
         const cappedHistory = history.slice(-20);
 
-        const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
+        const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
+        const isNewKeyFormat = GEMINI_KEY.startsWith('AQ.');
+        const GEMINI_URL = isNewKeyFormat
+            ? `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent`
+            : `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`;
+        const geminiHeaders = { 'Content-Type': 'application/json' };
+        if (isNewKeyFormat) geminiHeaders['Authorization'] = `Bearer ${GEMINI_KEY}`;
 
         const geminiResp = await axios.post(GEMINI_URL, {
             system_instruction: { parts: [{ text: VXAI_SYSTEM_PROMPT }] },
             contents: cappedHistory,
             generationConfig: { maxOutputTokens: 200, temperature: 0.8 }
-        }, { headers: { 'Content-Type': 'application/json' }, timeout: 15000 });
+        }, { headers: geminiHeaders, timeout: 15000 });
 
         const reply = geminiResp.data?.candidates?.[0]?.content?.parts?.[0]?.text
             || "Oops, I couldn't fetch a response. Try again! 🙏";
