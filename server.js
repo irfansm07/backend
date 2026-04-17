@@ -4354,13 +4354,9 @@ app.post('/api/vxai/chat', vxAiRateLimit, async (req, res) => {
         // Cap history to last 10 turns (20 messages) to control token usage
         const cappedHistory = history.slice(-20);
 
-        const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
-        const isNewKeyFormat = GEMINI_KEY.startsWith('AQ.');
-        const GEMINI_URL = isNewKeyFormat
-            ? `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent`
-            : `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`;
-        const geminiHeaders = { 'Content-Type': 'application/json' };
-        if (isNewKeyFormat) geminiHeaders['Authorization'] = `Bearer ${GEMINI_KEY}`;
+       const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
+       const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`;
+       const geminiHeaders = { 'Content-Type': 'application/json' };
 
         const geminiResp = await axios.post(GEMINI_URL, {
             system_instruction: { parts: [{ text: VXAI_SYSTEM_PROMPT }] },
