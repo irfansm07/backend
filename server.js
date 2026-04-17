@@ -2159,8 +2159,32 @@ app.put('/api/profile/update', authenticateToken, async (req, res) => {
         const updates = {};
         if (username) updates.username = username;
         if (bio !== undefined) updates.bio = bio;
-        if (college) updates.college = college;
-        if (registration_number) updates.registration_number = registration_number;
+
+        // ── College ID lock ────────────────────────────────────────────────────
+        // Once a user has joined a college, their registration_number (college ID)
+        // is permanently locked to that account and cannot be changed or reused.
+        if (registration_number) {
+            if (req.user.college) {
+                // Already college-verified — block any attempt to change the college ID
+                return res.status(400).json({ error: 'Your college ID is permanently locked to your account and cannot be changed after joining a college.' });
+            }
+            // Not yet college-verified — check uniqueness before allowing the update
+            const { data: regTaken } = await supabase
+                .from('users')
+                .select('id')
+                .eq('registration_number', registration_number.trim())
+                .neq('id', req.user.id)
+                .maybeSingle();
+            if (regTaken) {
+                return res.status(400).json({ error: 'This college ID is already linked to another account.' });
+            }
+            updates.registration_number = registration_number;
+        }
+
+        // College field is not updatable via this endpoint (managed by /api/college/verify)
+        // Silently ignore any college change attempt to prevent bypassing verification
+        // ──────────────────────────────────────────────────────────────────────
+
         const { data: updatedUser, error } = await supabase.from('users').update(updates).eq('id', req.user.id).select().single();
         if (error) throw error;
         res.json({ success: true, message: 'Profile updated successfully', user: updatedUser });
@@ -2754,6 +2778,22 @@ app.post('/api/college/request-verification', authenticateToken, async (req, res
         if (emailAlreadyUsed) {
             return res.status(400).json({ error: 'This college email is already linked to another account. Each college email can only be used once.' });
         }
+
+        // ── College ID (registration_number) uniqueness check ───────────────────
+        // Ensure this student's registration number is not already used by another
+        // account in the same college. A college ID must belong to exactly one account forever.
+        if (req.user.registration_number && !req.user.registration_number.startsWith('auto_') && !req.user.registration_number.startsWith('google_')) {
+            const { data: regAlreadyUsed } = await supabase
+                .from('users')
+                .select('id')
+                .eq('registration_number', req.user.registration_number.trim())
+                .eq('college', collegeName)
+                .neq('id', req.user.id)
+                .maybeSingle();
+            if (regAlreadyUsed) {
+                return res.status(400).json({ error: 'This college ID is already linked to another account. Each college ID can only be used by one account forever.' });
+            }
+        }
         // ────────────────────────────────────────────────────────────────────────
 
         const code = generateCode();
@@ -2798,8 +2838,8 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
         if (!codeData) return res.status(400).json({ error: 'Invalid or expired code. Request a new one.' });
         const { collegeName, collegeEmail } = codeData.meta;
 
-        // ── Final uniqueness guard at verify time ───────────────────────────────
-        // Re-check in case a race condition allowed two concurrent verifications
+        // ── Final uniqueness guards at verify time ─────────────────────────────
+        // Re-check college email in case of race condition
         const { data: raceCheck } = await supabase
             .from('users')
             .select('id')
@@ -2809,6 +2849,23 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
         if (raceCheck) {
             await supabase.from('codes').delete().eq('id', codeData.id);
             return res.status(400).json({ error: 'This college email was just linked to another account. Each college email can only be used once.' });
+        }
+
+        // Re-check college ID (registration_number) for race condition
+        // A college ID must permanently belong to only one account in a given college.
+        const regNo = req.user.registration_number;
+        if (regNo && !regNo.startsWith('auto_') && !regNo.startsWith('google_')) {
+            const { data: regRaceCheck } = await supabase
+                .from('users')
+                .select('id')
+                .eq('registration_number', regNo.trim())
+                .eq('college', collegeName)
+                .neq('id', req.user.id)
+                .maybeSingle();
+            if (regRaceCheck) {
+                await supabase.from('codes').delete().eq('id', codeData.id);
+                return res.status(400).json({ error: 'This college ID was just linked to another account. Each college ID can only be used by one account forever.' });
+            }
         }
         // ────────────────────────────────────────────────────────────────────────
 
