@@ -15,6 +15,7 @@ const http = require('http');
 const socketIO = require('socket.io');
 const axios = require('axios');
 const path = require('path');
+const fs = require('fs');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
 const { Readable } = require('stream');
@@ -198,6 +199,74 @@ app.options('*', cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/assets', express.static(path.join(__dirname, 'assets')));
+
+// ══════════════════════════════════════════════════════════════
+// COLLEGES DATA — Serve colleges.json from /data/colleges.json
+// ══════════════════════════════════════════════════════════════
+
+const COLLEGES_PATH = path.join(__dirname, 'data', 'colleges.json');
+
+// Serve colleges.json directly (used by frontend fetch('/colleges.json'))
+app.use('/colleges.json', (req, res) => {
+    try {
+        if (!fs.existsSync(COLLEGES_PATH)) {
+            return res.status(404).json({ error: 'Colleges data not found' });
+        }
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
+        res.sendFile(COLLEGES_PATH);
+    } catch (error) {
+        console.error('Error serving colleges.json:', error);
+        res.status(500).json({ error: 'Failed to load colleges data' });
+    }
+});
+
+// GET /api/colleges — return all categories
+app.get('/api/colleges', (req, res) => {
+    try {
+        const data = JSON.parse(fs.readFileSync(COLLEGES_PATH, 'utf8'));
+        res.json(data);
+    } catch (error) {
+        console.error('Error fetching colleges:', error);
+        res.status(500).json({ error: 'Failed to fetch colleges' });
+    }
+});
+
+// GET /api/colleges/search/:query — search by name, location or email
+app.get('/api/colleges/search/:query', (req, res) => {
+    try {
+        const data = JSON.parse(fs.readFileSync(COLLEGES_PATH, 'utf8'));
+        const query = req.params.query.toLowerCase();
+        const results = [];
+        for (const category in data) {
+            const filtered = data[category].filter(c =>
+                c.name.toLowerCase().includes(query) ||
+                c.location.toLowerCase().includes(query) ||
+                (c.email && c.email.toLowerCase().includes(query))
+            );
+            results.push(...filtered);
+        }
+        res.json(results);
+    } catch (error) {
+        console.error('Error searching colleges:', error);
+        res.status(500).json({ error: 'Failed to search colleges' });
+    }
+});
+
+// GET /api/colleges/:category — return one category (keep after search route)
+app.get('/api/colleges/:category', (req, res) => {
+    try {
+        const data = JSON.parse(fs.readFileSync(COLLEGES_PATH, 'utf8'));
+        const category = req.params.category.toLowerCase();
+        if (!data[category]) {
+            return res.status(404).json({ error: 'Category not found' });
+        }
+        res.json(data[category]);
+    } catch (error) {
+        console.error('Error fetching colleges by category:', error);
+        res.status(500).json({ error: 'Failed to fetch colleges' });
+    }
+});
 
 app.use((req, res, next) => {
     console.log(`📡 ${req.method} ${req.path} - ${req.get('user-agent')}`);
@@ -2673,6 +2742,20 @@ app.post('/api/college/request-verification', authenticateToken, async (req, res
         // Allow re-verification attempt even if user already has college set in localStorage
         // Only block if confirmed in DB (req.user comes from DB via authenticateToken)
         if (req.user.college) return res.status(400).json({ error: 'You are already connected to ' + req.user.college });
+
+        // ── College email uniqueness check ──────────────────────────────────────
+        // Ensure this college email is not already linked to another account
+        const { data: emailAlreadyUsed } = await supabase
+            .from('users')
+            .select('id')
+            .ilike('college_email', collegeEmail.trim())
+            .neq('id', req.user.id)
+            .maybeSingle();
+        if (emailAlreadyUsed) {
+            return res.status(400).json({ error: 'This college email is already linked to another account. Each college email can only be used once.' });
+        }
+        // ────────────────────────────────────────────────────────────────────────
+
         const code = generateCode();
         const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
         // Delete any existing pending codes for this user first to avoid duplicates
@@ -2714,10 +2797,25 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
         }
         if (!codeData) return res.status(400).json({ error: 'Invalid or expired code. Request a new one.' });
         const { collegeName, collegeEmail } = codeData.meta;
+
+        // ── Final uniqueness guard at verify time ───────────────────────────────
+        // Re-check in case a race condition allowed two concurrent verifications
+        const { data: raceCheck } = await supabase
+            .from('users')
+            .select('id')
+            .ilike('college_email', collegeEmail.trim())
+            .neq('id', req.user.id)
+            .maybeSingle();
+        if (raceCheck) {
+            await supabase.from('codes').delete().eq('id', codeData.id);
+            return res.status(400).json({ error: 'This college email was just linked to another account. Each college email can only be used once.' });
+        }
+        // ────────────────────────────────────────────────────────────────────────
+
         // Remove duplicate badge if already present
         const existingBadges = Array.isArray(req.user.badges) ? req.user.badges : [];
         const newBadges = existingBadges.includes('verified_student') ? existingBadges : [...existingBadges, 'verified_student'];
-        const { error: updateError } = await supabase.from('users').update({ college: collegeName, community_joined: true, badges: newBadges }).eq('id', req.user.id);
+        const { error: updateError } = await supabase.from('users').update({ college: collegeName, college_email: collegeEmail.trim().toLowerCase(), community_joined: true, badges: newBadges }).eq('id', req.user.id);
         if (updateError) {
             console.error('❌ users update error:', updateError);
             return res.status(500).json({ error: 'Failed to update profile: ' + updateError.message });
@@ -4152,6 +4250,68 @@ app.get('/api/dm/unread-count', authenticateToken, async (req, res) => {
         res.json({ success: true, count });
     } catch (err) {
         res.json({ success: true, count: 0 });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
+// VIBEX AI — Secure Gemini Proxy
+// Key stays server-side; frontend never sees it.
+// Rate limit: 20 requests per IP per minute.
+// ══════════════════════════════════════════════════════════════
+const vxAiRateMap = new Map();
+const VXAI_MAX_RPM = 20;
+
+function vxAiRateLimit(req, res, next) {
+    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    const now = Date.now();
+    const entry = vxAiRateMap.get(ip) || { count: 0, resetAt: now + 60_000 };
+    if (now > entry.resetAt) { entry.count = 0; entry.resetAt = now + 60_000; }
+    entry.count++;
+    vxAiRateMap.set(ip, entry);
+    if (entry.count > VXAI_MAX_RPM) {
+        return res.status(429).json({ error: 'Too many requests. Please slow down! 🛸' });
+    }
+    next();
+}
+
+const VXAI_SYSTEM_PROMPT = `You are VibeX AI, the smart and friendly assistant for VibeXpert — India's #1 college social platform. You help students with questions about the app, features, college life, and general queries.
+
+Key VibeXpert features you know about:
+- Real-Time Chat: live group chats, DMs, ghost mode, emojis, stickers, push notifications
+- Post Creation: share photos, videos, music, creative tools
+- College Communities: verified .edu email system, private chat rooms, campus updates, online status
+- Ghost Mode: go invisible — appear offline to everyone
+- Vibers: discover campus students, follow profiles, build your circle
+- VibeShop: earn vibe points, redeem for premium themes, badges & goodies
+- RealVibes: premium-exclusive posts visible to the entire community (Noble & Royal plans)
+- Plans: Free, Noble, Royal tiers
+
+Keep your responses friendly, concise (under 120 words), and campus-vibe appropriate. Use occasional emojis. If something is outside VibeXpert's scope, answer helpfully as a general AI.`;
+
+app.post('/api/vxai/chat', vxAiRateLimit, async (req, res) => {
+    try {
+        const { history } = req.body;
+        if (!Array.isArray(history) || history.length === 0)
+            return res.status(400).json({ error: 'history array is required' });
+
+        // Cap history to last 10 turns (20 messages) to control token usage
+        const cappedHistory = history.slice(-20);
+
+        const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
+
+        const geminiResp = await axios.post(GEMINI_URL, {
+            system_instruction: { parts: [{ text: VXAI_SYSTEM_PROMPT }] },
+            contents: cappedHistory,
+            generationConfig: { maxOutputTokens: 200, temperature: 0.8 }
+        }, { headers: { 'Content-Type': 'application/json' }, timeout: 15000 });
+
+        const reply = geminiResp.data?.candidates?.[0]?.content?.parts?.[0]?.text
+            || "Oops, I couldn't fetch a response. Try again! 🙏";
+
+        res.json({ success: true, reply });
+    } catch (err) {
+        console.error('❌ VibeX AI error:', err?.response?.data || err.message);
+        res.status(500).json({ error: 'AI service unavailable. Please try again!' });
     }
 });
 
