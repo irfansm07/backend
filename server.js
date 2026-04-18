@@ -4310,69 +4310,6 @@ app.get('/api/dm/unread-count', authenticateToken, async (req, res) => {
     }
 });
 
-// ══════════════════════════════════════════════════════════════
-// VIBEX AI — Secure Gemini Proxy
-// Key stays server-side; frontend never sees it.
-// Rate limit: 20 requests per IP per minute.
-// ══════════════════════════════════════════════════════════════
-const vxAiRateMap = new Map();
-const VXAI_MAX_RPM = 20;
-
-function vxAiRateLimit(req, res, next) {
-    const ip = req.ip || req.connection.remoteAddress || 'unknown';
-    const now = Date.now();
-    const entry = vxAiRateMap.get(ip) || { count: 0, resetAt: now + 60_000 };
-    if (now > entry.resetAt) { entry.count = 0; entry.resetAt = now + 60_000; }
-    entry.count++;
-    vxAiRateMap.set(ip, entry);
-    if (entry.count > VXAI_MAX_RPM) {
-        return res.status(429).json({ error: 'Too many requests. Please slow down! 🛸' });
-    }
-    next();
-}
-
-const VXAI_SYSTEM_PROMPT = `You are VibeX AI, the smart and friendly assistant for VibeXpert — India's #1 college social platform. You help students with questions about the app, features, college life, and general queries.
-
-Key VibeXpert features you know about:
-- Real-Time Chat: live group chats, DMs, ghost mode, emojis, stickers, push notifications
-- Post Creation: share photos, videos, music, creative tools
-- College Communities: verified .edu email system, private chat rooms, campus updates, online status
-- Ghost Mode: go invisible — appear offline to everyone
-- Vibers: discover campus students, follow profiles, build your circle
-- VibeShop: earn vibe points, redeem for premium themes, badges & goodies
-- RealVibes: premium-exclusive posts visible to the entire community (Noble & Royal plans)
-- Plans: Free, Noble, Royal tiers
-
-Keep your responses friendly, concise (under 120 words), and campus-vibe appropriate. Use occasional emojis. If something is outside VibeXpert's scope, answer helpfully as a general AI.`;
-
-app.post('/api/vxai/chat', vxAiRateLimit, async (req, res) => {
-    try {
-        const { history } = req.body;
-        if (!Array.isArray(history) || history.length === 0)
-            return res.status(400).json({ error: 'history array is required' });
-
-        // Cap history to last 10 turns (20 messages) to control token usage
-        const cappedHistory = history.slice(-20);
-
-       const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
-       const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`;
-       const geminiHeaders = { 'Content-Type': 'application/json' };
-
-        const geminiResp = await axios.post(GEMINI_URL, {
-            system_instruction: { parts: [{ text: VXAI_SYSTEM_PROMPT }] },
-            contents: cappedHistory,
-            generationConfig: { maxOutputTokens: 200, temperature: 0.8 }
-        }, { headers: geminiHeaders, timeout: 15000 });
-
-        const reply = geminiResp.data?.candidates?.[0]?.content?.parts?.[0]?.text
-            || "Oops, I couldn't fetch a response. Try again! 🙏";
-
-        res.json({ success: true, reply });
-    } catch (err) {
-        console.error('❌ VibeX AI error:', err?.response?.data || err.message);
-        res.status(500).json({ error: 'AI service unavailable. Please try again!' });
-    }
-});
 
 // ══════════════════════════════════════════════════════════════
 // ERROR HANDLING
