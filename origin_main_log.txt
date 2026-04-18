@@ -1,0 +1,5 @@
+﻿5f8d47a fix: resolve merge conflicts and deploy auth fixes
+2cb20a5 fix: login and client setup - use limit(1) instead of maybeSingle, upsert for client accounts
+6657b63 Update server.js
+3641023 Update server.js
+67dd345 Update server.js

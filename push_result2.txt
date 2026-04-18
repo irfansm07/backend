@@ -1,0 +1,21 @@
+﻿git : To https://github.co
+m/irfansm07/backend.git
+At line:1 char:163
++ ...  conflicts and 
+deploy auth fixes" ; git 
+push origin main 2>&1 | 
+Out-F ...
++                         
+                
+~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo        
+      : NotSpecified: (T  
+  o https://gith...m07/   
+ backend.git:String) [    
+], RemoteException
+    + FullyQualifiedError 
+   Id : NativeCommandErr  
+  or
+ 
+   6657b63..5f8d47a  main 
+-> main

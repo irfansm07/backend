@@ -687,6 +687,24 @@ app.post('/api/shop/create-order', authenticateToken, async (req, res) => {
     try {
         const { items, totalAmount, shippingAddress } = req.body;
         if (!items || !items.length || !totalAmount) return res.status(400).json({ error: 'Cart items and total amount are required' });
+
+        // ── Stock validation ──────────────────────────────────────
+        for (const item of items) {
+            if (item.productId || item.id) {
+                try {
+                    const product = await ClientProduct.findById(item.productId || item.id);
+                    if (product) {
+                        if (product.stockQuantity != null && product.stockQuantity <= 0) {
+                            return res.status(400).json({ error: `"${product.name}" is out of stock.` });
+                        }
+                        if (product.stockQuantity != null && item.quantity > product.stockQuantity) {
+                            return res.status(400).json({ error: `Only ${product.stockQuantity} units of "${product.name}" are available. Please reduce quantity.` });
+                        }
+                    }
+                } catch (e) { /* product lookup failed — allow order to proceed */ }
+            }
+        }
+
         const options = { amount: Math.round(totalAmount * 100), currency: 'INR', receipt: `shop_${req.user.id.slice(-8)}_${Date.now()}`, notes: { userId: req.user.id, username: req.user.username, itemCount: items.length, source: 'vibexpert.shop' } };
         const order = await razorpay.orders.create(options);
         await supabase.from('shop_orders').insert([{ user_id: req.user.id, order_id: order.id, items: JSON.stringify(items), total_amount: totalAmount, shipping_address: shippingAddress ? JSON.stringify(shippingAddress) : null, status: 'created' }]);
@@ -779,6 +797,28 @@ app.post('/api/shop/verify-payment', authenticateToken, async (req, res) => {
             }
         } catch (sellerNotifyErr) {
             console.error('⚠️ Seller notification error (non-critical):', sellerNotifyErr.message);
+        }
+
+        // ── Decrement stock for each ordered product ──────────
+        try {
+            for (const item of parsedItems) {
+                let productToUpdate = null;
+                if (item.productId || item.id) {
+                    try { productToUpdate = await ClientProduct.findById(item.productId || item.id); } catch { }
+                }
+                if (!productToUpdate && item.name) {
+                    productToUpdate = await ClientProduct.findOne({ name: item.name, status: 'active' });
+                }
+                if (productToUpdate && productToUpdate.stockQuantity != null) {
+                    const newStock = Math.max(0, productToUpdate.stockQuantity - (item.quantity || 1));
+                    const updateFields = { stockQuantity: newStock };
+                    if (newStock <= 0) updateFields.inStock = false;
+                    await ClientProduct.findByIdAndUpdate(productToUpdate._id, updateFields);
+                    console.log(`📦 Stock updated: ${productToUpdate.name} → ${newStock} remaining`);
+                }
+            }
+        } catch (stockErr) {
+            console.error('⚠️ Stock update error (non-critical):', stockErr.message);
         }
 
         res.json({ success: true, message: 'Payment verified — your order has been placed!', orderId: razorpay_order_id, paymentId: razorpay_payment_id });

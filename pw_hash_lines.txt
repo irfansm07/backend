@@ -1,0 +1,10 @@
+﻿LINE 1223: id: finalUserId, email, username, password_hash: passwordHash, profile_pic: '', bio: `Seller at ${request.businessName}`,
+LINE 1234: await supabase.from('users').update({ password_hash: passwordHash }).eq('id', existingUser.id);
+LINE 2253: const { data: newUser, error } = await supabase.from('users').insert([{ username, email, password_hash: passwordHash, registration_number: regNumber }]).select().single();
+LINE 2371: password_hash: passwordHash, profile_pic: '', bio: 'VibExpert Administrator',
+LINE 2384: let validPassword = await bcrypt.compare(password, user.password_hash);
+LINE 2390: await supabase.from('users').update({ password_hash: newHash }).eq('id', user.id);
+LINE 2440: const validPassword = await bcrypt.compare(currentPassword, req.user.password_hash);
+LINE 2444: await supabase.from('users').update({ password_hash: passwordHash }).eq('id', req.user.id);
+LINE 2530: await supabase.from('users').update({ password_hash: passwordHash }).eq('id', user.id);
+LINE 2592: password_hash: passwordHash,
