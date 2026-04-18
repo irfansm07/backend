@@ -28,7 +28,7 @@ const {
     RealVibe, RealVibeLike, RealVibeComment,
     BannedUser, PlatformNotification, SellerRequest,
     ClientRequest, ClientProduct, OrderMessage,
-    Complaint, Coupon
+    Complaint, Coupon, ProductReview
 } = require('./config/mongodb');
 const redis = require('./config/redis');
 
@@ -1602,9 +1602,22 @@ app.delete('/api/client/products/:id', authenticateToken, async (req, res) => {
 app.get('/api/shop/client-products', async (req, res) => {
     try {
         const products = await ClientProduct.find({ status: 'active' }).sort({ createdAt: -1 });
-        // Enrich with client info
+        // Enrich with client info and real review stats
         const enriched = await Promise.all(products.map(async (p) => {
             const { data: user } = await supabase.from('users').select('username').eq('id', p.clientId).single();
+            // Get real review stats
+            let avgRating = p.rating || 0;
+            let reviewCount = p.reviews || 0;
+            try {
+                const stats = await ProductReview.aggregate([
+                    { $match: { productId: p._id } },
+                    { $group: { _id: null, avg: { $avg: '$rating' }, count: { $sum: 1 } } }
+                ]);
+                if (stats.length > 0) {
+                    avgRating = Math.round(stats[0].avg * 10) / 10;
+                    reviewCount = stats[0].count;
+                }
+            } catch (e) { /* fallback to product fields */ }
             return {
                 id: p._id,
                 name: p.name,
@@ -1613,8 +1626,8 @@ app.get('/api/shop/client-products', async (req, res) => {
                 image: p.images?.[0]?.url || '',
                 images: p.images,
                 category: p.category,
-                rating: p.rating,
-                reviews: p.reviews,
+                rating: avgRating,
+                reviews: reviewCount,
                 description: p.description,
                 badge: p.badge,
                 inStock: p.inStock,
@@ -1662,6 +1675,129 @@ app.delete('/api/admin/client-products/:id', authenticateToken, async (req, res)
         res.json({ success: true, message: 'Product successfully deleted by admin.' });
     } catch (error) {
         res.status(500).json({ error: 'Failed to delete product' });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
+// PRODUCT REVIEWS
+// ══════════════════════════════════════════════════════════════
+
+// Public: Get reviews for a product
+app.get('/api/shop/reviews/:productId', async (req, res) => {
+    try {
+        const reviews = await ProductReview.find({ productId: req.params.productId })
+            .sort({ createdAt: -1 })
+            .limit(50);
+        // Get rating distribution
+        const distribution = await ProductReview.aggregate([
+            { $match: { productId: new (require('mongoose').Types.ObjectId)(req.params.productId) } },
+            { $group: { _id: '$rating', count: { $sum: 1 } } },
+            { $sort: { _id: -1 } }
+        ]);
+        const ratingDist = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+        distribution.forEach(d => { ratingDist[d._id] = d.count; });
+        const totalReviews = reviews.length;
+        const avgRating = totalReviews > 0
+            ? Math.round(reviews.reduce((sum, r) => sum + r.rating, 0) / totalReviews * 10) / 10
+            : 0;
+        res.json({
+            success: true,
+            reviews,
+            stats: { totalReviews, avgRating, distribution: ratingDist }
+        });
+    } catch (error) {
+        console.error('Get reviews error:', error);
+        res.status(500).json({ error: 'Failed to fetch reviews' });
+    }
+});
+
+// Auth: Check if user already reviewed a product for a given order
+app.get('/api/shop/reviews/check/:orderId/:productId', authenticateToken, async (req, res) => {
+    try {
+        const existing = await ProductReview.findOne({
+            userId: req.user.id,
+            orderId: req.params.orderId,
+            productId: req.params.productId
+        });
+        res.json({ success: true, hasReviewed: !!existing, review: existing || null });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to check review status' });
+    }
+});
+
+// Auth: Submit a review (with optional photo uploads)
+app.post('/api/shop/reviews', authenticateToken, upload.array('photos', 3), async (req, res) => {
+    try {
+        const { productId, orderId, rating, title, review } = req.body;
+        if (!productId || !orderId || !rating) {
+            return res.status(400).json({ error: 'Product ID, order ID, and rating are required' });
+        }
+        const ratingNum = parseInt(rating);
+        if (ratingNum < 1 || ratingNum > 5) {
+            return res.status(400).json({ error: 'Rating must be between 1 and 5' });
+        }
+        // Check if already reviewed
+        const existing = await ProductReview.findOne({ userId: req.user.id, orderId, productId });
+        if (existing) {
+            return res.status(400).json({ error: 'You have already reviewed this product for this order' });
+        }
+        // Verify the order belongs to this user and is delivered
+        const { data: order } = await supabase.from('shop_orders')
+            .select('*')
+            .eq('order_id', orderId)
+            .eq('user_id', req.user.id)
+            .single();
+        if (!order) {
+            return res.status(403).json({ error: 'Order not found or does not belong to you' });
+        }
+        if (!['delivered', 'completed'].includes(order.status)) {
+            return res.status(400).json({ error: 'You can only review products after delivery' });
+        }
+        // Upload photos to Cloudinary
+        const photos = [];
+        if (req.files && req.files.length > 0) {
+            for (const file of req.files) {
+                try {
+                    const result = await uploadToCloudinary(file.buffer, file.mimetype, 'vibexpert/shop/reviews');
+                    photos.push({ url: result.secure_url, public_id: result.public_id });
+                } catch (uploadErr) {
+                    console.error('Review photo upload failed:', uploadErr.message);
+                }
+            }
+        }
+        const newReview = await ProductReview.create({
+            productId,
+            orderId,
+            userId: req.user.id,
+            username: req.user.username,
+            profilePic: req.user.profile_pic || null,
+            rating: ratingNum,
+            title: title || '',
+            review: review || '',
+            photos,
+            verified: true
+        });
+        // Update product's aggregate rating
+        try {
+            const stats = await ProductReview.aggregate([
+                { $match: { productId: new (require('mongoose').Types.ObjectId)(productId) } },
+                { $group: { _id: null, avg: { $avg: '$rating' }, count: { $sum: 1 } } }
+            ]);
+            if (stats.length > 0) {
+                await ClientProduct.findByIdAndUpdate(productId, {
+                    rating: Math.round(stats[0].avg * 10) / 10,
+                    reviews: stats[0].count
+                });
+            }
+        } catch (e) { console.error('Update product rating error:', e.message); }
+
+        res.json({ success: true, review: newReview });
+    } catch (error) {
+        console.error('Submit review error:', error);
+        if (error.code === 11000) {
+            return res.status(400).json({ error: 'You have already reviewed this product for this order' });
+        }
+        res.status(500).json({ error: 'Failed to submit review' });
     }
 });
 

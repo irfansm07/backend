@@ -222,6 +222,24 @@ const couponSchema = new mongoose.Schema({
 couponSchema.index({ code: 1 });
 couponSchema.index({ clientId: 1, isActive: 1 });
 
+// Product Reviews (user reviews with photos)
+const productReviewSchema = new mongoose.Schema({
+    productId: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientProduct', required: true, index: true },
+    orderId: { type: String, required: true },
+    userId: { type: String, required: true, index: true },
+    username: { type: String, required: true },
+    profilePic: { type: String, default: null },
+    rating: { type: Number, required: true, min: 1, max: 5 },
+    title: { type: String, default: '' },
+    review: { type: String, default: '' },
+    photos: [{ url: String, public_id: String }],
+    helpful: { type: Number, default: 0 },
+    verified: { type: Boolean, default: true }
+}, { timestamps: true });
+
+productReviewSchema.index({ productId: 1, createdAt: -1 });
+productReviewSchema.index({ userId: 1, productId: 1, orderId: 1 }, { unique: true });
+
 // ── Models ────────────────────────────────────────────────────
 const Post            = mongoose.models.Post            || mongoose.model('Post',            postSchema);
 const PostLike        = mongoose.models.PostLike        || mongoose.model('PostLike',        postLikeSchema);
@@ -239,6 +257,7 @@ const OrderMessage    = mongoose.models.OrderMessage    || mongoose.model('Order
 const Complaint       = mongoose.models.Complaint       || mongoose.model('Complaint',       complaintSchema);
 const PasswordResetCode = mongoose.models.PasswordResetCode || mongoose.model('PasswordResetCode', passwordResetCodeSchema);
 const Coupon          = mongoose.models.Coupon          || mongoose.model('Coupon',          couponSchema);
+const ProductReview   = mongoose.models.ProductReview   || mongoose.model('ProductReview',   productReviewSchema);
 
 module.exports = {
     connectMongo,
@@ -257,5 +276,6 @@ module.exports = {
     OrderMessage,
     Complaint,
     PasswordResetCode,
-    Coupon
+    Coupon,
+    ProductReview
 };
