@@ -200,6 +200,14 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
+// ── Serve frontend static files (CSS, JS, images) from project root ──
+app.use(express.static(__dirname, {
+    setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.css')) res.setHeader('Content-Type', 'text/css');
+        if (filePath.endsWith('.js')) res.setHeader('Content-Type', 'application/javascript');
+    }
+}));
+
 // ══════════════════════════════════════════════════════════════
 // COLLEGES DATA — Serve colleges.json from /data/colleges.json
 // ══════════════════════════════════════════════════════════════
@@ -292,9 +300,12 @@ const uploadToCloudinary = async (fileBuffer, mimeType, folder = 'vibexpert/gene
     if (!fileBuffer || fileBuffer.length === 0) {
         throw new Error('Empty file buffer — nothing to upload');
     }
-    const resourceType = mimeType.startsWith('video/') ? 'video'
-        : mimeType.startsWith('audio/') ? 'video'
-            : 'image';
+    let resourceType = 'auto'; // Let Cloudinary automatically detect raw/image/video
+    if (mimeType.startsWith('video/') || mimeType.startsWith('audio/')) {
+        resourceType = 'video';
+    } else if (mimeType.startsWith('image/')) {
+        resourceType = 'image';
+    }
 
     // Convert buffer to base64 data URI for a single-request upload
     const base64Data = fileBuffer.toString('base64');
@@ -1377,7 +1388,7 @@ app.post('/api/client/setup', async (req, res) => {
 
             if (upsertErr) {
                 console.error('Client setup: upsert failed:', upsertErr.message);
-                
+
                 // If it failed because the username is already taken (unique constraint)
                 if (upsertErr.message.toLowerCase().includes('duplicate key value') && upsertErr.message.toLowerCase().includes('username')) {
                     return res.status(400).json({ error: 'Username is already taken by another user. Please choose a different one.' });
@@ -2307,7 +2318,7 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
     try {
         const { userId } = req.params;
         const [userResult, followersCountResult, followingCountResult, isFollowingResult, isFollowedByResult, likeCountResult, isLikedResult] = await Promise.all([
-            supabase.from('users').select('id,username,email,registration_number,college,profile_pic,cover_photo,bio,badges,community_joined,created_at,note').eq('id', userId).single(),
+            supabase.from('users').select('id,username,email,registration_number,college,profile_pic,cover_photo,bio,badges,community_joined,created_at,note,hobbies').eq('id', userId).single(),
             supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId),
             supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', userId),
             supabase.from('followers').select('id').eq('follower_id', req.user.id).eq('following_id', userId).maybeSingle(),
@@ -2331,7 +2342,7 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
 
 app.put('/api/profile/update', authenticateToken, async (req, res) => {
     try {
-        const { username, bio, college, registration_number } = req.body;
+        const { username, bio, college, registration_number, hobbies } = req.body;
         const updates = {};
         if (username) updates.username = username;
         if (bio !== undefined) updates.bio = bio;
@@ -2360,6 +2371,9 @@ app.put('/api/profile/update', authenticateToken, async (req, res) => {
         // College field is not updatable via this endpoint (managed by /api/college/verify)
         // Silently ignore any college change attempt to prevent bypassing verification
         // ──────────────────────────────────────────────────────────────────────
+
+        // Hobbies — always allow updates
+        if (hobbies !== undefined) updates.hobbies = hobbies;
 
         const { data: updatedUser, error } = await supabase.from('users').update(updates).eq('id', req.user.id).select().single();
         if (error) throw error;
@@ -3237,8 +3251,8 @@ app.get('/api/posts/shared', authenticateToken, async (req, res) => {
 // GET all posts (global feed)
 app.get('/api/posts', authenticateToken, async (req, res) => {
     try {
-        // Zero Velocity feed: only return profile posts, never community or both posts
-        const posts = await Post.find({ postedTo: 'profile' }).sort({ createdAt: -1 }).limit(50);
+        // Zero Velocity feed: return profile and both posts
+        const posts = await Post.find({ postedTo: { $in: ['profile', 'both'] } }).sort({ createdAt: -1 }).limit(50);
         const enriched = await enrichPosts(posts, req.user.id);
 
         // Check follow status for each post author
@@ -3277,7 +3291,7 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
         const { content, postTo, music, stickers } = req.body;
         if (!content && (!req.files || req.files.length === 0))
             return res.status(400).json({ error: 'Post content or media required' });
-        if (postTo === 'community' && (!req.user.community_joined || !req.user.college))
+        if ((postTo === 'community' || postTo === 'both') && (!req.user.community_joined || !req.user.college))
             return res.status(400).json({ error: 'Join a university community first' });
 
         let mediaUrls = [];
@@ -3297,7 +3311,7 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
             content: content || '',
             media: mediaUrls,
             postedTo: postTo || 'profile',
-            college: (postTo === 'community') ? req.user.college : null,
+            college: (postTo === 'community' || postTo === 'both') ? req.user.college : null,
             music: music ? JSON.parse(music) : null,
             stickers: stickers ? JSON.parse(stickers) : []
         });
@@ -3380,7 +3394,7 @@ app.post('/api/comments/:commentId/like', authenticateToken, async (req, res) =>
         // Check if user already liked
         const likes = comment.likes_users || [];
         const userIndex = likes.indexOf(req.user.id);
-        
+
         let liked;
         if (userIndex > -1) {
             likes.splice(userIndex, 1);
@@ -3456,6 +3470,20 @@ app.delete('/api/posts/:postId/comments/:commentId', authenticateToken, async (r
     }
 });
 
+// EDIT comment
+app.put('/api/posts/:postId/comments/:commentId', authenticateToken, async (req, res) => {
+    try {
+        const comment = await PostComment.findById(req.params.commentId);
+        if (!comment || comment.userId !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
+        if (!req.body.content || !req.body.content.trim()) return res.status(400).json({ error: 'Content required' });
+        comment.content = req.body.content.trim();
+        await comment.save();
+        res.json({ success: true, comment });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to edit comment' });
+    }
+});
+
 // POST share
 app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
     try {
@@ -3469,8 +3497,7 @@ app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
         if (post && post.userId !== req.user.id) {
             await pushNotification(post.userId, { type: 'post_shared', message: `${req.user.username} shared your post`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId });
         }
-        // Also log in user's own activity as requested
-        await pushNotification(req.user.id, { type: 'post_shared', message: `You shared a post`, from: req.user.id, fromUsername: 'You', fromPic: req.user.profile_pic || null, postId });
+        // BUG FIX: Removed self-notification for sharing a post.
 
         res.json({ success: true, shareCount });
     } catch (error) {
@@ -3677,7 +3704,8 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
             if (req.file.mimetype.startsWith('video/')) mediaType = 'video';
             else if (req.file.mimetype.startsWith('audio/')) mediaType = 'audio';
             else if (req.file.mimetype === 'application/pdf') mediaType = 'pdf';
-            else mediaType = 'image';
+            else if (req.file.mimetype.startsWith('image/')) mediaType = 'image';
+            else mediaType = 'document';
         }
         const insertPayload = { sender_id: senderId, receiver_id: receiverId, content: content?.trim() || '', media_url: mediaUrl, media_type: mediaType };
         if (replyToId && replyToId !== 'null') insertPayload.reply_to_id = replyToId;
@@ -3901,10 +3929,10 @@ app.delete('/api/dm/conversations/:otherId/clear', authenticateToken, async (req
             supabase.from('direct_messages').delete().eq('sender_id', otherId).eq('receiver_id', uid)
         ]);
 
-        // Reset the conversation record
+        // Reset the conversation record by deleting it completely
         const [u1, u2] = [uid, otherId].sort();
         await supabase.from('dm_conversations')
-            .update({ last_message: '', last_message_at: new Date().toISOString(), unread_count_user1: 0, unread_count_user2: 0 })
+            .delete()
             .eq('user1_id', u1).eq('user2_id', u2);
 
         // Notify the other person
@@ -4151,6 +4179,34 @@ app.post('/api/realvibes/:vibeId/comments', authenticateToken, async (req, res) 
         res.json({ success: true, comment: { ...comment.toObject(), id: comment._id.toString() } });
     } catch (error) {
         res.status(500).json({ error: 'Failed to comment' });
+    }
+});
+
+// DELETE RealVibe comment
+app.delete('/api/realvibes/:vibeId/comments/:commentId', authenticateToken, async (req, res) => {
+    try {
+        const comment = await RealVibeComment.findById(req.params.commentId);
+        if (!comment || comment.userId !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
+        await RealVibeComment.deleteOne({ _id: comment._id });
+        const commentCount = await RealVibeComment.countDocuments({ vibeId: req.params.vibeId });
+        await RealVibe.updateOne({ _id: req.params.vibeId }, { commentCount });
+        res.json({ success: true, message: 'Comment deleted' });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to delete comment' });
+    }
+});
+
+// EDIT RealVibe comment
+app.put('/api/realvibes/:vibeId/comments/:commentId', authenticateToken, async (req, res) => {
+    try {
+        const comment = await RealVibeComment.findById(req.params.commentId);
+        if (!comment || comment.userId !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
+        if (!req.body.content || !req.body.content.trim()) return res.status(400).json({ error: 'Content required' });
+        comment.content = req.body.content.trim();
+        await comment.save();
+        res.json({ success: true, comment });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to edit comment' });
     }
 });
 
