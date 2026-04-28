@@ -2319,8 +2319,8 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
         const { userId } = req.params;
         const [userResult, followersCountResult, followingCountResult, isFollowingResult, isFollowedByResult, likeCountResult, isLikedResult] = await Promise.all([
             supabase.from('users').select('id,username,email,registration_number,college,profile_pic,cover_photo,bio,badges,community_joined,created_at,note,hobbies').eq('id', userId).single(),
-            supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId),
-            supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', userId),
+            supabase.from('followers').select('*', { count: 'exact', head: true }).eq('following_id', userId),
+            supabase.from('followers').select('*', { count: 'exact', head: true }).eq('follower_id', userId),
             supabase.from('followers').select('id').eq('follower_id', req.user.id).eq('following_id', userId).maybeSingle(),
             supabase.from('followers').select('id').eq('follower_id', userId).eq('following_id', req.user.id).maybeSingle(),
             supabase.from('profile_likes').select('id', { count: 'exact', head: true }).eq('user_id', userId),
@@ -2460,14 +2460,14 @@ app.post('/api/follow/:userId', authenticateToken, async (req, res) => {
         const { error } = await supabase.from('followers').insert([{ follower_id: req.user.id, following_id: userId }]);
         if (error) {
             if (error.code === '23505') {
-                const { count: tf } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId);
-                const { count: mf } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', req.user.id);
+                const { count: tf } = await supabase.from('followers').select('*', { count: 'exact', head: true }).eq('following_id', userId);
+                const { count: mf } = await supabase.from('followers').select('*', { count: 'exact', head: true }).eq('follower_id', req.user.id);
                 return res.json({ success: true, isFollowing: true, targetFollowersCount: tf || 0, myFollowingCount: mf || 0 });
             }
             throw error;
         }
-        const { count: tf } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId);
-        const { count: mf } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', req.user.id);
+        const { count: tf } = await supabase.from('followers').select('*', { count: 'exact', head: true }).eq('following_id', userId);
+        const { count: mf } = await supabase.from('followers').select('*', { count: 'exact', head: true }).eq('follower_id', req.user.id);
         const targetSocketId = userSockets.get(userId);
         if (targetSocketId) io.to(targetSocketId).emit('new_follow', { followerId: req.user.id, followerUsername: req.user.username, followerProfilePic: req.user.profile_pic || null, followingId: userId, newFollowersCount: tf || 0 });
         // Push notification
@@ -2485,8 +2485,8 @@ app.post('/api/unfollow/:userId', authenticateToken, async (req, res) => {
     try {
         const { userId } = req.params;
         await supabase.from('followers').delete().eq('follower_id', req.user.id).eq('following_id', userId);
-        const { count: tf } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId);
-        const { count: mf } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', req.user.id);
+        const { count: tf } = await supabase.from('followers').select('*', { count: 'exact', head: true }).eq('following_id', userId);
+        const { count: mf } = await supabase.from('followers').select('*', { count: 'exact', head: true }).eq('follower_id', req.user.id);
         const targetSocketId = userSockets.get(userId);
         if (targetSocketId) io.to(targetSocketId).emit('lost_follow', { followerId: req.user.id, followingId: userId, newFollowersCount: tf || 0 });
         res.json({ success: true, isFollowing: false, targetFollowersCount: tf || 0, myFollowingCount: mf || 0 });
@@ -2700,8 +2700,8 @@ app.post('/api/login', async (req, res) => {
 
         const token = jwt.sign({ userId: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '30d' });
         const [{ count: followersCount }, { count: followingCount }] = await Promise.all([
-            supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', user.id),
-            supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', user.id)
+            supabase.from('followers').select('*', { count: 'exact', head: true }).eq('following_id', user.id),
+            supabase.from('followers').select('*', { count: 'exact', head: true }).eq('follower_id', user.id)
         ]);
 
         // ✅ MongoDB failure won't break login (with timeout)
@@ -2915,8 +2915,8 @@ app.post('/api/auth/google', async (req, res) => {
 
         // Get social counts
         const [{ count: followersCount }, { count: followingCount }] = await Promise.all([
-            supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', user.id),
-            supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', user.id)
+            supabase.from('followers').select('*', { count: 'exact', head: true }).eq('following_id', user.id),
+            supabase.from('followers').select('*', { count: 'exact', head: true }).eq('follower_id', user.id)
         ]);
 
         let postCount = 0;
