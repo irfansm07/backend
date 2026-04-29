@@ -3237,8 +3237,20 @@ app.get('/api/posts/shared', authenticateToken, async (req, res) => {
 // GET all posts (global feed)
 app.get('/api/posts', authenticateToken, async (req, res) => {
     try {
-        // Zero Velocity feed: only return profile posts, never community or both posts
-        const posts = await Post.find({ postedTo: 'profile' }).sort({ createdAt: -1 }).limit(50);
+        // Get blocked user IDs to filter them out of feed
+        let blockedIds = [];
+        try {
+            const { data: blocks } = await supabase
+                .from('user_blocks')
+                .select('blocked_id')
+                .eq('blocker_id', req.user.id);
+            if (blocks && blocks.length > 0) blockedIds = blocks.map(b => b.blocked_id);
+        } catch (bErr) { /* user_blocks table may not exist yet */ }
+
+        // Zero Velocity feed: only return profile posts, exclude blocked users
+        const query = { postedTo: 'profile' };
+        if (blockedIds.length > 0) query.userId = { $nin: blockedIds };
+        const posts = await Post.find(query).sort({ createdAt: -1 }).limit(50);
         const enriched = await enrichPosts(posts, req.user.id);
 
         // Check follow status for each post author
@@ -4077,7 +4089,19 @@ const enrichVibes = async (vibes, currentUserId) => {
 // GET all approved realvibes
 app.get('/api/realvibes', authenticateToken, async (req, res) => {
     try {
-        const vibes = await RealVibe.find({ status: 'approved', expiresAt: { $gt: new Date() } }).sort({ createdAt: -1 }).limit(50);
+        // Get blocked user IDs to filter them out
+        let blockedIds = [];
+        try {
+            const { data: blocks } = await supabase
+                .from('user_blocks')
+                .select('blocked_id')
+                .eq('blocker_id', req.user.id);
+            if (blocks && blocks.length > 0) blockedIds = blocks.map(b => b.blocked_id);
+        } catch (bErr) { /* user_blocks table may not exist yet */ }
+
+        const query = { status: 'approved', expiresAt: { $gt: new Date() } };
+        if (blockedIds.length > 0) query.userId = { $nin: blockedIds };
+        const vibes = await RealVibe.find(query).sort({ createdAt: -1 }).limit(50);
         const enriched = await enrichVibes(vibes, req.user.id);
         res.json({ success: true, vibes: enriched });
     } catch (error) {
