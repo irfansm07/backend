@@ -3697,6 +3697,19 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
         if (!receiverId) return res.status(400).json({ error: 'receiverId required' });
         if (!content && !req.file) return res.status(400).json({ error: 'Content or media required' });
         const senderId = req.user.id;
+
+        // Check if either user has blocked the other
+        try {
+            const { data: blockCheck } = await supabase
+                .from('user_blocks')
+                .select('id')
+                .or(`and(blocker_id.eq.${senderId},blocked_id.eq.${receiverId}),and(blocker_id.eq.${receiverId},blocked_id.eq.${senderId})`)
+                .limit(1);
+            if (blockCheck && blockCheck.length > 0) {
+                return res.status(403).json({ error: 'Cannot send message — user is blocked.' });
+            }
+        } catch (bErr) { /* user_blocks table may not exist yet — allow DM */ }
+
         let mediaUrl = null, mediaType = null;
         if (req.file) {
             const dmResult = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/dm');
@@ -3970,6 +3983,16 @@ app.post('/api/users/:userId/block', authenticateToken, async (req, res) => {
             throw insertErr;
         }
 
+        // Also remove mutual follows so blocked user can't interact
+        try {
+            await Promise.all([
+                supabase.from('followers').delete().eq('follower_id', uid).eq('following_id', userId),
+                supabase.from('followers').delete().eq('follower_id', userId).eq('following_id', uid)
+            ]);
+        } catch (followErr) {
+            console.error('⚠️ Could not remove follows on block (non-critical):', followErr.message);
+        }
+
         // Notify the blocked user's socket (so they can update their UI)
         const blockedSocket = userSockets.get(userId);
         if (blockedSocket) io.to(blockedSocket).emit('user_blocked_you', { blockerId: uid });
@@ -3977,6 +4000,67 @@ app.post('/api/users/:userId/block', authenticateToken, async (req, res) => {
         res.json({ success: true, message: 'User blocked' });
     } catch (error) {
         res.status(500).json({ error: 'Failed to block user: ' + error.message });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
+// GET list of users blocked by the current user
+// ══════════════════════════════════════════════════════════════
+app.get('/api/users/blocked', authenticateToken, async (req, res) => {
+    try {
+        const uid = req.user.id;
+
+        // Get all blocked user IDs
+        const { data: blocks, error: blockErr } = await supabase
+            .from('user_blocks')
+            .select('blocked_id')
+            .eq('blocker_id', uid);
+
+        if (blockErr) {
+            if (blockErr.code === '42P01') return res.json({ success: true, blocked: [] });
+            throw blockErr;
+        }
+
+        if (!blocks || blocks.length === 0) {
+            return res.json({ success: true, blocked: [] });
+        }
+
+        const blockedIds = blocks.map(b => b.blocked_id);
+
+        // Fetch user details for blocked users
+        const { data: users } = await supabase
+            .from('users')
+            .select('id,username,name,profile_pic,college,email')
+            .in('id', blockedIds);
+
+        res.json({ success: true, blocked: users || [] });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to load blocked users: ' + error.message });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
+// POST unblock a user
+// ══════════════════════════════════════════════════════════════
+app.post('/api/users/:userId/unblock', authenticateToken, async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const uid = req.user.id;
+
+        const { error: delErr } = await supabase
+            .from('user_blocks')
+            .delete()
+            .eq('blocker_id', uid)
+            .eq('blocked_id', userId);
+
+        if (delErr) {
+            if (delErr.code === '42P01') return res.json({ success: true, message: 'No blocks table' });
+            throw delErr;
+        }
+
+        res.json({ success: true, message: 'User unblocked' });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to unblock user: ' + error.message });
     }
 });
 
