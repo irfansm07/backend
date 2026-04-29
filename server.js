@@ -468,6 +468,14 @@ function authenticateAdmin(req, res, next) {
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
 // ── Cloudinary diagnostic (TEMPORARY) ─────────────────────────
+app.get('/api/debug/blocks', async (req, res) => {
+    try {
+        const { data, error } = await supabase.from('user_blocks').select('*');
+        res.json({ data, error });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
 app.get('/api/debug/cloudinary', async (req, res) => {
     const cfg = cloudinaryLib.config();
     const info = {
