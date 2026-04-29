@@ -3983,6 +3983,7 @@ app.post('/api/users/:userId/block', authenticateToken, async (req, res) => {
 
         res.json({ success: true, message: 'User blocked' });
     } catch (error) {
+        console.error('[BlockUser] ERROR blocking user:', error);
         res.status(500).json({ error: 'Failed to block user: ' + error.message });
     }
 });
