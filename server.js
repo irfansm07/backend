@@ -3993,32 +3993,41 @@ app.post('/api/users/:userId/block', authenticateToken, async (req, res) => {
 app.get('/api/users/blocked', authenticateToken, async (req, res) => {
     try {
         const uid = req.user.id;
+        console.log('[BlockedList] Fetching blocked users for uid:', uid);
 
         // Get all blocked user IDs
         const { data: blocks, error: blockErr } = await supabase
             .from('user_blocks')
-            .select('blocked_id')
+            .select('*')
             .eq('blocker_id', uid);
 
+        console.log('[BlockedList] Query result - blocks:', JSON.stringify(blocks), 'error:', blockErr);
+
         if (blockErr) {
+            console.error('[BlockedList] Error:', blockErr);
             if (blockErr.code === '42P01') return res.json({ success: true, blocked: [] });
             throw blockErr;
         }
 
         if (!blocks || blocks.length === 0) {
+            console.log('[BlockedList] No blocks found for user', uid);
             return res.json({ success: true, blocked: [] });
         }
 
         const blockedIds = blocks.map(b => b.blocked_id);
+        console.log('[BlockedList] Found blocked IDs:', blockedIds);
 
         // Fetch user details for blocked users
-        const { data: users } = await supabase
+        const { data: users, error: userErr } = await supabase
             .from('users')
             .select('id,username,name,profile_pic,college,email')
             .in('id', blockedIds);
 
+        console.log('[BlockedList] Users found:', users?.length, 'error:', userErr);
+
         res.json({ success: true, blocked: users || [] });
     } catch (error) {
+        console.error('[BlockedList] Catch error:', error);
         res.status(500).json({ error: 'Failed to load blocked users: ' + error.message });
     }
 });
