@@ -209,10 +209,10 @@ app.use(express.static(__dirname, {
 }));
 
 // ══════════════════════════════════════════════════════════════
-// COLLEGES DATA — Serve colleges.json from /data/colleges.json
+// COLLEGES DATA — Serve colleges.json from /colleges.json
 // ══════════════════════════════════════════════════════════════
 
-const COLLEGES_PATH = path.join(__dirname, 'data', 'colleges.json');
+const COLLEGES_PATH = path.join(__dirname, 'colleges.json');
 
 // Serve colleges.json directly (used by frontend fetch('/colleges.json'))
 app.use('/colleges.json', (req, res) => {
