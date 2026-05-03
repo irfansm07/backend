@@ -4152,9 +4152,9 @@ app.get('/api/users/blocked', authenticateToken, async (req, res) => {
     }
 });
 
-app.get('/api/debug/blocks', authenticateToken, async (req, res) => {
+app.get('/api/debug/blocks', async (req, res) => {
     try {
-        console.log('🔍 [DEBUG] Diagnostic started for user:', req.user.id);
+        console.log('🔍 [DEBUG] Public diagnostic started...');
         
         // Check Supabase config (safely)
         const url = process.env.SUPABASE_URL || 'NOT SET';
@@ -4175,7 +4175,6 @@ app.get('/api/debug/blocks', authenticateToken, async (req, res) => {
                 blockError: blockErr,
                 userError: userErr
             },
-            myId: req.user.id,
             blocks: allBlocks
         });
     } catch (e) {
