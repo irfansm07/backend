@@ -1079,18 +1079,29 @@ app.post('/api/admin/users/:id/warn', authenticateToken, async (req, res) => {
 app.post('/api/admin/notifications', authenticateToken, async (req, res) => {
     try {
         if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
-        const { title, message } = req.body;
-        const notif = await PlatformNotification.create({ title, message, createdBy: req.user.id });
+        const { title, message, target, targetUserId } = req.body;
+        
+        const notif = await PlatformNotification.create({ 
+            title, 
+            message, 
+            target: target || 'all', 
+            targetUserId: target === 'specific' ? targetUserId : null,
+            createdBy: req.user.id 
+        });
 
-        // Push to all active users we can fetch 
-        const { data: users } = await supabase.from('users').select('id');
-        if (users) {
-            // we only broadcast via socket or just add to DB and let clients fetch. 
-            // Broad-casting to all might be heavy, so we just emit a global socket event
+        if (target === 'specific' && targetUserId) {
+            const targetSocketId = userSockets.get(targetUserId);
+            if (targetSocketId) {
+                io.to(targetSocketId).emit('new_platform_notification', notif);
+            }
+        } else {
             io.emit('new_platform_notification', notif);
         }
+
         res.json({ success: true, notification: notif });
-    } catch (error) { res.status(500).json({ error: 'Failed to create notification' }); }
+    } catch (error) { 
+        res.status(500).json({ error: 'Failed to create notification' }); 
+    }
 });
 
 // ══════════════════════════════════════════════════════════════
