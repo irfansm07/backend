@@ -486,25 +486,21 @@ function authenticateAdmin(req, res, next) {
 async function getBlockedUserIds(uid) {
     if (!uid) return [];
     try {
-        const { data: blocks, error } = await supabase
-            .from('user_blocks')
-            .select('blocker_id, blocked_id')
-            .or(`blocker_id.eq.${uid},blocked_id.eq.${uid}`);
+        const [{ data: b1, error: e1 }, { data: b2, error: e2 }] = await Promise.all([
+            supabase.from('user_blocks').select('blocked_id').eq('blocker_id', uid),
+            supabase.from('user_blocks').select('blocker_id').eq('blocked_id', uid)
+        ]);
         
-        if (error) {
-            if (error.code !== '42P01') console.error('[getBlockedUserIds] Supabase Error:', error);
-            return [];
-        }
-        if (!blocks) return [];
+        if (e1 && e1.code !== '42P01') console.error('[getBlockedUserIds] error 1:', e1);
+        if (e2 && e2.code !== '42P01') console.error('[getBlockedUserIds] error 2:', e2);
         
         const ids = new Set();
-        blocks.forEach(b => {
-            if (String(b.blocker_id) === String(uid)) ids.add(String(b.blocked_id));
-            if (String(b.blocked_id) === String(uid)) ids.add(String(b.blocker_id));
-        });
+        if (b1) b1.forEach(b => ids.add(String(b.blocked_id)));
+        if (b2) b2.forEach(b => ids.add(String(b.blocker_id)));
+        
         return Array.from(ids);
     } catch (e) {
-        console.error('[getBlockedUserIds] Error:', e);
+        console.error('[getBlockedUserIds] Catch error:', e);
         return [];
     }
 }
