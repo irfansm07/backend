@@ -455,6 +455,23 @@ const authenticateToken = async (req, res, next) => {
     }
 };
 
+const authenticateTokenOptional = async (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (!token) {
+        req.user = null;
+        return next();
+    }
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const { data: user } = await supabase.from('users').select('*').eq('id', decoded.userId).single();
+        req.user = user || null;
+    } catch {
+        req.user = null;
+    }
+    next();
+};
+
 function authenticateAdmin(req, res, next) {
     const adminKey = req.headers['x-admin-secret'] || req.query.admin_secret;
     if (!adminKey || adminKey !== process.env.ADMIN_SECRET)
