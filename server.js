@@ -462,6 +462,12 @@ function authenticateAdmin(req, res, next) {
     next();
 }
 
+// ── Admin email check (case-insensitive) ──────────────────────
+const ADMIN_EMAILS_GLOBAL = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
+function isAdminUser(user) {
+    return user && user.email && ADMIN_EMAILS_GLOBAL.includes(user.email.trim().toLowerCase());
+}
+
 // ══════════════════════════════════════════════════════════════
 // BASIC ROUTES
 // ══════════════════════════════════════════════════════════════
@@ -918,8 +924,7 @@ app.post('/api/shop/coupons/validate', async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 app.get('/api/admin/shop-orders', authenticateToken, async (req, res) => {
     try {
-        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
-        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const { data: orders, error } = await supabase.from('shop_orders').select(`*, users (username, email)`).order('created_at', { ascending: false });
         if (error) throw error;
         res.json({ success: true, orders: orders || [] });
@@ -930,8 +935,7 @@ app.get('/api/admin/shop-orders', authenticateToken, async (req, res) => {
 
 app.put('/api/admin/shop-orders/:orderId/status', authenticateToken, async (req, res) => {
     try {
-        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
-        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const { orderId } = req.params;
         const { status } = req.body;
         const { error } = await supabase.from('shop_orders').update({ status, updated_at: new Date().toISOString() }).eq('order_id', orderId);
@@ -945,11 +949,10 @@ app.put('/api/admin/shop-orders/:orderId/status', authenticateToken, async (req,
 // ── Admin: List All Users ─────────────────────────────────────
 app.get('/api/admin/users', authenticateToken, async (req, res) => {
     try {
-        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
-        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const { data: users, error } = await supabase
             .from('users')
-            .select('id,username,email,registration_number,college,profile_pic,bio,badges,is_premium,subscription_plan,community_joined,created_at')
+            .select('id,username,email,registration_number,college,profile_pic,bio,badges,is_premium,subscription_plan,subscription_start,subscription_end,has_subscribed,posters_quota,videos_quota,community_joined,created_at')
             .order('created_at', { ascending: false });
         if (error) throw error;
         res.json({ success: true, users: users || [], count: (users || []).length });
@@ -961,8 +964,7 @@ app.get('/api/admin/users', authenticateToken, async (req, res) => {
 // ── Admin: Platform Stats ─────────────────────────────────────
 app.get('/api/admin/stats', authenticateToken, async (req, res) => {
     try {
-        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
-        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const [
             { count: totalUsers },
             { count: premiumUsers },
@@ -1008,8 +1010,7 @@ app.post('/api/user/seller-request', authenticateToken, async (req, res) => {
 // ── Admin: Moderation & Requests ─────────────────────────────────
 app.get('/api/admin/seller-requests', authenticateToken, async (req, res) => {
     try {
-        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
-        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const requests = await SellerRequest.find().sort({ createdAt: -1 });
         res.json({ success: true, requests });
     } catch (error) { res.status(500).json({ error: 'Failed to load requests' }); }
@@ -1017,8 +1018,7 @@ app.get('/api/admin/seller-requests', authenticateToken, async (req, res) => {
 
 app.put('/api/admin/seller-requests/:id', authenticateToken, async (req, res) => {
     try {
-        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
-        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const { status, adminMessage } = req.body;
         const updated = await SellerRequest.findByIdAndUpdate(req.params.id, { status, adminMessage }, { new: true });
         // Push notification to user
@@ -1035,8 +1035,7 @@ app.put('/api/admin/seller-requests/:id', authenticateToken, async (req, res) =>
 
 app.post('/api/admin/users/:id/ban', authenticateToken, async (req, res) => {
     try {
-        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
-        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const { reason } = req.body;
         await BannedUser.findOneAndUpdate(
             { userId: req.params.id },
@@ -1049,8 +1048,7 @@ app.post('/api/admin/users/:id/ban', authenticateToken, async (req, res) => {
 
 app.post('/api/admin/users/:id/warn', authenticateToken, async (req, res) => {
     try {
-        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
-        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const { message } = req.body;
         await pushNotification(req.params.id, {
             type: 'warning',
@@ -1063,8 +1061,7 @@ app.post('/api/admin/users/:id/warn', authenticateToken, async (req, res) => {
 
 app.post('/api/admin/notifications', authenticateToken, async (req, res) => {
     try {
-        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
-        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const { title, message } = req.body;
         const notif = await PlatformNotification.create({ title, message, createdBy: req.user.id });
 
@@ -1130,8 +1127,7 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
 // Admin: Get all complaints & feedback
 app.get('/api/admin/complaints', authenticateToken, async (req, res) => {
     try {
-        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
-        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const complaints = await Complaint.find().sort({ createdAt: -1 });
         res.json({ success: true, complaints });
     } catch (error) {
@@ -1143,8 +1139,7 @@ app.get('/api/admin/complaints', authenticateToken, async (req, res) => {
 // Admin: Respond to / update a complaint
 app.put('/api/admin/complaints/:id', authenticateToken, async (req, res) => {
     try {
-        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
-        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const { status, adminResponse } = req.body;
         const updateData = {};
         if (status) updateData.status = status;
@@ -1245,8 +1240,7 @@ app.get('/api/client/status', authenticateToken, async (req, res) => {
 // Admin: Get all client registration requests
 app.get('/api/admin/client-requests', authenticateToken, async (req, res) => {
     try {
-        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
-        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const requests = await ClientRequest.find().sort({ createdAt: -1 });
         // Enrich with user details from Supabase
         const enriched = await Promise.all(requests.map(async (r) => {
@@ -1267,8 +1261,7 @@ app.get('/api/admin/client-requests', authenticateToken, async (req, res) => {
 // Admin: Approve / Reject / Hold client request
 app.put('/api/admin/client-requests/:id', authenticateToken, async (req, res) => {
     try {
-        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
-        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const { status, adminMessage } = req.body;
         if (!['approved', 'rejected', 'hold'].includes(status))
             return res.status(400).json({ error: 'Invalid status' });
@@ -1455,8 +1448,7 @@ app.post('/api/complaints', async (req, res) => {
 // Admin: Get all complaints
 app.get('/api/admin/complaints', authenticateToken, async (req, res) => {
     try {
-        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
-        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
 
         const complaints = await Complaint.find().sort({ createdAt: -1 });
         res.json({ success: true, complaints });
@@ -1658,8 +1650,7 @@ app.get('/api/shop/client-products', async (req, res) => {
 // Admin: Get all client products
 app.get('/api/admin/client-products', authenticateToken, async (req, res) => {
     try {
-        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
-        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const products = await ClientProduct.find().sort({ createdAt: -1 });
         const enriched = await Promise.all(products.map(async (p) => {
             const { data: user } = await supabase.from('users').select('username,email').eq('id', p.clientId).single();
@@ -1674,8 +1665,7 @@ app.get('/api/admin/client-products', authenticateToken, async (req, res) => {
 // Admin: Delete a client product
 app.delete('/api/admin/client-products/:id', authenticateToken, async (req, res) => {
     try {
-        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
-        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
 
         const deleted = await ClientProduct.findByIdAndDelete(req.params.id);
         if (!deleted) return res.status(404).json({ error: 'Product not found' });
@@ -1962,8 +1952,7 @@ app.post('/api/shop/coupons/validate', async (req, res) => {
 // Admin: Send message to user about an order
 app.post('/api/admin/orders/:orderId/message', authenticateToken, async (req, res) => {
     try {
-        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
-        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const { message } = req.body;
         if (!message) return res.status(400).json({ error: 'Message is required' });
 
@@ -2116,8 +2105,7 @@ app.post('/api/orders/:orderId/messages', authenticateToken, (req, res, next) =>
 // Admin: Update order tracking info
 app.put('/api/admin/shop-orders/:orderId/tracking', authenticateToken, async (req, res) => {
     try {
-        const ADMIN_EMAILS = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
-        if (!ADMIN_EMAILS.includes(req.user.email)) return res.status(403).json({ error: 'Access denied.' });
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const { trackingId, trackingUrl, carrier, estimatedDelivery } = req.body;
 
         const trackingInfo = JSON.stringify({ trackingId, trackingUrl, carrier, estimatedDelivery, updatedAt: new Date().toISOString() });
@@ -4164,26 +4152,14 @@ app.post('/api/realvibes', authenticateToken, upload.single('media'), async (req
             userId: req.user.id, caption: caption.trim(),
             mediaUrl: vibeResult.secure_url, mediaPublicId: vibeResult.public_id,
             mediaType: isVideo ? 'video' : 'image', planType: plan, visibility,
-            status: 'approved', expiresAt
+            status: 'pending', expiresAt
         });
 
-        // Also create a Post in Zero Velocity feed
-        try {
-            const autoPost = await Post.create({
-                userId: req.user.id,
-                content: caption.trim() || '✦ RealVibe',
-                media: [{ url: vibeResult.secure_url, public_id: vibeResult.public_id, type: isVideo ? 'video' : 'image' }],
-                postedTo: visibility === 'community' ? 'community' : 'profile',
-                college: (visibility === 'community') ? req.user.college : null,
-                music: null, stickers: [], is_real_vibe: true
-            });
-            io.emit('new_post', { ...autoPost.toObject(), id: autoPost._id.toString(), like_count: 0, comment_count: 0, share_count: 0, is_liked: false, users: { id: req.user.id, username: req.user.username, profile_pic: req.user.profile_pic || null, college: req.user.college || null } });
-        } catch (postErr) {
-            console.error('⚠️ Auto-post to Zero Velocity failed (non-critical):', postErr.message);
-        }
+        // Skip auto-post to Zero Velocity for now, or post as 'pending'? 
+        // User said: "before posting into the website... it will show like admin in processing"
+        // If we want it to show in the "Processing" state on the main site, we should return it with a pending flag.
 
-        const enriched = { ...vibe.toObject(), id: vibe._id.toString(), media_url: vibeResult.secure_url, media_type: isVideo ? 'video' : 'image', plan_type: plan, user_id: req.user.id, like_count: 0, comment_count: 0, is_liked: false, hours_left: daysToExpire * 24, users: { id: req.user.id, username: req.user.username, profile_pic: req.user.profile_pic, college: req.user.college } };
-        res.json({ success: true, vibe: enriched, pending: false, message: 'Your RealVibe is now live!' });
+        res.json({ success: true, vibe, pending: true, message: 'Your RealVibe has been submitted and is currently in processing by admin.' });
     } catch (error) {
         res.status(500).json({ error: 'Failed to create RealVibe' });
     }
@@ -4281,16 +4257,18 @@ app.post('/api/realvibes/:vibeId/comments', authenticateToken, async (req, res) 
 });
 
 // ── Admin: realvibe moderation ─────────────────────────────────
-app.get('/api/admin/realvibes/pending', authenticateAdmin, async (req, res) => {
+app.get('/api/admin/realvibes/pending', authenticateToken, async (req, res) => {
     try {
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const vibes = await RealVibe.find({ status: 'pending' }).sort({ createdAt: 1 });
         const enriched = await enrichVibes(vibes, null);
         res.json({ success: true, vibes: enriched, count: enriched.length });
     } catch (err) { res.status(500).json({ error: 'Failed to load pending vibes' }); }
 });
 
-app.get('/api/admin/realvibes', authenticateAdmin, async (req, res) => {
+app.get('/api/admin/realvibes', authenticateToken, async (req, res) => {
     try {
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const { status, limit = 50, offset = 0 } = req.query;
         const query = {};
         if (status && ['pending', 'approved', 'rejected'].includes(status)) query.status = status;
@@ -4300,8 +4278,9 @@ app.get('/api/admin/realvibes', authenticateAdmin, async (req, res) => {
     } catch (err) { res.status(500).json({ error: 'Failed to load vibes' }); }
 });
 
-app.post('/api/admin/realvibes/:vibeId/approve', authenticateAdmin, async (req, res) => {
+app.post('/api/admin/realvibes/:vibeId/approve', authenticateToken, async (req, res) => {
     try {
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const { vibeId } = req.params;
         const { admin_name = 'Admin' } = req.body;
         const vibe = await RealVibe.findById(vibeId);
@@ -4322,8 +4301,9 @@ app.post('/api/admin/realvibes/:vibeId/approve', authenticateAdmin, async (req, 
     } catch (err) { res.status(500).json({ error: 'Failed to approve vibe' }); }
 });
 
-app.post('/api/admin/realvibes/:vibeId/reject', authenticateAdmin, async (req, res) => {
+app.post('/api/admin/realvibes/:vibeId/reject', authenticateToken, async (req, res) => {
     try {
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const { vibeId } = req.params;
         const { reason = 'vulgar', custom_message, admin_name = 'Admin' } = req.body;
         const rejectionMessages = { vulgar: '❌ Rejected: Inappropriate or vulgar content.', spam: '❌ Rejected: Spam or repetitive content.', irrelevant: '❌ Rejected: Content is not relevant.', other: `❌ Rejected. ${custom_message || 'Does not meet community guidelines.'}` };
@@ -4344,8 +4324,9 @@ app.post('/api/admin/realvibes/:vibeId/reject', authenticateAdmin, async (req, r
     } catch (err) { res.status(500).json({ error: 'Failed to reject vibe' }); }
 });
 
-app.get('/api/admin/realvibes/stats', authenticateAdmin, async (req, res) => {
+app.get('/api/admin/realvibes/stats', authenticateToken, async (req, res) => {
     try {
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const [pending, approved, rejected, total] = await Promise.all([
             RealVibe.countDocuments({ status: 'pending' }),
             RealVibe.countDocuments({ status: 'approved' }),
