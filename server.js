@@ -489,9 +489,13 @@ async function getBlockedUserIds(uid) {
         const { data: blocks, error } = await supabase
             .from('user_blocks')
             .select('blocker_id, blocked_id')
-            .or(`blocker_id.eq."${uid}",blocked_id.eq."${uid}"`);
+            .or(`blocker_id.eq.${uid},blocked_id.eq.${uid}`);
         
-        if (error || !blocks) return [];
+        if (error) {
+            if (error.code !== '42P01') console.error('[getBlockedUserIds] Supabase Error:', error);
+            return [];
+        }
+        if (!blocks) return [];
         
         const ids = new Set();
         blocks.forEach(b => {
@@ -4056,17 +4060,24 @@ app.post('/api/users/:userId/block', authenticateToken, async (req, res) => {
             return res.status(400).json({ error: 'Cannot block yourself' });
         }
 
-        // Upsert into user_blocks table (create if not exists, ignore if already blocked)
+        // Upsert into user_blocks table
         const { error: insertErr } = await supabase
             .from('user_blocks')
             .upsert([{ blocker_id: uid, blocked_id: userId }], { onConflict: 'blocker_id,blocked_id' });
 
-        // If the table doesn't exist yet, return a helpful error instead of crashing
         if (insertErr) {
+            // If the table doesn't have the unique constraint, try a normal insert
             if (insertErr.code === '42P01') {
                 return res.status(503).json({ error: 'user_blocks table not set up — run the migration first.' });
             }
-            throw insertErr;
+            // If it's a conflict error but not using onConflict properly, just ignore if it fails
+            const { error: secondTry } = await supabase
+                .from('user_blocks')
+                .insert([{ blocker_id: uid, blocked_id: userId }]);
+            
+            if (secondTry && secondTry.code !== '23505') { // 23505 is unique violation
+                throw secondTry;
+            }
         }
 
         // Also remove mutual follows so blocked user can't interact
