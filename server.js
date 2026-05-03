@@ -4146,6 +4146,38 @@ app.get('/api/users/blocked', authenticateToken, async (req, res) => {
     }
 });
 
+app.get('/api/debug/blocks', authenticateToken, async (req, res) => {
+    try {
+        console.log('🔍 [DEBUG] Diagnostic started for user:', req.user.id);
+        
+        // Check Supabase config (safely)
+        const url = process.env.SUPABASE_URL || 'NOT SET';
+        const maskedUrl = url.replace(/(https:\/\/).*(.supabase.co)/, '$1***$2');
+        
+        const { data: allBlocks, error: blockErr } = await supabase.from('user_blocks').select('*');
+        const { count: userCount, error: userErr } = await supabase.from('users').select('*', { count: 'exact', head: true });
+        
+        res.json({ 
+            success: true, 
+            config: {
+                supabaseUrl: maskedUrl,
+                hasServiceKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+            },
+            diagnostics: {
+                totalBlocksInDb: allBlocks?.length || 0,
+                totalUsersInDb: userCount || 0,
+                blockError: blockErr,
+                userError: userErr
+            },
+            myId: req.user.id,
+            blocks: allBlocks
+        });
+    } catch (e) {
+        console.error('🔍 [DEBUG] Diagnostic failed:', e);
+        res.json({ success: false, error: e.message });
+    }
+});
+
 // ══════════════════════════════════════════════════════════════
 // POST unblock a user
 // ══════════════════════════════════════════════════════════════
