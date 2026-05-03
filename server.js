@@ -4051,6 +4051,7 @@ app.post('/api/users/:userId/block', authenticateToken, async (req, res) => {
     try {
         const { userId } = req.params;
         const uid = req.user.id;
+        console.log(`[BlockUser] Request from ${uid} to block ${userId}`);
 
         if (String(userId) === String(uid)) {
             return res.status(400).json({ error: 'Cannot block yourself' });
@@ -4062,6 +4063,7 @@ app.post('/api/users/:userId/block', authenticateToken, async (req, res) => {
             .upsert([{ blocker_id: uid, blocked_id: userId }], { onConflict: 'blocker_id,blocked_id' });
 
         if (insertErr) {
+            console.error('[BlockUser] Upsert error:', insertErr);
             // If the table doesn't have the unique constraint, try a normal insert
             if (insertErr.code === '42P01') {
                 return res.status(503).json({ error: 'user_blocks table not set up — run the migration first.' });
@@ -4072,9 +4074,11 @@ app.post('/api/users/:userId/block', authenticateToken, async (req, res) => {
                 .insert([{ blocker_id: uid, blocked_id: userId }]);
             
             if (secondTry && secondTry.code !== '23505') { // 23505 is unique violation
+                console.error('[BlockUser] Second try error:', secondTry);
                 throw secondTry;
             }
         }
+        console.log('[BlockUser] Success in DB');
 
         // Also remove mutual follows so blocked user can't interact
         try {
@@ -4111,13 +4115,13 @@ app.get('/api/users/blocked', authenticateToken, async (req, res) => {
             .select('*')
             .eq('blocker_id', uid);
 
-        console.log('[BlockedList] Query result - blocks:', JSON.stringify(blocks), 'error:', blockErr);
-
         if (blockErr) {
-            console.error('[BlockedList] Error:', blockErr);
+            console.error('[BlockedList] Supabase error:', blockErr);
             if (blockErr.code === '42P01') return res.json({ success: true, blocked: [] });
             throw blockErr;
         }
+
+        console.log('[BlockedList] Found blocks count:', blocks?.length || 0);
 
         if (!blocks || blocks.length === 0) {
             console.log('[BlockedList] No blocks found for user', uid);
