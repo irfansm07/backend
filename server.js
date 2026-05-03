@@ -479,6 +479,32 @@ function authenticateAdmin(req, res, next) {
     next();
 }
 
+/**
+ * Fetches all user IDs that either the current user has blocked
+ * or who have blocked the current user.
+ */
+async function getBlockedUserIds(uid) {
+    if (!uid) return [];
+    try {
+        const { data: blocks, error } = await supabase
+            .from('user_blocks')
+            .select('blocker_id, blocked_id')
+            .or(`blocker_id.eq."${uid}",blocked_id.eq."${uid}"`);
+        
+        if (error || !blocks) return [];
+        
+        const ids = new Set();
+        blocks.forEach(b => {
+            if (String(b.blocker_id) === String(uid)) ids.add(String(b.blocked_id));
+            if (String(b.blocked_id) === String(uid)) ids.add(String(b.blocker_id));
+        });
+        return Array.from(ids);
+    } catch (e) {
+        console.error('[getBlockedUserIds] Error:', e);
+        return [];
+    }
+}
+
 // ── Admin email check (case-insensitive) ──────────────────────
 const ADMIN_EMAILS_GLOBAL = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
 function isAdminUser(user) {
@@ -3132,8 +3158,17 @@ app.get('/api/posts/my', authenticateToken, async (req, res) => {
 // GET posts by user ID
 app.get('/api/posts/user/:userId', authenticateToken, async (req, res) => {
     try {
-        const posts = await Post.find({ userId: req.params.userId }).sort({ createdAt: -1 }).limit(50);
-        const enriched = await enrichPosts(posts, req.user.id);
+        const { userId } = req.params;
+        const myUid = req.user.id;
+
+        // Check if blocked
+        const blockedIds = await getBlockedUserIds(myUid);
+        if (blockedIds.includes(String(userId))) {
+            return res.json({ success: true, posts: [], message: 'User is blocked' });
+        }
+
+        const posts = await Post.find({ userId: userId }).sort({ createdAt: -1 }).limit(50);
+        const enriched = await enrichPosts(posts, myUid);
         res.json({ success: true, posts: enriched });
     } catch (error) {
         res.status(500).json({ error: 'Failed to load user posts' });
@@ -3145,7 +3180,12 @@ app.get('/api/posts/community', authenticateToken, async (req, res) => {
     try {
         if (!req.user.community_joined || !req.user.college)
             return res.json({ success: false, needsJoinCommunity: true, message: 'Join a college community first' });
-        const posts = await Post.find({ postedTo: { $in: ['community', 'both'] }, college: req.user.college }).sort({ createdAt: -1 }).limit(50);
+        
+        const blockedIds = await getBlockedUserIds(req.user.id);
+        const query = { postedTo: { $in: ['community', 'both'] }, college: req.user.college };
+        if (blockedIds.length > 0) query.userId = { $nin: blockedIds };
+
+        const posts = await Post.find(query).sort({ createdAt: -1 }).limit(50);
         const enriched = await enrichPosts(posts, req.user.id);
         res.json({ success: true, posts: enriched });
     } catch (error) {
@@ -3261,15 +3301,8 @@ app.get('/api/posts/shared', authenticateToken, async (req, res) => {
 // GET all posts (global feed)
 app.get('/api/posts', authenticateToken, async (req, res) => {
     try {
-        // Get blocked user IDs to filter them out of feed
-        let blockedIds = [];
-        try {
-            const { data: blocks } = await supabase
-                .from('user_blocks')
-                .select('blocked_id')
-                .eq('blocker_id', req.user.id);
-            if (blocks && blocks.length > 0) blockedIds = blocks.map(b => b.blocked_id);
-        } catch (bErr) { /* user_blocks table may not exist yet */ }
+        // Get blocked user IDs (bidirectional) to filter them out of feed
+        const blockedIds = await getBlockedUserIds(req.user.id);
 
         // Zero Velocity feed: only return profile posts, exclude blocked users
         const query = { postedTo: 'profile' };
@@ -3712,19 +3745,26 @@ app.get('/api/dm/conversations', authenticateToken, async (req, res) => {
         const { data: convs, error } = await supabase.from('dm_conversations').select('*').or(`user1_id.eq.${uid},user2_id.eq.${uid}`).order('last_message_at', { ascending: false });
         if (error) { if (error.code === '42P01') return res.json({ success: true, conversations: [] }); throw error; }
 
-        // BUG FIX (BUG-32): Replaced N+1 per-conversation user queries with a single batched IN query.
+        const blockedIds = await getBlockedUserIds(uid);
+
         const convList = convs || [];
-        const otherIds = [...new Set(convList.map(c => c.user1_id === uid ? c.user2_id : c.user1_id))];
+        const otherIds = [...new Set(convList.map(c => c.user1_id === uid ? c.user2_id : c.user1_id))].filter(id => !blockedIds.includes(String(id)));
+        
         let userMap = {};
         if (otherIds.length > 0) {
             const { data: users } = await supabase.from('users').select('id,username,profile_pic,last_seen,status_text').in('id', otherIds);
             (users || []).forEach(u => { userMap[u.id] = u; });
         }
-        const enriched = convList.map(conv => {
-            const otherId = conv.user1_id === uid ? conv.user2_id : conv.user1_id;
-            const unreadCount = conv.user1_id === uid ? conv.unread_count_user1 : conv.unread_count_user2;
-            return { ...conv, otherUser: userMap[otherId] || null, unreadCount };
-        });
+        const enriched = convList
+            .filter(conv => {
+                const otherId = conv.user1_id === uid ? conv.user2_id : conv.user1_id;
+                return !blockedIds.includes(String(otherId)) && userMap[otherId];
+            })
+            .map(conv => {
+                const otherId = conv.user1_id === uid ? conv.user2_id : conv.user1_id;
+                const unreadCount = conv.user1_id === uid ? conv.unread_count_user1 : conv.unread_count_user2;
+                return { ...conv, otherUser: userMap[otherId] || null, unreadCount };
+            });
         res.json({ success: true, conversations: enriched });
     } catch (error) {
         res.status(500).json({ error: 'Failed to load conversations' });
@@ -3851,6 +3891,13 @@ app.get('/api/dm/messages/:otherId', authenticateToken, async (req, res) => {
     try {
         const { otherId } = req.params;
         const uid = req.user.id;
+
+        // Check if either user has blocked the other
+        const blockedIds = await getBlockedUserIds(uid);
+        if (blockedIds.includes(String(otherId))) {
+            return res.status(403).json({ error: 'Cannot load messages — user is blocked.', isBlocked: true });
+        }
+
         const [{ data: sent, error: e1 }, { data: recv, error: e2 }] = await Promise.all([
             supabase.from('direct_messages').select('*').eq('sender_id', uid).eq('receiver_id', otherId).limit(200),
             supabase.from('direct_messages').select('*').eq('sender_id', otherId).eq('receiver_id', uid).limit(200)
@@ -4154,15 +4201,7 @@ const enrichVibes = async (vibes, currentUserId) => {
 // GET all approved realvibes
 app.get('/api/realvibes', authenticateToken, async (req, res) => {
     try {
-        // Get blocked user IDs to filter them out
-        let blockedIds = [];
-        try {
-            const { data: blocks } = await supabase
-                .from('user_blocks')
-                .select('blocked_id')
-                .eq('blocker_id', req.user.id);
-            if (blocks && blocks.length > 0) blockedIds = blocks.map(b => b.blocked_id);
-        } catch (bErr) { /* user_blocks table may not exist yet */ }
+        const blockedIds = await getBlockedUserIds(req.user.id);
 
         const query = { status: 'approved', expiresAt: { $gt: new Date() } };
         if (blockedIds.length > 0) query.userId = { $nin: blockedIds };
