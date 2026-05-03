@@ -3508,10 +3508,41 @@ app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 app.get('/api/notifications', authenticateToken, async (req, res) => {
     try {
-        const notifications = await getNotifications(req.user.id, 20);
-        const unreadCount = notifications.filter(n => !n.read).length;
-        res.json({ success: true, notifications, unreadCount });
+        const userId = req.user.id;
+        // 1. Fetch user-specific notifications from Redis
+        const redisNotifications = await getNotifications(userId, 30);
+        
+        // 2. Fetch global platform notifications from MongoDB
+        // We fetch the latest 10 that are for 'all' or specifically for this user
+        const globalNotifications = await PlatformNotification.find({
+            $or: [
+                { target: 'all' },
+                { target: 'specific', targetUserId: userId }
+            ]
+        }).sort({ createdAt: -1 }).limit(10).lean();
+
+        // Convert MongoDB docs to the format expected by the frontend
+        const platformNotifications = globalNotifications.map(n => ({
+            id: n._id.toString(),
+            type: 'platform',
+            title: n.title,
+            message: n.message,
+            read: true, // We don't track read status for global ones easily, so mark as read to avoid annoying badge
+            createdAt: n.createdAt,
+            timestamp: new Date(n.createdAt).getTime()
+        }));
+
+        // 3. Merge and sort by timestamp
+        let allNotifications = [...redisNotifications, ...platformNotifications];
+        allNotifications.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+        // Limit total to 50
+        allNotifications = allNotifications.slice(0, 50);
+
+        const unreadCount = redisNotifications.filter(n => !n.read).length;
+        res.json({ success: true, notifications: allNotifications, unreadCount });
     } catch (error) {
+        console.error('❌ Notifications fetch error:', error);
         res.status(500).json({ error: 'Failed to load notifications' });
     }
 });
