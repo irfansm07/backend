@@ -4058,9 +4058,12 @@ app.post('/api/users/:userId/block', authenticateToken, async (req, res) => {
         }
 
         // Upsert into user_blocks table
-        const { error: insertErr } = await supabase
+        const { data: savedData, error: insertErr } = await supabase
             .from('user_blocks')
-            .upsert([{ blocker_id: uid, blocked_id: userId }], { onConflict: 'blocker_id,blocked_id' });
+            .upsert([{ blocker_id: uid, blocked_id: userId }], { onConflict: 'blocker_id,blocked_id' })
+            .select();
+
+        console.log('[BlockUser] Upsert returned data:', JSON.stringify(savedData));
 
         if (insertErr) {
             console.error('[BlockUser] Upsert error:', insertErr);
@@ -4069,9 +4072,12 @@ app.post('/api/users/:userId/block', authenticateToken, async (req, res) => {
                 return res.status(503).json({ error: 'user_blocks table not set up — run the migration first.' });
             }
             // If it's a conflict error but not using onConflict properly, just ignore if it fails
-            const { error: secondTry } = await supabase
+            const { data: secondData, error: secondTry } = await supabase
                 .from('user_blocks')
-                .insert([{ blocker_id: uid, blocked_id: userId }]);
+                .insert([{ blocker_id: uid, blocked_id: userId }])
+                .select();
+            
+            console.log('[BlockUser] Second try returned data:', JSON.stringify(secondData));
             
             if (secondTry && secondTry.code !== '23505') { // 23505 is unique violation
                 console.error('[BlockUser] Second try error:', secondTry);
