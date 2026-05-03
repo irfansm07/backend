@@ -240,6 +240,14 @@ const productReviewSchema = new mongoose.Schema({
 productReviewSchema.index({ productId: 1, createdAt: -1 });
 productReviewSchema.index({ userId: 1, productId: 1, orderId: 1 }, { unique: true });
 
+// College Requests
+const collegeRequestSchema = new mongoose.Schema({
+    userId: { type: String, default: null },
+    collegeName: { type: String, required: true },
+    collegeEmail: { type: String, required: true },
+    status: { type: String, enum: ['pending', 'reviewed', 'added', 'rejected'], default: 'pending' }
+}, { timestamps: true });
+
 // ── Models ────────────────────────────────────────────────────
 const Post            = mongoose.models.Post            || mongoose.model('Post',            postSchema);
 const PostLike        = mongoose.models.PostLike        || mongoose.model('PostLike',        postLikeSchema);
@@ -258,6 +266,7 @@ const Complaint       = mongoose.models.Complaint       || mongoose.model('Compl
 const PasswordResetCode = mongoose.models.PasswordResetCode || mongoose.model('PasswordResetCode', passwordResetCodeSchema);
 const Coupon          = mongoose.models.Coupon          || mongoose.model('Coupon',          couponSchema);
 const ProductReview   = mongoose.models.ProductReview   || mongoose.model('ProductReview',   productReviewSchema);
+const CollegeRequest  = mongoose.models.CollegeRequest  || mongoose.model('CollegeRequest',  collegeRequestSchema);
 
 module.exports = {
     connectMongo,
@@ -277,5 +286,6 @@ module.exports = {
     Complaint,
     PasswordResetCode,
     Coupon,
-    ProductReview
+    ProductReview,
+    CollegeRequest
 };

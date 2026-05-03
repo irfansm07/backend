@@ -28,7 +28,7 @@ const {
     RealVibe, RealVibeLike, RealVibeComment,
     BannedUser, PlatformNotification, SellerRequest,
     ClientRequest, ClientProduct, OrderMessage,
-    Complaint, Coupon, ProductReview
+    Complaint, Coupon, ProductReview, CollegeRequest
 } = require('./config/mongodb');
 const redis = require('./config/redis');
 
@@ -4593,6 +4593,56 @@ app.get('/api/dm/unread-count', authenticateToken, async (req, res) => {
     }
 });
 
+
+// ══════════════════════════════════════════════════════════════
+// COLLEGE REQUESTS
+// ══════════════════════════════════════════════════════════════
+// Public endpoint for users to submit requests
+app.post('/api/college-requests', authenticateTokenOptional, async (req, res) => {
+    try {
+        const { collegeName, collegeEmail } = req.body;
+        if (!collegeName || !collegeEmail) return res.status(400).json({ error: 'Missing fields' });
+        
+        const newRequest = new CollegeRequest({
+            userId: req.user ? req.user.id : null,
+            collegeName,
+            collegeEmail,
+            status: 'pending'
+        });
+        await newRequest.save();
+        res.json({ success: true, message: 'Request submitted successfully' });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to submit college request' });
+    }
+});
+
+// Admin endpoints
+app.get('/api/admin/college-requests', authenticateToken, async (req, res) => {
+    try {
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
+        const requests = await CollegeRequest.find().sort({ createdAt: -1 });
+        res.json({ success: true, requests });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to load requests' });
+    }
+});
+
+app.post('/api/admin/college-requests/:id/status', authenticateToken, async (req, res) => {
+    try {
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
+        const { status } = req.body;
+        if (!['pending', 'reviewed', 'added', 'rejected'].includes(status)) {
+            return res.status(400).json({ error: 'Invalid status' });
+        }
+        
+        const request = await CollegeRequest.findByIdAndUpdate(req.params.id, { status }, { new: true });
+        if (!request) return res.status(404).json({ error: 'Request not found' });
+        
+        res.json({ success: true, request });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to update request' });
+    }
+});
 
 // ══════════════════════════════════════════════════════════════
 // ERROR HANDLING
