@@ -486,21 +486,21 @@ function authenticateAdmin(req, res, next) {
 async function getBlockedUserIds(uid) {
     if (!uid) return [];
     try {
-        const [{ data: b1, error: e1 }, { data: b2, error: e2 }] = await Promise.all([
-            supabase.from('user_blocks').select('blocked_id').eq('blocker_id', uid),
-            supabase.from('user_blocks').select('blocker_id').eq('blocked_id', uid)
-        ]);
+        const { data: blocks, error } = await supabase
+            .from('user_blocks')
+            .select('blocker_id, blocked_id')
+            .or(`blocker_id.eq."${uid}",blocked_id.eq."${uid}"`);
         
-        if (e1 && e1.code !== '42P01') console.error('[getBlockedUserIds] error 1:', e1);
-        if (e2 && e2.code !== '42P01') console.error('[getBlockedUserIds] error 2:', e2);
+        if (error || !blocks) return [];
         
         const ids = new Set();
-        if (b1) b1.forEach(b => ids.add(String(b.blocked_id)));
-        if (b2) b2.forEach(b => ids.add(String(b.blocker_id)));
-        
+        blocks.forEach(b => {
+            if (String(b.blocker_id) === String(uid)) ids.add(String(b.blocked_id));
+            if (String(b.blocked_id) === String(uid)) ids.add(String(b.blocker_id));
+        });
         return Array.from(ids);
     } catch (e) {
-        console.error('[getBlockedUserIds] Catch error:', e);
+        console.error('[getBlockedUserIds] Error:', e);
         return [];
     }
 }
@@ -4051,40 +4051,23 @@ app.post('/api/users/:userId/block', authenticateToken, async (req, res) => {
     try {
         const { userId } = req.params;
         const uid = req.user.id;
-        console.log(`[BlockUser] Request from ${uid} to block ${userId}`);
 
         if (String(userId) === String(uid)) {
             return res.status(400).json({ error: 'Cannot block yourself' });
         }
 
-        // Upsert into user_blocks table
-        const { data: savedData, error: insertErr } = await supabase
+        // Upsert into user_blocks table (create if not exists, ignore if already blocked)
+        const { error: insertErr } = await supabase
             .from('user_blocks')
-            .upsert([{ blocker_id: uid, blocked_id: userId }], { onConflict: 'blocker_id,blocked_id' })
-            .select();
+            .upsert([{ blocker_id: uid, blocked_id: userId }], { onConflict: 'blocker_id,blocked_id' });
 
-        console.log('[BlockUser] Upsert returned data:', JSON.stringify(savedData));
-
+        // If the table doesn't exist yet, return a helpful error instead of crashing
         if (insertErr) {
-            console.error('[BlockUser] Upsert error:', insertErr);
-            // If the table doesn't have the unique constraint, try a normal insert
             if (insertErr.code === '42P01') {
                 return res.status(503).json({ error: 'user_blocks table not set up — run the migration first.' });
             }
-            // If it's a conflict error but not using onConflict properly, just ignore if it fails
-            const { data: secondData, error: secondTry } = await supabase
-                .from('user_blocks')
-                .insert([{ blocker_id: uid, blocked_id: userId }])
-                .select();
-            
-            console.log('[BlockUser] Second try returned data:', JSON.stringify(secondData));
-            
-            if (secondTry && secondTry.code !== '23505') { // 23505 is unique violation
-                console.error('[BlockUser] Second try error:', secondTry);
-                throw secondTry;
-            }
+            throw insertErr;
         }
-        console.log('[BlockUser] Success in DB');
 
         // Also remove mutual follows so blocked user can't interact
         try {
@@ -4121,13 +4104,13 @@ app.get('/api/users/blocked', authenticateToken, async (req, res) => {
             .select('*')
             .eq('blocker_id', uid);
 
+        console.log('[BlockedList] Query result - blocks:', JSON.stringify(blocks), 'error:', blockErr);
+
         if (blockErr) {
-            console.error('[BlockedList] Supabase error:', blockErr);
+            console.error('[BlockedList] Error:', blockErr);
             if (blockErr.code === '42P01') return res.json({ success: true, blocked: [] });
             throw blockErr;
         }
-
-        console.log('[BlockedList] Found blocks count:', blocks?.length || 0);
 
         if (!blocks || blocks.length === 0) {
             console.log('[BlockedList] No blocks found for user', uid);
@@ -4149,37 +4132,6 @@ app.get('/api/users/blocked', authenticateToken, async (req, res) => {
     } catch (error) {
         console.error('[BlockedList] Catch error:', error);
         res.status(500).json({ error: 'Failed to load blocked users: ' + error.message });
-    }
-});
-
-app.get('/api/debug/blocks', async (req, res) => {
-    try {
-        console.log('🔍 [DEBUG] Public diagnostic started...');
-        
-        // Check Supabase config (safely)
-        const url = process.env.SUPABASE_URL || 'NOT SET';
-        const maskedUrl = url.replace(/(https:\/\/).*(.supabase.co)/, '$1***$2');
-        
-        const { data: allBlocks, error: blockErr } = await supabase.from('user_blocks').select('*');
-        const { count: userCount, error: userErr } = await supabase.from('users').select('*', { count: 'exact', head: true });
-        
-        res.json({ 
-            success: true, 
-            config: {
-                supabaseUrl: maskedUrl,
-                hasServiceKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
-            },
-            diagnostics: {
-                totalBlocksInDb: allBlocks?.length || 0,
-                totalUsersInDb: userCount || 0,
-                blockError: blockErr,
-                userError: userErr
-            },
-            blocks: allBlocks
-        });
-    } catch (e) {
-        console.error('🔍 [DEBUG] Diagnostic failed:', e);
-        res.json({ success: false, error: e.message });
     }
 });
 
