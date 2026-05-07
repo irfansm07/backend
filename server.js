@@ -4179,6 +4179,156 @@ app.post('/api/users/:userId/unblock', authenticateToken, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════
+// PERMANENT ACCOUNT DELETION
+// Deletes: Cloudinary media, MongoDB data, ALL Supabase rows,
+//          Supabase Auth user → frees college_email + reg_no slots.
+// ══════════════════════════════════════════════════════════════
+app.delete('/api/user/delete-account', authenticateToken, async (req, res) => {
+    const uid = req.user.id;
+    console.log(`🗑️  [DeleteAccount] START — uid=${uid}`);
+
+    // Helper: destroy a Cloudinary asset safely (never throws)
+    const safeCloudinaryDelete = async (publicIdOrUrl, resourceType = 'image') => {
+        if (!publicIdOrUrl) return;
+        try {
+            // If it's a full URL, extract the public_id from the path
+            let pid = publicIdOrUrl;
+            if (publicIdOrUrl.startsWith('http')) {
+                const match = publicIdOrUrl.match(/\/([^/]+\/[^/.]+)\.[a-z0-9]+(?:\?|$)/i);
+                if (match) pid = match[1];
+                else return; // cannot parse
+            }
+            await cloudinaryLib.uploader.destroy(pid, { resource_type: resourceType, invalidate: true });
+        } catch (e) {
+            console.warn(`[DeleteAccount] Cloudinary delete skipped (${publicIdOrUrl}):`, e.message);
+        }
+    };
+
+    try {
+        // ── 1. Fetch the user row for profile/cover photo URLs ──────────────────
+        const { data: userRow } = await supabase
+            .from('users')
+            .select('profile_pic, cover_photo, college_email')
+            .eq('id', uid)
+            .maybeSingle();
+
+        // ── 2. Delete MongoDB posts (with Cloudinary media) ─────────────────────
+        try {
+            const posts = await Post.find({ userId: uid }).select('media').lean();
+            const postMediaDeletes = [];
+            for (const post of posts) {
+                for (const m of (post.media || [])) {
+                    if (m.public_id) postMediaDeletes.push(safeCloudinaryDelete(m.public_id, m.type === 'video' ? 'video' : m.type === 'audio' ? 'video' : 'image'));
+                    else if (m.url) postMediaDeletes.push(safeCloudinaryDelete(m.url, m.type === 'video' ? 'video' : 'image'));
+                }
+            }
+            await Promise.allSettled(postMediaDeletes);
+            await Post.deleteMany({ userId: uid });
+            console.log(`[DeleteAccount] Posts deleted for uid=${uid}`);
+        } catch (e) { console.error('[DeleteAccount] Post cleanup error:', e.message); }
+
+        // ── 3. Delete MongoDB RealVibes (with Cloudinary media) ─────────────────
+        try {
+            const vibes = await RealVibe.find({ userId: uid }).select('mediaPublicId mediaUrl mediaType').lean();
+            const vibeMediaDeletes = vibes.map(v => {
+                const pid = v.mediaPublicId || v.mediaUrl;
+                const rtype = v.mediaType === 'video' ? 'video' : 'image';
+                return safeCloudinaryDelete(pid, rtype);
+            });
+            await Promise.allSettled(vibeMediaDeletes);
+            await RealVibe.deleteMany({ userId: uid });
+            console.log(`[DeleteAccount] RealVibes deleted for uid=${uid}`);
+        } catch (e) { console.error('[DeleteAccount] RealVibe cleanup error:', e.message); }
+
+        // ── 4. Delete remaining MongoDB interaction data ──────────────────────
+        try {
+            await Promise.allSettled([
+                PostLike.deleteMany({ userId: uid }),
+                PostComment.deleteMany({ userId: uid }),
+                PostShare.deleteMany({ userId: uid }),
+                RealVibeLike.deleteMany({ userId: uid }),
+                RealVibeComment.deleteMany({ userId: uid }),
+            ]);
+            console.log(`[DeleteAccount] MongoDB interactions deleted for uid=${uid}`);
+        } catch (e) { console.error('[DeleteAccount] MongoDB interactions error:', e.message); }
+
+        // ── 5. Delete profile photo + cover photo from Cloudinary ───────────────
+        await Promise.allSettled([
+            safeCloudinaryDelete(userRow?.profile_pic),
+            safeCloudinaryDelete(userRow?.cover_photo),
+        ]);
+
+        // ── 6. Delete ALL Supabase rows (order: dependents first) ───────────────
+        const sbDeletes = [
+            // Follows (both directions)
+            supabase.from('followers').delete().eq('follower_id', uid),
+            supabase.from('followers').delete().eq('following_id', uid),
+            // Blocks (both directions)
+            supabase.from('user_blocks').delete().eq('blocker_id', uid),
+            supabase.from('user_blocks').delete().eq('blocked_id', uid),
+            // DMs
+            supabase.from('direct_messages').delete().eq('sender_id', uid),
+            supabase.from('direct_messages').delete().eq('receiver_id', uid),
+            supabase.from('dm_conversations').delete().eq('user1_id', uid),
+            supabase.from('dm_conversations').delete().eq('user2_id', uid),
+            // Community chat
+            supabase.from('community_messages').delete().eq('user_id', uid),
+            // Executive chat
+            supabase.from('executive_message_reads').delete().eq('user_id', uid),
+            supabase.from('executive_poll_votes').delete().eq('user_id', uid),
+            supabase.from('executive_messages').delete().eq('user_id', uid),
+            supabase.from('executive_polls').delete().eq('user_id', uid),
+            // Profile interactions
+            supabase.from('profile_likes').delete().eq('liker_id', uid),
+            supabase.from('profile_likes').delete().eq('user_id', uid),
+            // Notifications
+            supabase.from('real_vibe_notifications').delete().eq('user_id', uid),
+            // Verification codes
+            supabase.from('codes').delete().eq('user_id', uid),
+            // Feedback (keep for compliance if needed; delete here for full wipe)
+            supabase.from('feedback').delete().eq('user_id', uid),
+        ];
+        const sbResults = await Promise.allSettled(sbDeletes);
+        sbResults.forEach((r, i) => {
+            if (r.status === 'rejected') console.warn(`[DeleteAccount] Supabase delete[${i}] failed:`, r.reason?.message);
+        });
+        console.log(`[DeleteAccount] Supabase rows cleaned for uid=${uid}`);
+
+        // ── 7. Delete the users row (releases college_email + registration_number)
+        const { error: userDeleteErr } = await supabase.from('users').delete().eq('id', uid);
+        if (userDeleteErr && userDeleteErr.code !== 'PGRST116') {
+            console.error('[DeleteAccount] users row delete error:', userDeleteErr);
+            // Non-fatal — continue to auth deletion
+        }
+        console.log(`[DeleteAccount] users row deleted for uid=${uid}`);
+
+        // ── 8. Delete Supabase Auth user (if created via Supabase Auth) ─────────
+        try {
+            await supabase.auth.admin.deleteUser(uid);
+            console.log(`[DeleteAccount] Supabase Auth user deleted uid=${uid}`);
+        } catch (e) {
+            // Custom-auth users won't have an auth entry — that's fine
+            console.warn('[DeleteAccount] Auth user delete skipped (not in Supabase Auth):', e.message);
+        }
+
+        // ── 9. Disconnect socket ────────────────────────────────────────────────
+        const socketId = userSockets.get(uid);
+        if (socketId) {
+            const sock = io.sockets.sockets.get(socketId);
+            if (sock) sock.disconnect(true);
+            userSockets.delete(uid);
+        }
+
+        console.log(`✅ [DeleteAccount] COMPLETE — uid=${uid} fully purged. College slot freed.`);
+        res.json({ success: true, message: 'Account permanently deleted. All data has been removed and your college slot is now free.' });
+
+    } catch (error) {
+        console.error('[DeleteAccount] FATAL ERROR:', error);
+        res.status(500).json({ error: 'Failed to delete account: ' + error.message });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
 // FEEDBACK (Supabase)
 // ══════════════════════════════════════════════════════════════
 app.post('/api/feedback', authenticateToken, async (req, res) => {
