@@ -40,7 +40,7 @@ const app = express();
 const server = http.createServer(app);
 
 const io = socketIO(server, {
-    cors: { origin: '*', methods: ['GET', 'POST'], credentials: true },
+    cors: { origin: (origin, callback) => callback(null, true), methods: ['GET', 'POST'], credentials: true },
     pingTimeout: 60000,
     pingInterval: 25000
 });
@@ -193,7 +193,8 @@ io.on('connection', (socket) => {
 });
 
 app.use(cors({
-    origin: '*', credentials: true,
+    origin: (origin, callback) => callback(null, true), 
+    credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'User-Agent', 'X-Requested-With', 'x-admin-secret'],
     exposedHeaders: ['Content-Length', 'Content-Type'],
