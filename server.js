@@ -4,6 +4,10 @@
 // Cloudinary→ All media files (photos, videos, audio)
 // Redis     → Notifications
 
+// DNS Workaround for MongoDB querySrv ECONNREFUSED
+const dns = require('dns');
+dns.setServers(['8.8.8.8', '1.1.1.1']);
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -486,18 +490,15 @@ function authenticateAdmin(req, res, next) {
 async function getBlockedUserIds(uid) {
     if (!uid) return [];
     try {
-        const { data: blocks, error } = await supabase
-            .from('user_blocks')
-            .select('blocker_id, blocked_id')
-            .or(`blocker_id.eq."${uid}",blocked_id.eq."${uid}"`);
-        
-        if (error || !blocks) return [];
-        
+        const [{ data: asBlocker, error: e1 }, { data: asBlocked, error: e2 }] = await Promise.all([
+            supabase.from('user_blocks').select('blocked_id').eq('blocker_id', uid),
+            supabase.from('user_blocks').select('blocker_id').eq('blocked_id', uid)
+        ]);
+        if (e1) console.error('[getBlockedUserIds] blocker query error:', e1.message);
+        if (e2) console.error('[getBlockedUserIds] blocked query error:', e2.message);
         const ids = new Set();
-        blocks.forEach(b => {
-            if (String(b.blocker_id) === String(uid)) ids.add(String(b.blocked_id));
-            if (String(b.blocked_id) === String(uid)) ids.add(String(b.blocker_id));
-        });
+        (asBlocker || []).forEach(b => ids.add(String(b.blocked_id)));
+        (asBlocked  || []).forEach(b => ids.add(String(b.blocker_id)));
         return Array.from(ids);
     } catch (e) {
         console.error('[getBlockedUserIds] Error:', e);
@@ -3779,17 +3780,18 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
         const senderId = req.user.id;
 
         // Check if either user has blocked the other
-        try {
-            const { data: blockCheck } = await supabase
-                .from('user_blocks')
-                .select('id')
-                .or(`and(blocker_id.eq.${senderId},blocked_id.eq.${receiverId}),and(blocker_id.eq.${receiverId},blocked_id.eq.${senderId})`)
-                .limit(1);
-            if (blockCheck && blockCheck.length > 0) {
-                return res.status(403).json({ error: 'Cannot send message — user is blocked.' });
-            }
-        } catch (bErr) { /* user_blocks table may not exist yet — allow DM */ }
-
+       // Check if either user has blocked the other (bidirectional)
+    try {
+         const [{ data: b1 }, { data: b2 }] = await Promise.all([
+                 supabase.from('user_blocks').select('id').eq('blocker_id', senderId).eq('blocked_id', receiverId).maybeSingle(),
+                 supabase.from('user_blocks').select('id').eq('blocker_id', receiverId).eq('blocked_id', senderId).maybeSingle()
+                ]);
+         if (b1 || b2) {
+                return res.status(403).json({ error: 'Cannot send message — user is blocked.', isBlocked: true });
+                }
+        } catch (bErr) {
+             console.error('Block check error in dm/send:', bErr.message);
+        }
         let mediaUrl = null, mediaType = null;
         if (req.file) {
             const dmResult = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/dm');
@@ -3824,7 +3826,21 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
         try { if (dm.reply_to_id) { const { data: r } = await supabase.from('direct_messages').select('id,content,sender_id,media_type').eq('id', dm.reply_to_id).single(); replyToData = r || null; } } catch { }
 
         const payload = { ...dm, reply_to: replyToData, senderUser: { id: req.user.id, username: req.user.username, profile_pic: req.user.profile_pic } };
-        try { const rSock = userSockets.get(receiverId); if (rSock) io.to(rSock).emit('new_dm', payload); } catch { }
+        try {
+    const rSock = userSockets.get(receiverId);
+    if (rSock) {
+        // Re-verify block before socket delivery
+        const [{ data: sb1 }, { data: sb2 }] = await Promise.all([
+            supabase.from('user_blocks').select('id').eq('blocker_id', senderId).eq('blocked_id', receiverId).maybeSingle(),
+            supabase.from('user_blocks').select('id').eq('blocker_id', receiverId).eq('blocked_id', senderId).maybeSingle()
+        ]);
+        if (!sb1 && !sb2) {
+            io.to(rSock).emit('new_dm', payload);
+        }
+    }
+} catch (sockErr) {
+    console.error('Socket delivery error:', sockErr.message);
+}
 
         // Push notification
         await pushNotification(receiverId, { type: 'new_dm', message: `${req.user.username} sent you a message`, from: req.user.id, fromUsername: req.user.username });
@@ -3894,8 +3910,9 @@ app.get('/api/dm/messages/:otherId', authenticateToken, async (req, res) => {
 
         // Check if either user has blocked the other
         const blockedIds = await getBlockedUserIds(uid);
+        console.log(`[DM Load] uid=${uid}, otherId=${otherId}, blockedIds=${JSON.stringify(blockedIds)}`);
         if (blockedIds.includes(String(otherId))) {
-            return res.status(403).json({ error: 'Cannot load messages — user is blocked.', isBlocked: true });
+           return res.status(403).json({ error: 'Cannot load messages — user is blocked.', isBlocked: true });
         }
 
         const [{ data: sent, error: e1 }, { data: recv, error: e2 }] = await Promise.all([
