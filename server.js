@@ -32,7 +32,8 @@ const {
     RealVibe, RealVibeLike, RealVibeComment,
     BannedUser, PlatformNotification, SellerRequest,
     ClientRequest, ClientProduct, OrderMessage,
-    Complaint, Coupon, ProductReview, CollegeRequest
+    Complaint, Coupon, ProductReview, CollegeRequest,
+    UserBlock
 } = require('./config/mongodb');
 const redis = require('./config/redis');
 
@@ -487,19 +488,18 @@ function authenticateAdmin(req, res, next) {
 /**
  * Fetches all user IDs that either the current user has blocked
  * or who have blocked the current user.
+ * ✅ Uses MongoDB UserBlock (replaces Supabase user_blocks table)
  */
 async function getBlockedUserIds(uid) {
     if (!uid) return [];
     try {
-        const [{ data: asBlocker, error: e1 }, { data: asBlocked, error: e2 }] = await Promise.all([
-            supabase.from('user_blocks').select('blocked_id').eq('blocker_id', uid),
-            supabase.from('user_blocks').select('blocker_id').eq('blocked_id', uid)
+        const [asBlocker, asBlocked] = await Promise.all([
+            UserBlock.find({ blocker_id: String(uid) }).select('blocked_id').lean(),
+            UserBlock.find({ blocked_id: String(uid) }).select('blocker_id').lean()
         ]);
-        if (e1) console.error('[getBlockedUserIds] blocker query error:', e1.message);
-        if (e2) console.error('[getBlockedUserIds] blocked query error:', e2.message);
         const ids = new Set();
-        (asBlocker || []).forEach(b => ids.add(String(b.blocked_id)));
-        (asBlocked  || []).forEach(b => ids.add(String(b.blocker_id)));
+        asBlocker.forEach(b => ids.add(String(b.blocked_id)));
+        asBlocked.forEach(b => ids.add(String(b.blocker_id)));
         return Array.from(ids);
     } catch (e) {
         console.error('[getBlockedUserIds] Error:', e);
@@ -521,8 +521,8 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Dat
 // ── Cloudinary diagnostic (TEMPORARY) ─────────────────────────
 app.get('/api/debug/blocks', async (req, res) => {
     try {
-        const { data, error } = await supabase.from('user_blocks').select('*');
-        res.json({ data, error });
+        const data = await UserBlock.find().lean();
+        res.json({ data });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -3783,9 +3783,9 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
         // Check if either user has blocked the other
        // Check if either user has blocked the other (bidirectional)
     try {
-         const [{ data: b1 }, { data: b2 }] = await Promise.all([
-                 supabase.from('user_blocks').select('id').eq('blocker_id', senderId).eq('blocked_id', receiverId).maybeSingle(),
-                 supabase.from('user_blocks').select('id').eq('blocker_id', receiverId).eq('blocked_id', senderId).maybeSingle()
+         const [b1, b2] = await Promise.all([
+                 UserBlock.findOne({ blocker_id: String(senderId), blocked_id: String(receiverId) }).lean(),
+                 UserBlock.findOne({ blocker_id: String(receiverId), blocked_id: String(senderId) }).lean()
                 ]);
          if (b1 || b2) {
                 return res.status(403).json({ error: 'Cannot send message — user is blocked.', isBlocked: true });
@@ -3831,9 +3831,9 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
     const rSock = userSockets.get(receiverId);
     if (rSock) {
         // Re-verify block before socket delivery
-        const [{ data: sb1 }, { data: sb2 }] = await Promise.all([
-            supabase.from('user_blocks').select('id').eq('blocker_id', senderId).eq('blocked_id', receiverId).maybeSingle(),
-            supabase.from('user_blocks').select('id').eq('blocker_id', receiverId).eq('blocked_id', senderId).maybeSingle()
+        const [sb1, sb2] = await Promise.all([
+            UserBlock.findOne({ blocker_id: String(senderId), blocked_id: String(receiverId) }).lean(),
+            UserBlock.findOne({ blocker_id: String(receiverId), blocked_id: String(senderId) }).lean()
         ]);
         if (!sb1 && !sb2) {
             io.to(rSock).emit('new_dm', payload);
@@ -4064,6 +4064,7 @@ app.delete('/api/dm/conversations/:otherId/clear', authenticateToken, async (req
 
 // ══════════════════════════════════════════════════════════════
 // BUG FIX (BUG-26): POST to block a user (was completely missing)
+// ✅ Now uses MongoDB UserBlock instead of Supabase user_blocks
 // ══════════════════════════════════════════════════════════════
 app.post('/api/users/:userId/block', authenticateToken, async (req, res) => {
     try {
@@ -4074,18 +4075,12 @@ app.post('/api/users/:userId/block', authenticateToken, async (req, res) => {
             return res.status(400).json({ error: 'Cannot block yourself' });
         }
 
-        // Upsert into user_blocks table (create if not exists, ignore if already blocked)
-        const { error: insertErr } = await supabase
-            .from('user_blocks')
-            .upsert([{ blocker_id: uid, blocked_id: userId }], { onConflict: 'blocker_id,blocked_id' });
-
-        // If the table doesn't exist yet, return a helpful error instead of crashing
-        if (insertErr) {
-            if (insertErr.code === '42P01') {
-                return res.status(503).json({ error: 'user_blocks table not set up — run the migration first.' });
-            }
-            throw insertErr;
-        }
+        // Upsert into MongoDB (unique index safely ignores duplicates)
+        await UserBlock.updateOne(
+            { blocker_id: String(uid), blocked_id: String(userId) },
+            { $setOnInsert: { blocker_id: String(uid), blocked_id: String(userId) } },
+            { upsert: true }
+        );
 
         // Also remove mutual follows so blocked user can't interact
         try {
@@ -4110,25 +4105,14 @@ app.post('/api/users/:userId/block', authenticateToken, async (req, res) => {
 
 // ══════════════════════════════════════════════════════════════
 // GET list of users blocked by the current user
+// ✅ Now uses MongoDB UserBlock instead of Supabase user_blocks
 // ══════════════════════════════════════════════════════════════
 app.get('/api/users/blocked', authenticateToken, async (req, res) => {
     try {
         const uid = req.user.id;
         console.log('[BlockedList] Fetching blocked users for uid:', uid);
 
-        // Get all blocked user IDs
-        const { data: blocks, error: blockErr } = await supabase
-            .from('user_blocks')
-            .select('*')
-            .eq('blocker_id', uid);
-
-        console.log('[BlockedList] Query result - blocks:', JSON.stringify(blocks), 'error:', blockErr);
-
-        if (blockErr) {
-            console.error('[BlockedList] Error:', blockErr);
-            if (blockErr.code === '42P01') return res.json({ success: true, blocked: [] });
-            throw blockErr;
-        }
+        const blocks = await UserBlock.find({ blocker_id: String(uid) }).lean();
 
         if (!blocks || blocks.length === 0) {
             console.log('[BlockedList] No blocks found for user', uid);
@@ -4138,13 +4122,13 @@ app.get('/api/users/blocked', authenticateToken, async (req, res) => {
         const blockedIds = blocks.map(b => b.blocked_id);
         console.log('[BlockedList] Found blocked IDs:', blockedIds);
 
-        // Fetch user details for blocked users
+        // Fetch user details from Supabase (users table stays in Supabase)
         const { data: users, error: userErr } = await supabase
             .from('users')
             .select('id,username,name,profile_pic,college,email')
             .in('id', blockedIds);
 
-        console.log('[BlockedList] Users found:', users?.length, 'error:', userErr);
+        if (userErr) console.error('[BlockedList] User fetch error:', userErr.message);
 
         res.json({ success: true, blocked: users || [] });
     } catch (error) {
@@ -4155,26 +4139,38 @@ app.get('/api/users/blocked', authenticateToken, async (req, res) => {
 
 // ══════════════════════════════════════════════════════════════
 // POST unblock a user
+// ✅ Now uses MongoDB UserBlock instead of Supabase user_blocks
 // ══════════════════════════════════════════════════════════════
 app.post('/api/users/:userId/unblock', authenticateToken, async (req, res) => {
     try {
         const { userId } = req.params;
         const uid = req.user.id;
 
-        const { error: delErr } = await supabase
-            .from('user_blocks')
-            .delete()
-            .eq('blocker_id', uid)
-            .eq('blocked_id', userId);
-
-        if (delErr) {
-            if (delErr.code === '42P01') return res.json({ success: true, message: 'No blocks table' });
-            throw delErr;
-        }
+        await UserBlock.deleteOne({ blocker_id: String(uid), blocked_id: String(userId) });
 
         res.json({ success: true, message: 'User unblocked' });
     } catch (error) {
         res.status(500).json({ error: 'Failed to unblock user: ' + error.message });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
+// GET IDs of users who have blocked the current user
+// Returns only IDs (not full user objects) for privacy.
+// Used by the frontend on startup to restore _vxBlockedByIds
+// so the DM drawer block banner persists across page reloads.
+// ══════════════════════════════════════════════════════════════
+app.get('/api/users/blocked-by', authenticateToken, async (req, res) => {
+    try {
+        const uid = req.user.id;
+
+        const blocks = await UserBlock.find({ blocked_id: String(uid) }).lean();
+        const blockedByIds = blocks.map(b => String(b.blocker_id));
+
+        res.json({ success: true, blockedByIds });
+    } catch (error) {
+        console.error('[BlockedBy] Error:', error);
+        res.status(500).json({ error: 'Failed to load blocked-by list: ' + error.message });
     }
 });
 
@@ -4259,13 +4255,20 @@ app.delete('/api/user/delete-account', authenticateToken, async (req, res) => {
         ]);
 
         // ── 6. Delete ALL Supabase rows (order: dependents first) ───────────────
+        // ✅ Block records now live in MongoDB — delete them there first
+        try {
+            await Promise.all([
+                UserBlock.deleteMany({ blocker_id: String(uid) }),
+                UserBlock.deleteMany({ blocked_id: String(uid) })
+            ]);
+        } catch (blockDelErr) {
+            console.error('⚠️ Could not delete MongoDB blocks on account deletion (non-critical):', blockDelErr.message);
+        }
+
         const sbDeletes = [
             // Follows (both directions)
             supabase.from('followers').delete().eq('follower_id', uid),
             supabase.from('followers').delete().eq('following_id', uid),
-            // Blocks (both directions)
-            supabase.from('user_blocks').delete().eq('blocker_id', uid),
-            supabase.from('user_blocks').delete().eq('blocked_id', uid),
             // DMs
             supabase.from('direct_messages').delete().eq('sender_id', uid),
             supabase.from('direct_messages').delete().eq('receiver_id', uid),
