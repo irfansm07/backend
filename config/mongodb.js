@@ -248,6 +248,14 @@ const collegeRequestSchema = new mongoose.Schema({
     status: { type: String, enum: ['pending', 'reviewed', 'added', 'rejected'], default: 'pending' }
 }, { timestamps: true });
 
+// User Blocks (bidirectional block system — replaces Supabase user_blocks table)
+const userBlockSchema = new mongoose.Schema({
+    blocker_id: { type: String, required: true, index: true },
+    blocked_id: { type: String, required: true, index: true }
+}, { timestamps: true });
+
+userBlockSchema.index({ blocker_id: 1, blocked_id: 1 }, { unique: true });
+
 // ── Models ────────────────────────────────────────────────────
 const Post            = mongoose.models.Post            || mongoose.model('Post',            postSchema);
 const PostLike        = mongoose.models.PostLike        || mongoose.model('PostLike',        postLikeSchema);
@@ -267,6 +275,7 @@ const PasswordResetCode = mongoose.models.PasswordResetCode || mongoose.model('P
 const Coupon          = mongoose.models.Coupon          || mongoose.model('Coupon',          couponSchema);
 const ProductReview   = mongoose.models.ProductReview   || mongoose.model('ProductReview',   productReviewSchema);
 const CollegeRequest  = mongoose.models.CollegeRequest  || mongoose.model('CollegeRequest',  collegeRequestSchema);
+const UserBlock       = mongoose.models.UserBlock       || mongoose.model('UserBlock',       userBlockSchema);
 
 module.exports = {
     connectMongo,
@@ -287,5 +296,6 @@ module.exports = {
     PasswordResetCode,
     Coupon,
     ProductReview,
-    CollegeRequest
+    CollegeRequest,
+    UserBlock
 };
