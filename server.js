@@ -22,7 +22,7 @@ const path = require('path');
 const fs = require('fs');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
-const { Readable } = require('stream');
+const mongoose = require('mongoose');
 
 // ── New: Polyglot imports ──────────────────────────────────────
 const cloudinaryLib = require('./config/cloudinary');
@@ -194,7 +194,7 @@ io.on('connection', (socket) => {
 });
 
 app.use(cors({
-    origin: (origin, callback) => callback(null, true), 
+    origin: (origin, callback) => callback(null, true),
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'User-Agent', 'X-Requested-With', 'x-admin-secret'],
@@ -518,47 +518,6 @@ function isAdminUser(user) {
 // ══════════════════════════════════════════════════════════════
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
-// ── Cloudinary diagnostic (TEMPORARY) ─────────────────────────
-app.get('/api/debug/blocks', async (req, res) => {
-    try {
-        const data = await UserBlock.find().lean();
-        res.json({ data });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-app.get('/api/debug/cloudinary', async (req, res) => {
-    const cfg = cloudinaryLib.config();
-    const info = {
-        cloud_name: cfg.cloud_name ? `SET (${cfg.cloud_name} | len:${cfg.cloud_name.length})` : 'MISSING',
-        api_key: cfg.api_key ? `SET (${cfg.api_key.slice(0, 4)}**** | len:${cfg.api_key.length})` : 'MISSING',
-        api_secret: cfg.api_secret ? `SET (${cfg.api_secret.slice(0, 4)}**** | len:${cfg.api_secret.length})` : 'MISSING',
-    };
-
-    let pingResult = null;
-    let pingError = null;
-    let usageResult = null;
-    let presetsResult = null;
-    try {
-        pingResult = await cloudinaryLib.api.ping();
-        usageResult = await cloudinaryLib.api.usage();
-        try { presetsResult = await cloudinaryLib.api.upload_presets(); } catch (e) { presetsResult = String(e); }
-    } catch (err) {
-        pingError = err.message || err.error?.message || String(err);
-    }
-
-    try {
-        const testResult = await cloudinaryLib.uploader.upload(
-            'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
-            { folder: 'vibexpert/exec-media', resource_type: 'image' }
-        );
-        try { await cloudinaryLib.uploader.destroy(testResult.public_id); } catch { }
-        res.json({ success: true, message: 'Cloudinary upload works!', config: info, pingResult, usageResult, presetsResult, pingError, testUrl: testResult.secure_url });
-    } catch (err) {
-        const rawErr = typeof err === 'object' ? { ...err, msg: err.message, stack: err.stack, name: err.name, error_details: err.error } : String(err);
-        res.json({ success: false, message: `Cloudinary upload FAILED: ${err.message}`, httpCode: err.http_code, rawError: rawErr, pingResult, usageResult, presetsResult, pingError, config: info });
-    }
-});
 app.get('/api/post-assets', (req, res) => res.json({ success: true, songs: availableSongs, stickers: availableStickers }));
 app.get('/api/music-library', (req, res) => res.json({ success: true, music: availableSongs }));
 app.get('/api/sticker-library', (req, res) => res.json({ success: true, stickers: availableStickers }));
@@ -1108,13 +1067,13 @@ app.post('/api/admin/notifications', authenticateToken, async (req, res) => {
     try {
         if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
         const { title, message, target, targetUserId } = req.body;
-        
-        const notif = await PlatformNotification.create({ 
-            title, 
-            message, 
-            target: target || 'all', 
+
+        const notif = await PlatformNotification.create({
+            title,
+            message,
+            target: target || 'all',
             targetUserId: target === 'specific' ? targetUserId : null,
-            createdBy: req.user.id 
+            createdBy: req.user.id
         });
 
         if (target === 'specific' && targetUserId) {
@@ -1127,8 +1086,8 @@ app.post('/api/admin/notifications', authenticateToken, async (req, res) => {
         }
 
         res.json({ success: true, notification: notif });
-    } catch (error) { 
-        res.status(500).json({ error: 'Failed to create notification' }); 
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to create notification' });
     }
 });
 
@@ -1327,7 +1286,7 @@ app.put('/api/admin/client-requests/:id', authenticateToken, async (req, res) =>
 
         let setupToken = requestToUpdate.setupToken;
         if (status === 'approved' && requestToUpdate.status !== 'approved') {
-            setupToken = require('crypto').randomBytes(24).toString('hex');
+            setupToken = crypto.randomBytes(24).toString('hex');
         }
 
         const updated = await ClientRequest.findByIdAndUpdate(req.params.id, {
@@ -1434,7 +1393,7 @@ app.post('/api/client/setup', async (req, res) => {
 
             if (upsertErr) {
                 console.error('Client setup: upsert failed:', upsertErr.message);
-                
+
                 // If it failed because the username is already taken (unique constraint)
                 if (upsertErr.message.toLowerCase().includes('duplicate key value') && upsertErr.message.toLowerCase().includes('username')) {
                     return res.status(400).json({ error: 'Username is already taken by another user. Please choose a different one.' });
@@ -1744,7 +1703,7 @@ app.get('/api/shop/reviews/:productId', async (req, res) => {
             .limit(50);
         // Get rating distribution
         const distribution = await ProductReview.aggregate([
-            { $match: { productId: new (require('mongoose').Types.ObjectId)(req.params.productId) } },
+            { $match: { productId: new mongoose.Types.ObjectId(req.params.productId) } },
             { $group: { _id: '$rating', count: { $sum: 1 } } },
             { $sort: { _id: -1 } }
         ]);
@@ -1834,7 +1793,7 @@ app.post('/api/shop/reviews', authenticateToken, upload.array('photos', 3), asyn
         // Update product's aggregate rating
         try {
             const stats = await ProductReview.aggregate([
-                { $match: { productId: new (require('mongoose').Types.ObjectId)(productId) } },
+                { $match: { productId: new mongoose.Types.ObjectId(productId) } },
                 { $group: { _id: null, avg: { $avg: '$rating' }, count: { $sum: 1 } } }
             ]);
             if (stats.length > 0) {
@@ -2358,14 +2317,16 @@ app.get('/api/search/users', authenticateToken, async (req, res) => {
 app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
     try {
         const { userId } = req.params;
+        const myUid = req.user.id;
+
         const [userResult, followersCountResult, followingCountResult, isFollowingResult, isFollowedByResult, likeCountResult, isLikedResult] = await Promise.all([
             supabase.from('users').select('id,username,email,registration_number,college,profile_pic,cover_photo,bio,badges,community_joined,created_at,note').eq('id', userId).single(),
             supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId),
             supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', userId),
-            supabase.from('followers').select('id').eq('follower_id', req.user.id).eq('following_id', userId).maybeSingle(),
-            supabase.from('followers').select('id').eq('follower_id', userId).eq('following_id', req.user.id).maybeSingle(),
+            supabase.from('followers').select('id').eq('follower_id', myUid).eq('following_id', userId).maybeSingle(),
+            supabase.from('followers').select('id').eq('follower_id', userId).eq('following_id', myUid).maybeSingle(),
             supabase.from('profile_likes').select('id', { count: 'exact', head: true }).eq('user_id', userId),
-            supabase.from('profile_likes').select('id').eq('user_id', userId).eq('liker_id', req.user.id).maybeSingle()
+            supabase.from('profile_likes').select('id').eq('user_id', userId).eq('liker_id', myUid).maybeSingle()
         ]);
         const user = userResult.data;
         if (userResult.error || !user) return res.status(404).json({ error: 'User not found' });
@@ -2374,12 +2335,26 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
         let postCount = 0;
         try { postCount = await Post.countDocuments({ userId }); } catch (_) { }
 
+        // ✅ FIX: Check block status directly from MongoDB so profile page shows correct block state
+        // on page reload without waiting for a separate /api/users/blocked call
+        let isBlockedByMe = false;
+        let isBlockingMe = false;
+        try {
+            const [iBlocked, theyBlocked] = await Promise.all([
+                UserBlock.findOne({ blocker_id: String(myUid), blocked_id: String(userId) }).lean(),
+                UserBlock.findOne({ blocker_id: String(userId), blocked_id: String(myUid) }).lean()
+            ]);
+            isBlockedByMe = !!iBlocked;
+            isBlockingMe = !!theyBlocked;
+        } catch (_) { /* non-critical */ }
+
         const isMutualFollow = !!isFollowingResult.data && !!isFollowedByResult.data;
-        res.json({ success: true, user: { ...user, postCount, followersCount: followersCountResult.count || 0, followingCount: followingCountResult.count || 0, profileLikes: likeCountResult.count || 0, isProfileLiked: !!isLikedResult.data, isFollowing: !!isFollowingResult.data, isFollowedBy: !!isFollowedByResult.data, isMutualFollow } });
+        res.json({ success: true, user: { ...user, postCount, followersCount: followersCountResult.count || 0, followingCount: followingCountResult.count || 0, profileLikes: likeCountResult.count || 0, isProfileLiked: !!isLikedResult.data, isFollowing: !!isFollowingResult.data, isFollowedBy: !!isFollowedByResult.data, isMutualFollow, isBlockedByMe, isBlockingMe } });
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch profile' });
     }
 });
+
 
 app.put('/api/profile/update', authenticateToken, async (req, res) => {
     try {
@@ -2696,7 +2671,7 @@ app.post('/api/login', async (req, res) => {
                 if (authErr && !authErr.message.includes('already')) {
                     console.error('Admin auth creation failed:', authErr.message);
                 }
-                const finalId = authData?.user?.id || require('crypto').randomUUID();
+                const finalId = authData?.user?.id || crypto.randomUUID();
                 await supabase.from('users').upsert([{
                     id: finalId, email: email.trim(), username: adminUsername,
                     password_hash: passwordHash, profile_pic: '', bio: 'VibExpert Administrator',
@@ -2809,7 +2784,7 @@ app.post('/api/forgot-password', async (req, res) => {
                     let tokenToUse = pendingClient.setupToken;
                     // If approved but missing token, generate one
                     if (!tokenToUse) {
-                        tokenToUse = require('crypto').randomBytes(24).toString('hex');
+                        tokenToUse = crypto.randomBytes(24).toString('hex');
                         await ClientRequest.findByIdAndUpdate(pendingClient._id, { setupToken: tokenToUse });
                     }
                     const setupLink = `https://vibexpert-client-portal.vercel.app/setup-account?token=${tokenToUse}&email=${encodeURIComponent(pendingClient.email)}`;
@@ -3182,7 +3157,7 @@ app.get('/api/posts/community', authenticateToken, async (req, res) => {
     try {
         if (!req.user.community_joined || !req.user.college)
             return res.json({ success: false, needsJoinCommunity: true, message: 'Join a college community first' });
-        
+
         const blockedIds = await getBlockedUserIds(req.user.id);
         const query = { postedTo: { $in: ['community', 'both'] }, college: req.user.college };
         if (blockedIds.length > 0) query.userId = { $nin: blockedIds };
@@ -3451,7 +3426,7 @@ app.post('/api/comments/:commentId/like', authenticateToken, async (req, res) =>
         // Check if user already liked
         const likes = comment.likes_users || [];
         const userIndex = likes.indexOf(req.user.id);
-        
+
         let liked;
         if (userIndex > -1) {
             likes.splice(userIndex, 1);
@@ -3557,7 +3532,7 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
         const userId = req.user.id;
         // 1. Fetch user-specific notifications from Redis
         const redisNotifications = await getNotifications(userId, 30);
-        
+
         // 2. Fetch global platform notifications from MongoDB
         // We fetch the latest 10 that are for 'all' or specifically for this user
         const globalNotifications = await PlatformNotification.find({
@@ -3751,7 +3726,7 @@ app.get('/api/dm/conversations', authenticateToken, async (req, res) => {
 
         const convList = convs || [];
         const otherIds = [...new Set(convList.map(c => c.user1_id === uid ? c.user2_id : c.user1_id))].filter(id => !blockedIds.includes(String(id)));
-        
+
         let userMap = {};
         if (otherIds.length > 0) {
             const { data: users } = await supabase.from('users').select('id,username,profile_pic,last_seen,status_text').in('id', otherIds);
@@ -3781,17 +3756,17 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
         const senderId = req.user.id;
 
         // Check if either user has blocked the other
-       // Check if either user has blocked the other (bidirectional)
-    try {
-         const [b1, b2] = await Promise.all([
-                 UserBlock.findOne({ blocker_id: String(senderId), blocked_id: String(receiverId) }).lean(),
-                 UserBlock.findOne({ blocker_id: String(receiverId), blocked_id: String(senderId) }).lean()
-                ]);
-         if (b1 || b2) {
+        // Check if either user has blocked the other (bidirectional)
+        try {
+            const [b1, b2] = await Promise.all([
+                UserBlock.findOne({ blocker_id: String(senderId), blocked_id: String(receiverId) }).lean(),
+                UserBlock.findOne({ blocker_id: String(receiverId), blocked_id: String(senderId) }).lean()
+            ]);
+            if (b1 || b2) {
                 return res.status(403).json({ error: 'Cannot send message — user is blocked.', isBlocked: true });
-                }
+            }
         } catch (bErr) {
-             console.error('Block check error in dm/send:', bErr.message);
+            console.error('Block check error in dm/send:', bErr.message);
         }
         let mediaUrl = null, mediaType = null;
         if (req.file) {
@@ -3828,20 +3803,20 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
 
         const payload = { ...dm, reply_to: replyToData, senderUser: { id: req.user.id, username: req.user.username, profile_pic: req.user.profile_pic } };
         try {
-    const rSock = userSockets.get(receiverId);
-    if (rSock) {
-        // Re-verify block before socket delivery
-        const [sb1, sb2] = await Promise.all([
-            UserBlock.findOne({ blocker_id: String(senderId), blocked_id: String(receiverId) }).lean(),
-            UserBlock.findOne({ blocker_id: String(receiverId), blocked_id: String(senderId) }).lean()
-        ]);
-        if (!sb1 && !sb2) {
-            io.to(rSock).emit('new_dm', payload);
+            const rSock = userSockets.get(receiverId);
+            if (rSock) {
+                // Re-verify block before socket delivery
+                const [sb1, sb2] = await Promise.all([
+                    UserBlock.findOne({ blocker_id: String(senderId), blocked_id: String(receiverId) }).lean(),
+                    UserBlock.findOne({ blocker_id: String(receiverId), blocked_id: String(senderId) }).lean()
+                ]);
+                if (!sb1 && !sb2) {
+                    io.to(rSock).emit('new_dm', payload);
+                }
+            }
+        } catch (sockErr) {
+            console.error('Socket delivery error:', sockErr.message);
         }
-    }
-} catch (sockErr) {
-    console.error('Socket delivery error:', sockErr.message);
-}
 
         // Push notification
         await pushNotification(receiverId, { type: 'new_dm', message: `${req.user.username} sent you a message`, from: req.user.id, fromUsername: req.user.username });
@@ -3913,7 +3888,7 @@ app.get('/api/dm/messages/:otherId', authenticateToken, async (req, res) => {
         const blockedIds = await getBlockedUserIds(uid);
         console.log(`[DM Load] uid=${uid}, otherId=${otherId}, blockedIds=${JSON.stringify(blockedIds)}`);
         if (blockedIds.includes(String(otherId))) {
-           return res.status(403).json({ error: 'Cannot load messages — user is blocked.', isBlocked: true });
+            return res.status(403).json({ error: 'Cannot load messages — user is blocked.', isBlocked: true });
         }
 
         const [{ data: sent, error: e1 }, { data: recv, error: e2 }] = await Promise.all([
@@ -4181,6 +4156,175 @@ app.get('/api/users/blocked-by', authenticateToken, async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 app.delete('/api/user/delete-account', authenticateToken, async (req, res) => {
     const uid = req.user.id;
+    console.log(`🗑️  [DeleteAccount] ═══ START ═══ uid=${uid}`);
+
+    // Helper: destroy a Cloudinary asset safely (never throws)
+    const safeCloudinaryDelete = async (publicIdOrUrl, resourceType = 'image') => {
+        if (!publicIdOrUrl) return;
+        try {
+            let pid = publicIdOrUrl;
+            if (publicIdOrUrl.startsWith('http')) {
+                const match = publicIdOrUrl.match(/\/([^/]+\/[^/.]+)\.[a-z0-9]+(?:\?|$)/i);
+                if (match) pid = match[1];
+                else return;
+            }
+            await cloudinaryLib.uploader.destroy(pid, { resource_type: resourceType, invalidate: true });
+        } catch (e) {
+            console.warn(`[DeleteAccount] Cloudinary delete skipped (${publicIdOrUrl}):`, e.message);
+        }
+    };
+
+    // Helper: safely delete from a Supabase table by a column value
+    const safeSupaDelete = async (table, col, val) => {
+        try {
+            const { error } = await supabase.from(table).delete().eq(col, val);
+            if (error) console.warn(`[DeleteAccount] ${table}.${col}=${val} delete failed:`, error.message, error.code);
+            else console.log(`[DeleteAccount] ✓ ${table} rows deleted`);
+        } catch (e) {
+            console.warn(`[DeleteAccount] ${table} delete threw:`, e.message);
+        }
+    };
+
+    try {
+        // ── 1. Fetch user data for Cloudinary URLs ──────────────────────────────
+        const { data: userRow } = await supabase
+            .from('users')
+            .select('profile_pic, cover_photo, college_email')
+            .eq('id', uid)
+            .maybeSingle();
+        console.log(`[DeleteAccount] Step 1 ✓ user row fetched, college_email=${userRow?.college_email || 'none'}`);
+
+        // ── 2. Delete MongoDB posts (with Cloudinary media) ─────────────────────
+        try {
+            const posts = await Post.find({ userId: uid }).select('media').lean();
+            const postMediaDeletes = [];
+            for (const post of posts) {
+                for (const m of (post.media || [])) {
+                    if (m.public_id) postMediaDeletes.push(safeCloudinaryDelete(m.public_id, m.type === 'video' ? 'video' : m.type === 'audio' ? 'video' : 'image'));
+                    else if (m.url) postMediaDeletes.push(safeCloudinaryDelete(m.url, m.type === 'video' ? 'video' : 'image'));
+                }
+            }
+            await Promise.allSettled(postMediaDeletes);
+            const postDel = await Post.deleteMany({ userId: uid });
+            console.log(`[DeleteAccount] Step 2 ✓ Posts deleted: ${postDel.deletedCount}`);
+        } catch (e) { console.error('[DeleteAccount] Step 2 Post cleanup error:', e.message); }
+
+        // ── 3. Delete MongoDB RealVibes (with Cloudinary media) ─────────────────
+        try {
+            const vibes = await RealVibe.find({ userId: uid }).select('mediaPublicId mediaUrl mediaType').lean();
+            await Promise.allSettled(vibes.map(v => safeCloudinaryDelete(v.mediaPublicId || v.mediaUrl, v.mediaType === 'video' ? 'video' : 'image')));
+            const vibeDel = await RealVibe.deleteMany({ userId: uid });
+            console.log(`[DeleteAccount] Step 3 ✓ RealVibes deleted: ${vibeDel.deletedCount}`);
+        } catch (e) { console.error('[DeleteAccount] Step 3 RealVibe cleanup error:', e.message); }
+
+        // ── 4. Delete MongoDB interaction data ──────────────────────────────────
+        try {
+            const results = await Promise.allSettled([
+                PostLike.deleteMany({ userId: uid }),
+                PostComment.deleteMany({ userId: uid }),
+                PostShare.deleteMany({ userId: uid }),
+                RealVibeLike.deleteMany({ userId: uid }),
+                RealVibeComment.deleteMany({ userId: uid }),
+                Complaint.deleteMany({ userId: uid }),
+                SellerRequest.deleteMany({ userId: uid }),
+                UserBlock.deleteMany({ blocker_id: String(uid) }),
+                UserBlock.deleteMany({ blocked_id: String(uid) }),
+            ]);
+            console.log(`[DeleteAccount] Step 4 ✓ MongoDB interactions deleted (${results.filter(r => r.status === 'fulfilled').length}/9 ok)`);
+        } catch (e) { console.error('[DeleteAccount] Step 4 MongoDB interactions error:', e.message); }
+
+        // ── 5. Delete profile photo + cover photo from Cloudinary ───────────────
+        await Promise.allSettled([
+            safeCloudinaryDelete(userRow?.profile_pic),
+            safeCloudinaryDelete(userRow?.cover_photo),
+        ]);
+        console.log(`[DeleteAccount] Step 5 ✓ Cloudinary profile/cover photos removed`);
+
+        // ── 6. Delete Redis notification list ───────────────────────────────────
+        try {
+            await redis.del(`notifications:${uid}`);
+            console.log(`[DeleteAccount] Step 6 ✓ Redis notifications deleted`);
+        } catch (e) { console.warn('[DeleteAccount] Step 6 Redis cleanup failed (non-critical):', e.message); }
+
+        // ── 7. Delete ALL Supabase dependent rows (FK order: dependents first) ──
+        // These tables must be cleared BEFORE deleting the users row to avoid
+        // FK constraint violations (23503 error) that prevent account deletion.
+        console.log(`[DeleteAccount] Step 7 — Clearing all Supabase dependent tables...`);
+        await safeSupaDelete('followers', 'follower_id', uid);
+        await safeSupaDelete('followers', 'following_id', uid);
+        await safeSupaDelete('direct_messages', 'sender_id', uid);
+        await safeSupaDelete('direct_messages', 'receiver_id', uid);
+        await safeSupaDelete('dm_conversations', 'user1_id', uid);
+        await safeSupaDelete('dm_conversations', 'user2_id', uid);
+        await safeSupaDelete('community_messages', 'user_id', uid);
+        await safeSupaDelete('executive_message_reads', 'user_id', uid);
+        await safeSupaDelete('executive_poll_votes', 'user_id', uid);
+        await safeSupaDelete('executive_messages', 'user_id', uid);
+        await safeSupaDelete('executive_polls', 'user_id', uid);
+        await safeSupaDelete('profile_likes', 'liker_id', uid);
+        await safeSupaDelete('profile_likes', 'user_id', uid);
+        await safeSupaDelete('real_vibe_notifications', 'user_id', uid);
+        await safeSupaDelete('codes', 'user_id', uid);
+        await safeSupaDelete('feedback', 'user_id', uid);
+        await safeSupaDelete('shop_orders', 'user_id', uid);
+        await safeSupaDelete('payment_orders', 'user_id', uid);
+        // Extra tables that may have FK refs to users
+        await safeSupaDelete('notifications', 'user_id', uid);
+        await safeSupaDelete('notifications', 'from_user_id', uid);
+        await safeSupaDelete('college_join_requests', 'user_id', uid);
+        await safeSupaDelete('user_verifications', 'user_id', uid);
+        await safeSupaDelete('profile_flags', 'user_id', uid);
+        await safeSupaDelete('profile_flags', 'flagged_by', uid);
+        console.log(`[DeleteAccount] Step 7 ✓ All Supabase dependent rows deleted`);
+
+        // ── 8. Delete the users row (must be AFTER all dependents are cleared) ──
+        const { error: userDeleteErr } = await supabase.from('users').delete().eq('id', uid);
+        if (userDeleteErr) {
+            // PGRST116 = row not found (already deleted) — treat as success
+            if (userDeleteErr.code === 'PGRST116') {
+                console.log(`[DeleteAccount] Step 8 ⚠️ users row not found (already deleted), continuing...`);
+            } else {
+                console.error('[DeleteAccount] Step 8 ✗ users row delete FAILED:', userDeleteErr.code, userDeleteErr.message);
+                return res.status(500).json({
+                    error: `Failed to delete account — database error (${userDeleteErr.code}): ${userDeleteErr.message}. Please contact support.`
+                });
+            }
+        } else {
+            console.log(`[DeleteAccount] Step 8 ✓ users row permanently deleted`);
+        }
+
+        // ── 9. Delete Supabase Auth user ─────────────────────────────────────────
+        try {
+            await supabase.auth.admin.deleteUser(uid);
+            console.log(`[DeleteAccount] Step 9 ✓ Supabase Auth user deleted`);
+        } catch (e) {
+            console.warn('[DeleteAccount] Step 9 Auth user delete skipped (custom-auth user):', e.message);
+        }
+
+        // ── 10. Disconnect active socket ─────────────────────────────────────────
+        try {
+            const socketId = userSockets.get(uid);
+            if (socketId) {
+                const sock = io.sockets.sockets.get(socketId);
+                if (sock) sock.disconnect(true);
+                userSockets.delete(uid);
+            }
+            console.log(`[DeleteAccount] Step 10 ✓ Socket disconnected`);
+        } catch (e) {
+            console.warn('[DeleteAccount] Step 10 Socket disconnect error (non-critical):', e.message);
+        }
+
+        console.log(`✅ [DeleteAccount] ═══ COMPLETE ═══ uid=${uid} fully purged`);
+        res.json({ success: true, message: 'Account permanently deleted. All your data has been removed.' });
+
+    } catch (error) {
+        console.error('[DeleteAccount] ═══ FATAL ERROR ═══', error);
+        res.status(500).json({ error: 'Failed to delete account: ' + error.message });
+    }
+});
+
+
+    const uid = req.user.id;
     console.log(`🗑️  [DeleteAccount] START — uid=${uid}`);
 
     // Helper: destroy a Cloudinary asset safely (never throws)
@@ -4288,8 +4432,12 @@ app.delete('/api/user/delete-account', authenticateToken, async (req, res) => {
             supabase.from('real_vibe_notifications').delete().eq('user_id', uid),
             // Verification codes
             supabase.from('codes').delete().eq('user_id', uid),
-            // Feedback (keep for compliance if needed; delete here for full wipe)
+            // Feedback / support
             supabase.from('feedback').delete().eq('user_id', uid),
+            // ── FIX: Shop & payment orders MUST be deleted before the users row
+            //    to avoid FK constraint violations that silently block user deletion.
+            supabase.from('shop_orders').delete().eq('user_id', uid),
+            supabase.from('payment_orders').delete().eq('user_id', uid),
         ];
         const sbResults = await Promise.allSettled(sbDeletes);
         sbResults.forEach((r, i) => {
@@ -4297,11 +4445,26 @@ app.delete('/api/user/delete-account', authenticateToken, async (req, res) => {
         });
         console.log(`[DeleteAccount] Supabase rows cleaned for uid=${uid}`);
 
+        // ── FIX: Delete MongoDB Complaint + SellerRequest records for user ──────
+        try {
+            await Promise.allSettled([
+                Complaint.deleteMany({ userId: uid }),
+                SellerRequest.deleteMany({ userId: uid }),
+            ]);
+            console.log(`[DeleteAccount] MongoDB complaints/seller-requests deleted for uid=${uid}`);
+        } catch (e) { console.error('[DeleteAccount] MongoDB complaint/seller cleanup error:', e.message); }
+
+        // ── FIX: Delete Redis notification list for user ─────────────────────────
+        try {
+            await redis.del(`notifications:${uid}`);
+            console.log(`[DeleteAccount] Redis notifications deleted for uid=${uid}`);
+        } catch (e) { console.warn('[DeleteAccount] Redis notification cleanup failed (non-critical):', e.message); }
+
         // ── 7. Delete the users row (releases college_email + registration_number)
         const { error: userDeleteErr } = await supabase.from('users').delete().eq('id', uid);
         if (userDeleteErr && userDeleteErr.code !== 'PGRST116') {
             console.error('[DeleteAccount] users row delete error:', userDeleteErr);
-            // Non-fatal — continue to auth deletion
+            return res.status(500).json({ error: 'Failed to delete account: database error — ' + userDeleteErr.message });
         }
         console.log(`[DeleteAccount] users row deleted for uid=${uid}`);
 
@@ -4381,16 +4544,6 @@ app.get('/api/realvibes', authenticateToken, async (req, res) => {
         res.json({ success: true, vibes: enriched });
     } catch (error) {
         res.status(500).json({ error: 'Failed to load RealVibes' });
-    }
-});
-
-// TEMP: one-time migration — approve all pending vibes
-app.post('/api/realvibes/approve-all-pending', authenticateToken, async (req, res) => {
-    try {
-        const result = await RealVibe.updateMany({ status: 'pending' }, { $set: { status: 'approved', reviewedAt: new Date() } });
-        res.json({ success: true, message: `Approved ${result.modifiedCount} pending vibes` });
-    } catch (err) {
-        res.status(500).json({ error: 'Failed to approve pending vibes' });
     }
 });
 
@@ -4871,7 +5024,7 @@ app.post('/api/college-requests', authenticateTokenOptional, async (req, res) =>
     try {
         const { collegeName, collegeEmail } = req.body;
         if (!collegeName || !collegeEmail) return res.status(400).json({ error: 'Missing fields' });
-        
+
         const newRequest = new CollegeRequest({
             userId: req.user ? req.user.id : null,
             collegeName,
@@ -4903,10 +5056,10 @@ app.post('/api/admin/college-requests/:id/status', authenticateToken, async (req
         if (!['pending', 'reviewed', 'added', 'rejected'].includes(status)) {
             return res.status(400).json({ error: 'Invalid status' });
         }
-        
+
         const request = await CollegeRequest.findByIdAndUpdate(req.params.id, { status }, { new: true });
         if (!request) return res.status(404).json({ error: 'Request not found' });
-        
+
         res.json({ success: true, request });
     } catch (err) {
         res.status(500).json({ error: 'Failed to update request' });
