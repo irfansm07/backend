@@ -119,14 +119,6 @@ const platformNotificationSchema = new mongoose.Schema({
     createdBy: { type: String, required: true }
 }, { timestamps: true });
 
-// Banned Users
-const bannedUserSchema = new mongoose.Schema({
-    userId: { type: String, required: true, unique: true },
-    reason: { type: String, required: true },
-    bannedBy: { type: String, required: true },
-    bannedAt: { type: Date, default: Date.now }
-});
-
 // Client Registration Requests
 const clientRequestSchema = new mongoose.Schema({
     userId: { type: String, default: null },
@@ -248,13 +240,18 @@ const collegeRequestSchema = new mongoose.Schema({
     status: { type: String, enum: ['pending', 'reviewed', 'added', 'rejected'], default: 'pending' }
 }, { timestamps: true });
 
-// User Blocks (bidirectional block system — replaces Supabase user_blocks table)
-const userBlockSchema = new mongoose.Schema({
-    blocker_id: { type: String, required: true, index: true },
-    blocked_id: { type: String, required: true, index: true }
+// ── User Blocks (Instagram-style) ────────────────────────────
+// blockerId blocked blockedId.
+// Both sides are checked: blocked users can't see blocker's content & vice versa.
+const blockSchema = new mongoose.Schema({
+    blockerId: { type: String, required: true, index: true },  // who pressed Block
+    blockedId:  { type: String, required: true, index: true }   // who got blocked
 }, { timestamps: true });
 
-userBlockSchema.index({ blocker_id: 1, blocked_id: 1 }, { unique: true });
+// Unique: a user can only block another user once
+blockSchema.index({ blockerId: 1, blockedId: 1 }, { unique: true });
+// Fast reverse lookup: "who has blocked me?"
+blockSchema.index({ blockedId: 1, blockerId: 1 });
 
 // ── Models ────────────────────────────────────────────────────
 const Post            = mongoose.models.Post            || mongoose.model('Post',            postSchema);
@@ -266,7 +263,6 @@ const RealVibeLike    = mongoose.models.RealVibeLike    || mongoose.model('RealV
 const RealVibeComment = mongoose.models.RealVibeComment || mongoose.model('RealVibeComment', realVibeCommentSchema);
 const SellerRequest   = mongoose.models.SellerRequest   || mongoose.model('SellerRequest',   sellerRequestSchema);
 const PlatformNotification = mongoose.models.PlatformNotification || mongoose.model('PlatformNotification', platformNotificationSchema);
-const BannedUser      = mongoose.models.BannedUser      || mongoose.model('BannedUser',      bannedUserSchema);
 const ClientRequest   = mongoose.models.ClientRequest   || mongoose.model('ClientRequest',   clientRequestSchema);
 const ClientProduct   = mongoose.models.ClientProduct   || mongoose.model('ClientProduct',   clientProductSchema);
 const OrderMessage    = mongoose.models.OrderMessage    || mongoose.model('OrderMessage',    orderMessageSchema);
@@ -275,7 +271,7 @@ const PasswordResetCode = mongoose.models.PasswordResetCode || mongoose.model('P
 const Coupon          = mongoose.models.Coupon          || mongoose.model('Coupon',          couponSchema);
 const ProductReview   = mongoose.models.ProductReview   || mongoose.model('ProductReview',   productReviewSchema);
 const CollegeRequest  = mongoose.models.CollegeRequest  || mongoose.model('CollegeRequest',  collegeRequestSchema);
-const UserBlock       = mongoose.models.UserBlock       || mongoose.model('UserBlock',       userBlockSchema);
+const Block           = mongoose.models.Block           || mongoose.model('Block',           blockSchema);
 
 module.exports = {
     connectMongo,
@@ -288,7 +284,6 @@ module.exports = {
     RealVibeComment,
     SellerRequest,
     PlatformNotification,
-    BannedUser,
     ClientRequest,
     ClientProduct,
     OrderMessage,
@@ -297,5 +292,5 @@ module.exports = {
     Coupon,
     ProductReview,
     CollegeRequest,
-    UserBlock
+    Block
 };
