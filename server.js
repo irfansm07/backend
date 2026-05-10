@@ -576,6 +576,20 @@ app.delete('/api/users/:id/block', authenticateToken, async (req, res) => {
     }
 });
 
+// POST /api/users/:id/unblock — alias for the client-side unblock call
+// (front-end calls POST /unblock; this mirrors DELETE /block for compatibility)
+app.post('/api/users/:id/unblock', authenticateToken, async (req, res) => {
+    try {
+        const blockerId = req.user.id;
+        const blockedId = req.params.id;
+        await Block.findOneAndDelete({ blockerId, blockedId });
+        res.json({ success: true, blocked: false, message: 'User unblocked' });
+    } catch (err) {
+        console.error('Unblock error:', err.message);
+        res.status(500).json({ error: 'Failed to unblock user' });
+    }
+});
+
 // GET /api/users/:id/block-status — check if a user is blocked (in either direction)
 app.get('/api/users/:id/block-status', authenticateToken, async (req, res) => {
     try {
@@ -617,6 +631,77 @@ app.get('/api/blocks', authenticateToken, async (req, res) => {
         res.json({ success: true, blocks: enriched });
     } catch (err) {
         res.status(500).json({ error: 'Failed to load block list' });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
+// DELETE ACCOUNT — permanently removes all user data
+// ══════════════════════════════════════════════════════════════
+app.delete('/api/user/delete-account', authenticateToken, async (req, res) => {
+    const userId = req.user.id;
+    console.log(`🗑️ Delete account requested for user: ${userId}`);
+    try {
+        // ── 1. MongoDB: delete posts, likes, comments, shares ──────────────
+        const userPosts = await Post.find({ userId }).select('_id').lean();
+        const postIds = userPosts.map(p => p._id);
+        if (postIds.length > 0) {
+            await Promise.all([
+                Post.deleteMany({ userId }),
+                PostLike.deleteMany({ postId: { $in: postIds } }),
+                PostComment.deleteMany({ postId: { $in: postIds } }),
+                PostShare.deleteMany({ postId: { $in: postIds } }),
+            ]);
+        }
+        // Also remove likes/comments the user left on others' posts
+        await PostLike.deleteMany({ userId });
+        await PostComment.deleteMany({ userId });
+        await PostShare.deleteMany({ userId });
+
+        // ── 2. MongoDB: delete RealVibes ────────────────────────────────────
+        const userVibes = await RealVibe.find({ userId }).select('_id').lean();
+        const vibeIds = userVibes.map(v => v._id);
+        if (vibeIds.length > 0) {
+            await Promise.all([
+                RealVibe.deleteMany({ userId }),
+                RealVibeLike.deleteMany({ vibeId: { $in: vibeIds } }),
+                RealVibeComment.deleteMany({ vibeId: { $in: vibeIds } }),
+            ]);
+        }
+        // Also remove reactions the user left on others' vibes
+        await RealVibeLike.deleteMany({ userId });
+        await RealVibeComment.deleteMany({ userId });
+
+        // ── 3. MongoDB: delete blocks both ways ────────────────────────────
+        await Block.deleteMany({ $or: [{ blockerId: userId }, { blockedId: userId }] });
+
+        // ── 4. Supabase: followers, DMs, community messages ────────────────
+        await Promise.allSettled([
+            supabase.from('followers').delete().or(`follower_id.eq.${userId},following_id.eq.${userId}`),
+            supabase.from('direct_messages').delete().or(`sender_id.eq.${userId},receiver_id.eq.${userId}`),
+            supabase.from('dm_conversations').delete().or(`user1_id.eq.${userId},user2_id.eq.${userId}`),
+            supabase.from('community_messages').delete().eq('user_id', userId),
+            supabase.from('notifications').delete().or(`user_id.eq.${userId},actor_id.eq.${userId}`),
+        ]);
+
+        // ── 5. Supabase: delete the user row ───────────────────────────────
+        await supabase.from('users').delete().eq('id', userId);
+
+        // ── 6. Supabase Auth: delete the auth record ───────────────────────
+        const { error: authErr } = await supabase.auth.admin.deleteUser(userId);
+        if (authErr) console.warn('⚠️ Supabase auth delete warning (non-critical):', authErr.message);
+
+        // ── 7. Kick socket offline ─────────────────────────────────────────
+        const socketId = userSockets.get(userId);
+        if (socketId) {
+            io.to(socketId).emit('account_deleted');
+            userSockets.delete(userId);
+        }
+
+        console.log(`✅ Account deleted: ${userId}`);
+        res.json({ success: true, message: 'Account permanently deleted' });
+    } catch (err) {
+        console.error('❌ Delete account error:', err);
+        res.status(500).json({ error: 'Failed to delete account. Please try again.' });
     }
 });
 
