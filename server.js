@@ -3430,13 +3430,13 @@ app.get('/api/posts/shared', authenticateToken, async (req, res) => {
     }
 });
 
-// GET all posts (global feed)
+// GET all posts (global feed — Zero Velocity)
+// Returns profile + both posts for the "0 Velocity" feed
 app.get('/api/posts', authenticateToken, async (req, res) => {
     try {
-        // Zero Velocity feed: only return profile posts
-        // Exclude posts from blocked/blocking users
         const blockedIds = await getBlockedIds(req.user.id);
-        const query = { postedTo: 'profile' };
+        // Zero Velocity: show posts that are visible on profiles (profile + both)
+        const query = { postedTo: { $in: ['profile', 'both'] } };
         if (blockedIds.length > 0) query.userId = { $nin: blockedIds };
 
         const posts = await Post.find(query).sort({ createdAt: -1 }).limit(50);
@@ -3455,6 +3455,32 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
         res.json({ success: true, posts: postWithFollow });
     } catch (error) {
         res.status(500).json({ error: 'Failed to load posts' });
+    }
+});
+
+// GET "For You" feed — returns all posts (community + profile + both)
+// Used by web Vibers "For You" tab
+app.get('/api/posts/foryou', authenticateToken, async (req, res) => {
+    try {
+        const blockedIds = await getBlockedIds(req.user.id);
+        const query = {};
+        if (blockedIds.length > 0) query.userId = { $nin: blockedIds };
+
+        const posts = await Post.find(query).sort({ createdAt: -1 }).limit(50);
+        const enriched = await enrichPosts(posts, req.user.id);
+
+        const postWithFollow = await Promise.all(enriched.map(async (post) => {
+            let isFollowingAuthor = false;
+            if (post.userId && post.userId !== req.user.id) {
+                const { data: fc } = await supabase.from('followers').select('id').eq('follower_id', req.user.id).eq('following_id', post.userId).maybeSingle();
+                isFollowingAuthor = !!fc;
+            }
+            return { ...post, is_following_author: isFollowingAuthor };
+        }));
+
+        res.json({ success: true, posts: postWithFollow });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to load for-you posts' });
     }
 });
 
@@ -3498,7 +3524,7 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
             content: content || '',
             media: mediaUrls,
             postedTo: postTo || 'profile',
-            college: (postTo === 'community') ? req.user.college : null,
+            college: (postTo === 'community' || postTo === 'both') ? req.user.college : null,
             music: music ? JSON.parse(music) : null,
             stickers: stickers ? JSON.parse(stickers) : []
         });
@@ -3510,14 +3536,14 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
             users: { id: req.user.id, username: req.user.username, profile_pic: req.user.profile_pic || null, college: req.user.college || null }
         };
 
-        // Broadcast new_post only to the relevant audience:
-        // community posts → only members of that college room
-        // profile posts   → no realtime broadcast needed (feed is personal)
-        if (postTo === 'community' && req.user.college) {
+        // Broadcast new_post to the relevant audience:
+        // community/both posts → members of that college room + global
+        // profile posts         → global broadcast for Zero Velocity feed
+        if ((postTo === 'community' || postTo === 'both') && req.user.college) {
             io.to(req.user.college).emit('new_post', enrichedPost);
-        } else {
-            io.emit('new_post', enrichedPost);
         }
+        // Always emit globally so Zero Velocity (profile feed) picks it up too
+        io.emit('new_post', enrichedPost);
         let postCount = 0;
         try { postCount = await Post.countDocuments({ userId: req.user.id }); } catch (_) { }
         res.json({ success: true, post: enrichedPost, postCount, message: 'Post created successfully' });
