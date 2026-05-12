@@ -437,6 +437,26 @@ const upload = multer({
             'text/plain', 'text/csv', 'application/zip', 'application/x-rar-compressed', 'application/x-7z-compressed'
         ];
         if (allowed.includes(file.mimetype)) return cb(null, true);
+
+        // Flutter's MultipartFile.fromPath often sends 'application/octet-stream'
+        // because it doesn't detect the MIME type. Infer from the file extension.
+        if (file.mimetype === 'application/octet-stream' && file.originalname) {
+            const ext = file.originalname.split('.').pop().toLowerCase();
+            const extMap = {
+                'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
+                'gif': 'image/gif', 'webp': 'image/webp', 'bmp': 'image/bmp',
+                'heic': 'image/heic', 'tiff': 'image/tiff', 'svg': 'image/svg+xml',
+                'mp4': 'video/mp4', 'mov': 'video/quicktime', 'webm': 'video/webm',
+                'avi': 'video/x-msvideo', 'mkv': 'video/x-matroska', 'ogg': 'video/ogg',
+                'mp3': 'audio/mpeg', 'wav': 'audio/wav', 'aac': 'audio/aac',
+                'flac': 'audio/flac', 'pdf': 'application/pdf'
+            };
+            if (extMap[ext]) {
+                file.mimetype = extMap[ext]; // Correct the MIME type for downstream use
+                return cb(null, true);
+            }
+        }
+
         cb(new Error(`File type "${file.mimetype}" is not allowed.`));
     }
 });
