@@ -3196,8 +3196,7 @@ app.post('/api/auth/google', async (req, res) => {
                     email,
                     password_hash: passwordHash,
                     registration_number: `google_${Date.now()}`,
-                    profile_pic: photoUrl || null,
-                    auth_provider: 'google'
+                    profile_pic: photoUrl || null
                 }])
                 .select()
                 .single();
