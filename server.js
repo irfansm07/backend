@@ -33,7 +33,7 @@ const {
     PlatformNotification, SellerRequest,
     ClientRequest, ClientProduct, OrderMessage,
     Complaint, Coupon, ProductReview, CollegeRequest,
-    Block
+    Block, CombineRequest, PartnerLink
 } = require('./config/mongodb');
 const redis = require('./config/redis');
 
@@ -46,7 +46,7 @@ const io = socketIO(server, {
     pingInterval: 25000
 });
 
-const userSockets = new Map();
+const userSockets = new Map(); // userId -> Set(socketIds)
 const collegeGhostNames = new Map();
 
 function registerGhostName(userId, collegeName, ghostName) {
@@ -113,27 +113,25 @@ io.on('connection', (socket) => {
 
     socket.on('user_online', async (userId) => {
         socket.data.userId = userId;
-        userSockets.set(userId, socket.id);
+        if (!userSockets.has(userId)) userSockets.set(userId, new Set());
+        userSockets.get(userId).add(socket.id);
         await supabase.from('users').update({ last_seen: null }).eq('id', userId);
-        // BUG FIX (BUG-28): Broadcast only to the user's college room, not ALL users globally.
-        // This prevents privacy leakage (any user tracking any other) and reduces unnecessary traffic.
         const targetCollege = socket.data.college;
         if (targetCollege) {
             io.to(targetCollege).emit('user_online_broadcast', { userId });
         } else {
-            // No college room yet — emit to socket itself only so UI can update
             socket.emit('user_online_broadcast', { userId });
         }
     });
 
     socket.on('dm_typing', ({ receiverId }) => {
-        const receiverSocketId = userSockets.get(receiverId);
-        if (receiverSocketId) io.to(receiverSocketId).emit('dm_typing', { senderId: socket.data.userId });
+        const sockets = userSockets.get(receiverId);
+        if (sockets) sockets.forEach(sid => io.to(sid).emit('dm_typing', { senderId: socket.data.userId }));
     });
 
     socket.on('dm_stop_typing', ({ receiverId }) => {
-        const receiverSocketId = userSockets.get(receiverId);
-        if (receiverSocketId) io.to(receiverSocketId).emit('dm_stop_typing', { senderId: socket.data.userId });
+        const sockets = userSockets.get(receiverId);
+        if (sockets) sockets.forEach(sid => io.to(sid).emit('dm_stop_typing', { senderId: socket.data.userId }));
     });
 
     socket.on('join_executive', (collegeName) => {
@@ -175,15 +173,18 @@ io.on('connection', (socket) => {
         if (socket.data.userId) {
             const offlineUserId = socket.data.userId;
             const offlineCollege = socket.data.college;
-            userSockets.delete(offlineUserId);
-            supabase.from('users').update({ last_seen: new Date().toISOString() }).eq('id', offlineUserId)
-                .then(() => {
-                    // BUG FIX (BUG-28): Only broadcast offline status to the user's college, not everyone.
-                    if (offlineCollege) {
-                        io.to(offlineCollege).emit('user_offline', { userId: offlineUserId });
-                    }
-                })
-                .catch(console.error);
+            const userSocks = userSockets.get(offlineUserId);
+            if (userSocks) {
+                userSocks.delete(socket.id);
+                if (userSocks.size === 0) {
+                    userSockets.delete(offlineUserId);
+                    supabase.from('users').update({ last_seen: new Date().toISOString() }).eq('id', offlineUserId)
+                        .then(() => {
+                            if (offlineCollege) io.to(offlineCollege).emit('user_offline', { userId: offlineUserId });
+                        })
+                        .catch(console.error);
+                }
+            }
         }
         if (socket.data.college) {
             if (socket.data.userId) releaseGhostName(socket.data.userId, socket.data.college);
@@ -737,124 +738,98 @@ const CASHFREE_SECRET_KEY = process.env.CASHFREE_SECRET_KEY;
 // ══════════════════════════════════════════════════════════════
 app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
     try {
-        const { amount, planType, isFirstTime, returnUrl } = req.body;
+        const { amount, planType, isFirstTime } = req.body;
         if (!amount || !planType) return res.status(400).json({ error: 'Amount and plan type required' });
         if (amount < 1 || amount > 10000) return res.status(400).json({ error: 'Invalid amount' });
 
-        const orderId = `order_${req.user.id.slice(-8)}_${Date.now()}`;
-        const sanitizedUserId = req.user.id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 50) || "user123";
-
-        console.log('📦 Creating Cashfree order:', { orderId, amount, planType, userId: req.user.id });
-
-        const cashfreePayload = {
-            order_amount: amount,
-            order_currency: "INR",
-            order_id: orderId,
-            customer_details: {
-                customer_id: sanitizedUserId,
-                customer_phone: "9999999999",
-                customer_email: req.user.email || "test@vibexpert.online",
-                customer_name: req.user.username || "User"
-            },
-            order_meta: {
-                return_url: returnUrl || `https://vibexpert.online/?order_id={order_id}&planType=${planType}`
-            }
+        const options = {
+            amount: amount * 100, // Razorpay takes amount in paise
+            currency: 'INR',
+            receipt: `rcpt_${req.user.id.slice(-8)}_${Date.now()}`,
+            notes: { userId: req.user.id, username: req.user.username, planType, isFirstTime }
         };
 
-        const CASHFREE_BASE_URL = process.env.CASHFREE_ENV === 'sandbox' ? 'https://sandbox.cashfree.com/pg' : 'https://api.cashfree.com/pg';
-        const response = await axios.post(`${CASHFREE_BASE_URL}/orders`, cashfreePayload, {
-            headers: {
-                'x-api-version': '2023-08-01',
-                'x-client-id': CASHFREE_APP_ID,
-                'x-client-secret': CASHFREE_SECRET_KEY,
-                'Content-Type': 'application/json'
-            }
-        });
-
-        console.log('✅ Cashfree order created:', response.data?.order_id, '| Session:', response.data?.payment_session_id ? 'received' : 'MISSING');
-
-        // Store order record (non-blocking — don't fail if table doesn't exist yet)
+        const order = await razorpay.orders.create(options);
+        
+        // Store order record
         try {
             await supabase.from('payment_orders').insert([{
-                user_id: req.user.id, order_id: orderId, amount, plan_type: planType, status: 'created'
+                user_id: req.user.id, order_id: order.id, amount, plan_type: planType, status: 'created'
             }]);
         } catch (dbErr) {
-            console.warn('⚠️ payment_orders insert failed (table may not exist):', dbErr.message);
+            console.warn('⚠️ payment_orders insert failed:', dbErr.message);
         }
 
-        res.json({ success: true, payment_session_id: response.data.payment_session_id, orderId: orderId });
+        res.json({ 
+            success: true, 
+            orderId: order.id, 
+            amount, 
+            razorpayKeyId: process.env.RAZORPAY_KEY_ID || 'rzp_live_SN88LJaubRdhxS' 
+        });
     } catch (error) {
-        console.error('❌ Create order error:', error.response?.data || error.message);
-        const detail = error.response?.data?.message || error.response?.data?.error || error.message;
-        res.status(500).json({ error: `Failed to create payment order: ${detail}` });
+        console.error('❌ Create Razorpay order error:', error);
+        res.status(500).json({ error: 'Failed to create payment order' });
     }
 });
 
 app.post('/api/payment/verify', authenticateToken, async (req, res) => {
     try {
-        const { order_id, planType } = req.body;
-        if (!order_id) return res.status(400).json({ error: 'Missing order_id' });
+        const { razorpay_order_id, razorpay_payment_id, razorpay_signature, planType } = req.body;
+        
+        // Verify signature
+        const generated_signature = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+            .update(razorpay_order_id + '|' + razorpay_payment_id)
+            .digest('hex');
 
-        console.log('🔍 Verifying payment:', { order_id, planType });
+        if (generated_signature !== razorpay_signature)
+            return res.status(400).json({ success: false, error: 'Invalid payment signature' });
 
-        const CASHFREE_BASE_URL = process.env.CASHFREE_ENV === 'sandbox' ? 'https://sandbox.cashfree.com/pg' : 'https://api.cashfree.com/pg';
-        const response = await axios.get(`${CASHFREE_BASE_URL}/orders/${order_id}`, {
-            headers: {
-                'x-api-version': '2023-08-01',
-                'x-client-id': CASHFREE_APP_ID,
-                'x-client-secret': CASHFREE_SECRET_KEY,
-            }
-        });
-
-        console.log('📋 Cashfree order status:', response.data.order_status);
-
-        if (response.data.order_status !== 'PAID') {
-            return res.status(400).json({ success: false, error: `Payment not completed. Status: ${response.data.order_status}` });
-        }
-
-        const actualPlanType = planType || response.data.order_tags?.planType;
-        const plans = { noble: { posters: 5, videos: 1, days: 15 }, royal: { posters: 5, videos: 3, days: 25 } };
-        const plan = plans[actualPlanType];
+        const plans = { 
+            noble: { posters: 3, videos: 1, days: 7 }, 
+            royal: { posters: 4, videos: 4, days: 10 } 
+        };
+        const plan = plans[planType.toLowerCase()];
         if (!plan) return res.status(400).json({ error: 'Invalid plan type' });
+        
         const endDate = new Date(Date.now() + plan.days * 24 * 60 * 60 * 1000);
 
         const { error: userUpdateErr } = await supabase.from('users').update({
-            subscription_plan: actualPlanType, subscription_start: new Date(), subscription_end: endDate,
-            is_premium: true, has_subscribed: true, posters_quota: plan.posters, videos_quota: plan.videos
+            subscription_plan: planType.toLowerCase(),
+            subscription_start: new Date(),
+            subscription_end: endDate,
+            is_premium: true,
+            has_subscribed: true,
+            posters_quota: plan.posters,
+            videos_quota: plan.videos
         }).eq('id', req.user.id);
 
-        if (userUpdateErr) {
-            console.error('⚠️ User subscription update error:', userUpdateErr);
-        }
+        if (userUpdateErr) console.error('⚠️ Subscription update error:', userUpdateErr);
 
-        // Non-blocking — don't fail if payment_orders table doesn't exist
         try {
             await supabase.from('payment_orders').update({
                 status: 'completed', updated_at: new Date()
-            }).eq('order_id', order_id);
+            }).eq('order_id', razorpay_order_id);
         } catch (dbErr) {
             console.warn('⚠️ payment_orders update failed:', dbErr.message);
         }
 
         sendEmail(req.user.email, '🎉 Subscription Activated - VibeXpert', `
             <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
-              <h1 style="color:#4F46E5;">Welcome to ${actualPlanType === 'royal' ? 'Royal' : 'Noble'} Plan! 👑</h1>
+              <h1 style="color:#7c3aed;">Welcome to ${planType} Plan! 👑</h1>
               <p>Hi ${req.user.username}, your subscription has been activated!</p>
               <div style="background:#F3F4F6;padding:20px;border-radius:8px;margin:20px 0;">
                 <ul style="list-style:none;padding:0;">
-                  <li>📦 Plan: <strong>${actualPlanType.toUpperCase()}</strong></li>
+                  <li>📦 Plan: <strong>${planType.toUpperCase()}</strong></li>
                   <li>📸 Posters: <strong>${plan.posters}</strong></li>
                   <li>🎥 Videos: <strong>${plan.videos}</strong></li>
                   <li>⏰ Valid until: <strong>${endDate.toLocaleDateString()}</strong></li>
                 </ul>
               </div>
-              <p>Order ID: ${order_id}</p>
             </div>`);
 
-        console.log('✅ Subscription activated:', actualPlanType, 'for user:', req.user.id);
-        res.json({ success: true, message: 'Payment verified and subscription activated', subscription: { plan: actualPlanType, endDate, posters: plan.posters, videos: plan.videos } });
+        res.json({ success: true, message: 'Payment verified and subscription activated' });
     } catch (error) {
-        console.error('❌ Payment verification error:', error.response?.data || error.message);
+        console.error('❌ Razorpay verification error:', error);
         res.status(500).json({ error: 'Payment verification failed' });
     }
 });
@@ -2498,8 +2473,11 @@ app.get('/api/search/users', authenticateToken, async (req, res) => {
         const searchTerm = query.trim().toLowerCase();
         const { data: allUsers, error } = await supabase.from('users').select('id,username,email,registration_number,college,profile_pic,bio').limit(100);
         if (error) throw error;
+        
+        const blockedIds = await getBlockedIds(req.user.id);
         const matchedUsers = (allUsers || []).filter(user => {
             if (user.id === req.user.id) return false;
+            if (blockedIds.includes(user.id)) return false;
             return user.username?.toLowerCase().includes(searchTerm) || user.email?.toLowerCase().includes(searchTerm) || user.registration_number?.toLowerCase().includes(searchTerm);
         });
         res.json({ success: true, users: matchedUsers.slice(0, 20), count: matchedUsers.length });
@@ -2508,21 +2486,147 @@ app.get('/api/search/users', authenticateToken, async (req, res) => {
     }
 });
 
+// ══════════════════════════════════════════════════════════════
+// COMBINE ACCOUNTS (PARTNER LINKING)
+// ══════════════════════════════════════════════════════════════
+
+// Send Combine Request
+app.post('/api/combine/request', authenticateToken, async (req, res) => {
+    try {
+        const { receiverId } = req.body;
+        const senderId = req.user.id;
+
+        if (senderId === receiverId) return res.status(400).json({ error: "You can't combine with yourself" });
+
+        // Check if either is already linked
+        const existingLink = await PartnerLink.findOne({
+            $or: [{ user1Id: senderId }, { user2Id: senderId }, { user1Id: receiverId }, { user2Id: receiverId }]
+        });
+        if (existingLink) return res.status(400).json({ error: 'One of the users is already linked to another account' });
+
+        // Create or update request
+        const request = await CombineRequest.findOneAndUpdate(
+            { senderId, receiverId },
+            { status: 'pending' },
+            { upsert: true, new: true }
+        );
+
+        // Notify receiver
+        await pushNotification(receiverId, {
+            type: 'combine_request',
+            message: `❤️ ${req.user.username} sent you a Combine Request!`,
+            from: req.user.username,
+            senderId: senderId
+        });
+
+        res.json({ success: true, message: 'Request sent', request });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to send request' });
+    }
+});
+
+// Get Pending Requests for current user
+app.get('/api/combine/requests', authenticateToken, async (req, res) => {
+    try {
+        const requests = await CombineRequest.find({ receiverId: req.user.id, status: 'pending' });
+        const enriched = await Promise.all(requests.map(async (r) => {
+            const { data: user } = await supabase.from('users').select('id,username,profile_pic').eq('id', r.senderId).single();
+            return { ...r._doc, sender: user };
+        }));
+        res.json({ success: true, requests: enriched });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch requests' });
+    }
+});
+
+// Accept Combine Request
+app.post('/api/combine/accept', authenticateToken, async (req, res) => {
+    try {
+        const { requestId } = req.body;
+        const request = await CombineRequest.findById(requestId);
+
+        if (!request || request.receiverId !== req.user.id) return res.status(404).json({ error: 'Request not found' });
+
+        // Create the Link
+        await PartnerLink.create({ user1Id: request.senderId, user2Id: request.receiverId });
+
+        // Update request status
+        request.status = 'accepted';
+        await request.save();
+
+        // Notify sender
+        await pushNotification(request.senderId, {
+            type: 'combine_accepted',
+            message: `💖 ${req.user.username} accepted your Combine Request!`,
+            from: req.user.username
+        });
+
+        res.json({ success: true, message: 'Accounts linked successfully!' });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to accept request' });
+    }
+});
+
+// Reject Combine Request
+app.post('/api/combine/reject', authenticateToken, async (req, res) => {
+    try {
+        const { requestId } = req.body;
+        await CombineRequest.findByIdAndUpdate(requestId, { status: 'rejected' });
+        res.json({ success: true, message: 'Request rejected' });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to reject request' });
+    }
+});
+
+// Disconnect Partner Link
+app.post('/api/combine/disconnect', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const link = await PartnerLink.findOneAndDelete({
+            $or: [{ user1Id: userId }, { user2Id: userId }]
+        });
+        if (!link) return res.status(404).json({ error: 'No active link found' });
+
+        const partnerId = link.user1Id === userId ? link.user2Id : link.user1Id;
+        await pushNotification(partnerId, {
+            type: 'combine_disconnected',
+            message: `💔 ${req.user.username} has disconnected the account link.`,
+            from: 'System'
+        });
+
+        res.json({ success: true, message: 'Link disconnected' });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to disconnect' });
+    }
+});
+
+
 app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
     try {
         const { userId } = req.params;
         const myUid = req.user.id;
 
-        const [userResult, followersCountResult, followingCountResult, isFollowingResult, isFollowedByResult, likeCountResult, isLikedResult] = await Promise.all([
-            supabase.from('users').select('id,username,email,registration_number,college,profile_pic,cover_photo,bio,badges,community_joined,created_at,note').eq('id', userId).single(),
+        const [userResult, followersCountResult, followingCountResult, isFollowingResult, isFollowedByResult, likeCountResult, isLikedResult, myBlockResult, blockedByResult, partnerLink] = await Promise.all([
+            supabase.from('users').select('id,username,email,registration_number,college,profile_pic,cover_photo,bio,badges,community_joined,created_at,note,is_premium').eq('id', userId).single(),
             supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId),
             supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', userId),
             supabase.from('followers').select('id').eq('follower_id', myUid).eq('following_id', userId).maybeSingle(),
             supabase.from('followers').select('id').eq('follower_id', userId).eq('following_id', myUid).maybeSingle(),
             supabase.from('profile_likes').select('id', { count: 'exact', head: true }).eq('user_id', userId),
-            supabase.from('profile_likes').select('id').eq('user_id', userId).eq('liker_id', myUid).maybeSingle()
+            supabase.from('profile_likes').select('id').eq('user_id', userId).eq('liker_id', myUid).maybeSingle(),
+            Block.findOne({ blockerId: myUid, blockedId: userId }).lean(),
+            Block.findOne({ blockerId: userId, blockedId: myUid }).lean(),
+            PartnerLink.findOne({ $or: [{ user1Id: userId }, { user2Id: userId }] }).lean()
         ]);
         const user = userResult.data;
+
+        // Fetch partner details if linked
+        let partner = null;
+        if (partnerLink) {
+            const partnerId = partnerLink.user1Id === userId ? partnerLink.user2Id : partnerLink.user1Id;
+            const { data: partnerData } = await supabase.from('users').select('id,username,profile_pic,college').eq('id', partnerId).single();
+            partner = partnerData;
+        }
         if (userResult.error || !user) return res.status(404).json({ error: 'User not found' });
 
         // Get post count from MongoDB — won't crash profile if Mongo is down
@@ -2530,7 +2634,23 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
         try { postCount = await Post.countDocuments({ userId }); } catch (_) { }
 
         const isMutualFollow = !!isFollowingResult.data && !!isFollowedByResult.data;
-        res.json({ success: true, user: { ...user, postCount, followersCount: followersCountResult.count || 0, followingCount: followingCountResult.count || 0, profileLikes: likeCountResult.count || 0, isProfileLiked: !!isLikedResult.data, isFollowing: !!isFollowingResult.data, isFollowedBy: !!isFollowedByResult.data, isMutualFollow } });
+        res.json({ 
+            success: true, 
+            user: { 
+                ...user, 
+                postCount, 
+                followersCount: followersCountResult.count || 0, 
+                followingCount: followingCountResult.count || 0, 
+                profileLikes: likeCountResult.count || 0, 
+                isProfileLiked: !!isLikedResult.data, 
+                isFollowing: !!isFollowingResult.data, 
+                isFollowedBy: !!isFollowedByResult.data, 
+                isMutualFollow,
+                isBlocked: !!myBlockResult,
+                isBlockingMe: !!blockedByResult,
+                partner: partner
+            } 
+        });
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch profile' });
     }
@@ -3016,9 +3136,9 @@ app.post('/api/reset-password', async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 app.post('/api/auth/google', async (req, res) => {
     try {
-        const { idToken, email, displayName, photoUrl } = req.body;
-        if (!idToken || !email) {
-            return res.status(400).json({ error: 'Google ID token and email are required' });
+        const { idToken, email: bodyEmail, displayName: bodyDisplayName, photoUrl: bodyPhotoUrl } = req.body;
+        if (!idToken) {
+            return res.status(400).json({ error: 'Google ID token is required' });
         }
 
         // Verify Google ID token using Google's tokeninfo endpoint
@@ -3031,8 +3151,17 @@ app.post('/api/auth/google', async (req, res) => {
             return res.status(401).json({ error: 'Invalid Google token' });
         }
 
-        // Verify email matches
-        if (googleUser.email !== email) {
+        // Extract email/name/photo from verified token, fallback to request body
+        const email = bodyEmail || googleUser.email;
+        const displayName = bodyDisplayName || googleUser.name || googleUser.given_name;
+        const photoUrl = bodyPhotoUrl || googleUser.picture;
+
+        if (!email) {
+            return res.status(400).json({ error: 'Could not determine email from Google token' });
+        }
+
+        // Verify email matches if both are provided
+        if (bodyEmail && googleUser.email && googleUser.email !== bodyEmail) {
             return res.status(401).json({ error: 'Email mismatch' });
         }
 
@@ -3779,12 +3908,20 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
 
         // 3. Merge and sort by timestamp
         let allNotifications = [...redisNotifications, ...platformNotifications];
+        
+        // Filter out notifications from blocked users
+        const blockedIds = await getBlockedIds(userId);
+        allNotifications = allNotifications.filter(n => {
+            if (n.from && blockedIds.includes(n.from)) return false;
+            return true;
+        });
+
         allNotifications.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 
         // Limit total to 50
         allNotifications = allNotifications.slice(0, 50);
 
-        const unreadCount = redisNotifications.filter(n => !n.read).length;
+        const unreadCount = allNotifications.filter(n => n.type !== 'platform' && !n.read).length;
         res.json({ success: true, notifications: allNotifications, unreadCount });
     } catch (error) {
         console.error('❌ Notifications fetch error:', error);
@@ -3822,7 +3959,10 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
         fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
         const { data: messages, error } = await supabase.from('community_messages').select('*').eq('college_name', req.user.college).gte('created_at', fiveDaysAgo.toISOString()).order('created_at', { ascending: true }).limit(500);
         if (error) throw error;
-        let enriched = messages || [];
+        
+        const blockedIds = await getBlockedIds(req.user.id);
+        let enriched = (messages || []).filter(m => !blockedIds.includes(m.sender_id));
+        
         if (enriched.length > 0) {
             const senderIds = [...new Set(enriched.map(m => m.sender_id))];
             const { data: users } = await supabase.from('users').select('id,username,profile_pic').in('id', senderIds);
@@ -4026,10 +4166,17 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
 
         const payload = { ...dm, reply_to: replyToData, senderUser: { id: req.user.id, username: req.user.username, profile_pic: req.user.profile_pic } };
         try {
-            const rSock = userSockets.get(receiverId);
-            if (rSock) {
-                io.to(rSock).emit('new_dm', payload);
-            }
+            // Emit to ALL active sockets of BOTH sender and receiver to ensure multi-device sync
+            const participants = [senderId, receiverId];
+            participants.forEach(uid => {
+                const sockets = userSockets.get(uid);
+                if (sockets) {
+                    sockets.forEach(sid => {
+                        // Don't emit back to the EXACT socket that sent it (it already handled it)
+                        if (sid !== socket.id) io.to(sid).emit('new_dm', payload);
+                    });
+                }
+            });
         } catch (sockErr) {
             console.error('Socket delivery error:', sockErr.message);
         }
