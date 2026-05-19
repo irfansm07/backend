@@ -738,23 +738,41 @@ const CASHFREE_SECRET_KEY = process.env.CASHFREE_SECRET_KEY;
 // ══════════════════════════════════════════════════════════════
 app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
     try {
-        const { amount, planType, isFirstTime } = req.body;
+        const { amount, planType, isFirstTime, returnUrl } = req.body;
         if (!amount || !planType) return res.status(400).json({ error: 'Amount and plan type required' });
         if (amount < 1 || amount > 10000) return res.status(400).json({ error: 'Invalid amount' });
 
-        const options = {
-            amount: amount * 100, // Razorpay takes amount in paise
-            currency: 'INR',
-            receipt: `rcpt_${req.user.id.slice(-8)}_${Date.now()}`,
-            notes: { userId: req.user.id, username: req.user.username, planType, isFirstTime }
-        };
+        const orderId = `order_${req.user.id.slice(-8)}_${Date.now()}`;
 
-        const order = await razorpay.orders.create(options);
+        // Create Cashfree Order
+        const response = await axios.post('https://api.cashfree.com/pg/orders', {
+            order_amount: amount,
+            order_currency: 'INR',
+            order_id: orderId,
+            customer_details: {
+                customer_id: req.user.id,
+                customer_phone: '9999999999', // Placeholder if no phone
+                customer_email: req.user.email || 'customer@example.com',
+                customer_name: req.user.username || 'User'
+            },
+            order_meta: {
+                return_url: returnUrl || `https://www.vibexpert.shop/realvibe?order_id={order_id}&planType=${planType}`
+            }
+        }, {
+            headers: {
+                'x-client-id': process.env.CASHFREE_APP_ID,
+                'x-client-secret': process.env.CASHFREE_SECRET_KEY,
+                'x-api-version': '2023-08-01',
+                'Content-Type': 'application/json'
+            }
+        });
+
+        const orderData = response.data;
         
         // Store order record
         try {
             await supabase.from('payment_orders').insert([{
-                user_id: req.user.id, order_id: order.id, amount, plan_type: planType, status: 'created'
+                user_id: req.user.id, order_id: orderId, amount, plan_type: planType, status: 'created'
             }]);
         } catch (dbErr) {
             console.warn('⚠️ payment_orders insert failed:', dbErr.message);
@@ -762,33 +780,42 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
 
         res.json({ 
             success: true, 
-            orderId: order.id, 
-            amount, 
-            razorpayKeyId: process.env.RAZORPAY_KEY_ID || 'rzp_live_SN88LJaubRdhxS' 
+            orderId: orderId, 
+            payment_session_id: orderData.payment_session_id,
+            amount 
         });
     } catch (error) {
-        console.error('❌ Create Razorpay order error:', error);
+        console.error('❌ Create Cashfree order error:', error.response?.data || error.message);
         res.status(500).json({ error: 'Failed to create payment order' });
     }
 });
 
 app.post('/api/payment/verify', authenticateToken, async (req, res) => {
     try {
-        const { razorpay_order_id, razorpay_payment_id, razorpay_signature, planType } = req.body;
+        const { order_id, planType } = req.body;
         
-        // Verify signature
-        const generated_signature = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-            .update(razorpay_order_id + '|' + razorpay_payment_id)
-            .digest('hex');
+        if (!order_id) {
+            return res.status(400).json({ success: false, error: 'Order ID is required' });
+        }
 
-        if (generated_signature !== razorpay_signature)
-            return res.status(400).json({ success: false, error: 'Invalid payment signature' });
+        // Verify Cashfree order status
+        const response = await axios.get(`https://api.cashfree.com/pg/orders/${order_id}`, {
+            headers: {
+                'x-client-id': process.env.CASHFREE_APP_ID,
+                'x-client-secret': process.env.CASHFREE_SECRET_KEY,
+                'x-api-version': '2023-08-01'
+            }
+        });
+
+        if (response.data.order_status !== 'PAID') {
+            return res.status(400).json({ success: false, error: 'Payment is not successful' });
+        }
 
         const plans = { 
             noble: { posters: 3, videos: 1, days: 7 }, 
             royal: { posters: 4, videos: 4, days: 10 } 
         };
-        const plan = plans[planType.toLowerCase()];
+        const plan = plans[(planType || 'noble').toLowerCase()];
         if (!plan) return res.status(400).json({ error: 'Invalid plan type' });
         
         const endDate = new Date(Date.now() + plan.days * 24 * 60 * 60 * 1000);
@@ -808,7 +835,7 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
         try {
             await supabase.from('payment_orders').update({
                 status: 'completed', updated_at: new Date()
-            }).eq('order_id', razorpay_order_id);
+            }).eq('order_id', order_id);
         } catch (dbErr) {
             console.warn('⚠️ payment_orders update failed:', dbErr.message);
         }
@@ -829,7 +856,7 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
 
         res.json({ success: true, message: 'Payment verified and subscription activated' });
     } catch (error) {
-        console.error('❌ Razorpay verification error:', error);
+        console.error('❌ Cashfree verification error:', error.response?.data || error.message);
         res.status(500).json({ error: 'Payment verification failed' });
     }
 });
