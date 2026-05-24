@@ -1,0 +1,11 @@
+node_modules/
+.env
+*.log
+*.js.map
+.DS_Store
+tmp/
+check_irfan_posts.js
+cleanup_database.js
+inspect_posts.js
+test_posts_users.js
+test_supabase_users.js

@@ -27,16 +27,16 @@ mongoose.connection.on('disconnected', () => {
 
 // Posts
 const postSchema = new mongoose.Schema({
-    userId:   { type: String, required: true, index: true },
-    content:  { type: String, default: '' },
-    media:    [{
-        url:       String,
+    userId: { type: String, required: true, index: true },
+    content: { type: String, default: '' },
+    media: [{
+        url: String,
         public_id: String,
-        type:      { type: String, enum: ['image', 'video', 'audio'] }
+        type: { type: String, enum: ['image', 'video', 'audio'] }
     }],
     postedTo: { type: String, enum: ['profile', 'community'], default: 'profile' },
-    college:  { type: String, default: null },
-    music:    { type: mongoose.Schema.Types.Mixed, default: null },
+    college: { type: String, default: null },
+    music: { type: mongoose.Schema.Types.Mixed, default: null },
     stickers: { type: [mongoose.Schema.Types.Mixed], default: [] },
     is_real_vibe: { type: Boolean, default: false },
     updatedAt: { type: Date }
@@ -55,8 +55,8 @@ postLikeSchema.index({ postId: 1, userId: 1 }, { unique: true });
 
 // Post Comments
 const postCommentSchema = new mongoose.Schema({
-    postId:  { type: mongoose.Schema.Types.ObjectId, ref: 'Post', required: true, index: true },
-    userId:  { type: String, required: true },
+    postId: { type: mongoose.Schema.Types.ObjectId, ref: 'Post', required: true, index: true },
+    userId: { type: String, required: true },
     content: { type: String, required: true }
 }, { timestamps: true });
 
@@ -68,18 +68,20 @@ const postShareSchema = new mongoose.Schema({
 
 // RealVibes
 const realVibeSchema = new mongoose.Schema({
-    userId:         { type: String, required: true, index: true },
-    caption:        { type: String, default: '' },
-    mediaUrl:       { type: String, required: true },
-    mediaPublicId:  { type: String },
-    mediaType:      { type: String, enum: ['image', 'video'], required: true },
-    planType:       { type: String, enum: ['noble', 'royal'], required: true },
-    visibility:     { type: String, enum: ['public', 'college'], default: 'public' },
-    status:         { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending', index: true },
-    rejectionReason:{ type: String, default: null },
-    reviewedAt:     { type: Date, default: null },
-    reviewedByAdmin:{ type: String, default: null },
-    expiresAt:      { type: Date, required: true, index: true }
+    userId: { type: String, required: true, index: true },
+    caption: { type: String, default: '' },
+    mediaUrl: { type: String, required: true },
+    mediaPublicId: { type: String },
+    mediaType: { type: String, enum: ['image', 'video'], required: true },
+    planType: { type: String, enum: ['noble', 'royal'], required: true },
+    visibility: { type: String, enum: ['public', 'college'], default: 'public' },
+    status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending', index: true },
+    rejectionReason: { type: String, default: null },
+    reviewedAt: { type: Date, default: null },
+    reviewedByAdmin: { type: String, default: null },
+    expiresAt: { type: Date, required: true, index: true },
+    brandLink: { type: String, default: null },
+    brandLinkType: { type: String, default: 'website' }
 }, { timestamps: true });
 
 // TTL index: MongoDB auto-deletes expired RealVibes
@@ -95,8 +97,8 @@ realVibeLikeSchema.index({ vibeId: 1, userId: 1 }, { unique: true });
 
 // RealVibe Comments
 const realVibeCommentSchema = new mongoose.Schema({
-    vibeId:  { type: mongoose.Schema.Types.ObjectId, ref: 'RealVibe', required: true, index: true },
-    userId:  { type: String, required: true },
+    vibeId: { type: mongoose.Schema.Types.ObjectId, ref: 'RealVibe', required: true, index: true },
+    userId: { type: String, required: true },
     content: { type: String, required: true }
 }, { timestamps: true });
 
@@ -245,7 +247,7 @@ const collegeRequestSchema = new mongoose.Schema({
 // Both sides are checked: blocked users can't see blocker's content & vice versa.
 const blockSchema = new mongoose.Schema({
     blockerId: { type: String, required: true, index: true },  // who pressed Block
-    blockedId:  { type: String, required: true, index: true }   // who got blocked
+    blockedId: { type: String, required: true, index: true }   // who got blocked
 }, { timestamps: true });
 
 // Unique: a user can only block another user once
@@ -253,25 +255,45 @@ blockSchema.index({ blockerId: 1, blockedId: 1 }, { unique: true });
 // Fast reverse lookup: "who has blocked me?"
 blockSchema.index({ blockedId: 1, blockerId: 1 });
 
+// ── Combine Requests (Partner Linking) ──────────────────────────
+const combineRequestSchema = new mongoose.Schema({
+    senderId: { type: String, required: true, index: true },
+    receiverId: { type: String, required: true, index: true },
+    status: { type: String, enum: ['pending', 'accepted', 'rejected'], default: 'pending' }
+}, { timestamps: true });
+
+combineRequestSchema.index({ senderId: 1, receiverId: 1 }, { unique: true });
+
+// ── Partner Links (Established Connections) ─────────────────────
+const partnerLinkSchema = new mongoose.Schema({
+    user1Id: { type: String, required: true, index: true },
+    user2Id: { type: String, required: true, index: true }
+}, { timestamps: true });
+
+partnerLinkSchema.index({ user1Id: 1 }, { unique: true });
+partnerLinkSchema.index({ user2Id: 1 }, { unique: true });
+
 // ── Models ────────────────────────────────────────────────────
-const Post            = mongoose.models.Post            || mongoose.model('Post',            postSchema);
-const PostLike        = mongoose.models.PostLike        || mongoose.model('PostLike',        postLikeSchema);
-const PostComment     = mongoose.models.PostComment     || mongoose.model('PostComment',     postCommentSchema);
-const PostShare       = mongoose.models.PostShare       || mongoose.model('PostShare',       postShareSchema);
-const RealVibe        = mongoose.models.RealVibe        || mongoose.model('RealVibe',        realVibeSchema);
-const RealVibeLike    = mongoose.models.RealVibeLike    || mongoose.model('RealVibeLike',    realVibeLikeSchema);
+const Post = mongoose.models.Post || mongoose.model('Post', postSchema);
+const PostLike = mongoose.models.PostLike || mongoose.model('PostLike', postLikeSchema);
+const PostComment = mongoose.models.PostComment || mongoose.model('PostComment', postCommentSchema);
+const PostShare = mongoose.models.PostShare || mongoose.model('PostShare', postShareSchema);
+const RealVibe = mongoose.models.RealVibe || mongoose.model('RealVibe', realVibeSchema);
+const RealVibeLike = mongoose.models.RealVibeLike || mongoose.model('RealVibeLike', realVibeLikeSchema);
 const RealVibeComment = mongoose.models.RealVibeComment || mongoose.model('RealVibeComment', realVibeCommentSchema);
-const SellerRequest   = mongoose.models.SellerRequest   || mongoose.model('SellerRequest',   sellerRequestSchema);
+const SellerRequest = mongoose.models.SellerRequest || mongoose.model('SellerRequest', sellerRequestSchema);
 const PlatformNotification = mongoose.models.PlatformNotification || mongoose.model('PlatformNotification', platformNotificationSchema);
-const ClientRequest   = mongoose.models.ClientRequest   || mongoose.model('ClientRequest',   clientRequestSchema);
-const ClientProduct   = mongoose.models.ClientProduct   || mongoose.model('ClientProduct',   clientProductSchema);
-const OrderMessage    = mongoose.models.OrderMessage    || mongoose.model('OrderMessage',    orderMessageSchema);
-const Complaint       = mongoose.models.Complaint       || mongoose.model('Complaint',       complaintSchema);
+const ClientRequest = mongoose.models.ClientRequest || mongoose.model('ClientRequest', clientRequestSchema);
+const ClientProduct = mongoose.models.ClientProduct || mongoose.model('ClientProduct', clientProductSchema);
+const OrderMessage = mongoose.models.OrderMessage || mongoose.model('OrderMessage', orderMessageSchema);
+const Complaint = mongoose.models.Complaint || mongoose.model('Complaint', complaintSchema);
 const PasswordResetCode = mongoose.models.PasswordResetCode || mongoose.model('PasswordResetCode', passwordResetCodeSchema);
-const Coupon          = mongoose.models.Coupon          || mongoose.model('Coupon',          couponSchema);
-const ProductReview   = mongoose.models.ProductReview   || mongoose.model('ProductReview',   productReviewSchema);
-const CollegeRequest  = mongoose.models.CollegeRequest  || mongoose.model('CollegeRequest',  collegeRequestSchema);
-const Block           = mongoose.models.Block           || mongoose.model('Block',           blockSchema);
+const Coupon = mongoose.models.Coupon || mongoose.model('Coupon', couponSchema);
+const ProductReview = mongoose.models.ProductReview || mongoose.model('ProductReview', productReviewSchema);
+const CollegeRequest = mongoose.models.CollegeRequest || mongoose.model('CollegeRequest', collegeRequestSchema);
+const Block = mongoose.models.Block || mongoose.model('Block', blockSchema);
+const CombineRequest = mongoose.models.CombineRequest || mongoose.model('CombineRequest', combineRequestSchema);
+const PartnerLink = mongoose.models.PartnerLink || mongoose.model('PartnerLink', partnerLinkSchema);
 
 module.exports = {
     connectMongo,
@@ -292,5 +314,7 @@ module.exports = {
     Coupon,
     ProductReview,
     CollegeRequest,
-    Block
+    Block,
+    CombineRequest,
+    PartnerLink
 };

@@ -295,28 +295,36 @@ const razorpay = new Razorpay({
 // ══════════════════════════════════════════════════════════════
 // CLOUDINARY UPLOAD HELPER
 // ══════════════════════════════════════════════════════════════
-const uploadToCloudinary = async (fileBuffer, mimeType, folder = 'vibexpert/general') => {
-    if (!fileBuffer || fileBuffer.length === 0) {
-        throw new Error('Empty file buffer — nothing to upload');
-    }
-    const resourceType = mimeType.startsWith('video/') ? 'video'
-        : mimeType.startsWith('audio/') ? 'video'
-            : 'image';
+const uploadToCloudinary = (fileBuffer, mimeType, folder = 'vibexpert/general') => {
+    return new Promise((resolve, reject) => {
+        if (!fileBuffer || fileBuffer.length === 0) {
+            return reject(new Error('Empty file buffer — nothing to upload'));
+        }
+        const resourceType = mimeType.startsWith('video/') ? 'video'
+            : mimeType.startsWith('audio/') ? 'video'
+                : 'image';
 
-    // Convert buffer to base64 data URI for a single-request upload
-    const base64Data = fileBuffer.toString('base64');
-    const dataUri = `data:${mimeType};base64,${base64Data}`;
+        const uploadStream = cloudinaryLib.uploader.upload_stream(
+            {
+                resource_type: resourceType,
+                folder: folder,
+            },
+            (error, result) => {
+                if (error) {
+                    console.error(`❌ Cloudinary upload error [${folder}]:`, error.message, error.http_code || '');
+                    return reject(error);
+                }
+                resolve(result);
+            }
+        );
 
-    try {
-        const result = await cloudinaryLib.uploader.upload(dataUri, {
-            resource_type: resourceType,
-            folder
-        });
-        return result;
-    } catch (error) {
-        console.error(`❌ Cloudinary upload error [${folder}]:`, error.message, error.http_code || '');
-        throw error;
-    }
+        // Pipe the buffer into the upload stream
+        const { Readable } = require('stream');
+        const readableStream = new Readable();
+        readableStream.push(fileBuffer);
+        readableStream.push(null);
+        readableStream.pipe(uploadStream);
+    });
 };
 
 // ══════════════════════════════════════════════════════════════
@@ -768,7 +776,7 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
         });
 
         const orderData = response.data;
-        
+
         // Store order record
         try {
             await supabase.from('payment_orders').insert([{
@@ -778,11 +786,11 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
             console.warn('⚠️ payment_orders insert failed:', dbErr.message);
         }
 
-        res.json({ 
-            success: true, 
-            orderId: orderId, 
+        res.json({
+            success: true,
+            orderId: orderId,
             payment_session_id: orderData.payment_session_id,
-            amount 
+            amount
         });
     } catch (error) {
         console.error('❌ Create Cashfree order error:', error.response?.data || error.message);
@@ -793,7 +801,7 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
 app.post('/api/payment/verify', authenticateToken, async (req, res) => {
     try {
         const { order_id, planType } = req.body;
-        
+
         if (!order_id) {
             return res.status(400).json({ success: false, error: 'Order ID is required' });
         }
@@ -811,13 +819,13 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
             return res.status(400).json({ success: false, error: 'Payment is not successful' });
         }
 
-        const plans = { 
-            noble: { posters: 3, videos: 1, days: 7 }, 
-            royal: { posters: 4, videos: 4, days: 10 } 
+        const plans = {
+            noble: { posters: 3, videos: 1, days: 7 },
+            royal: { posters: 4, videos: 4, days: 10 }
         };
         const plan = plans[(planType || 'noble').toLowerCase()];
         if (!plan) return res.status(400).json({ error: 'Invalid plan type' });
-        
+
         const endDate = new Date(Date.now() + plan.days * 24 * 60 * 60 * 1000);
 
         const { error: userUpdateErr } = await supabase.from('users').update({
@@ -915,26 +923,41 @@ app.post('/api/shop/create-order', authenticateToken, async (req, res) => {
         const { items, totalAmount, shippingAddress } = req.body;
         if (!items || !items.length || !totalAmount) return res.status(400).json({ error: 'Cart items and total amount are required' });
 
-        // ── Stock validation ──────────────────────────────────────
+        // ── Stock validation & enrichment ───────────────────────
+        const enrichedItems = [];
         for (const item of items) {
-            if (item.productId || item.id) {
+            const productId = item.productId || item.id;
+            if (productId) {
                 try {
-                    const product = await ClientProduct.findById(item.productId || item.id);
+                    const product = await ClientProduct.findById(productId);
                     if (product) {
                         if (product.stockQuantity != null && product.stockQuantity <= 0) {
                             return res.status(400).json({ error: `"${product.name}" is out of stock.` });
                         }
                         if (product.stockQuantity != null && item.quantity > product.stockQuantity) {
-                            return res.status(400).json({ error: `Only ${product.stockQuantity} units of "${product.name}" are available. Please reduce quantity.` });
+                            return res.status(400).json({ error: `Only ${product.stockQuantity} units of "${product.name}" are available.` });
                         }
+                        // Save snapshot
+                        enrichedItems.push({
+                            ...item,
+                            name: product.name,
+                            image: (product.images && product.images.length > 0) ? product.images[0].url : '',
+                            price: product.price
+                        });
+                    } else {
+                        enrichedItems.push(item);
                     }
-                } catch (e) { /* product lookup failed — allow order to proceed */ }
+                } catch (e) {
+                    enrichedItems.push(item);
+                }
+            } else {
+                enrichedItems.push(item);
             }
         }
 
-        const options = { amount: Math.round(totalAmount * 100), currency: 'INR', receipt: `shop_${req.user.id.slice(-8)}_${Date.now()}`, notes: { userId: req.user.id, username: req.user.username, itemCount: items.length, source: 'vibexpert.shop' } };
+        const options = { amount: Math.round(totalAmount * 100), currency: 'INR', receipt: `shop_${req.user.id.slice(-8)}_${Date.now()}`, notes: { userId: req.user.id, username: req.user.username, itemCount: enrichedItems.length, source: 'vibexpert.shop' } };
         const order = await razorpay.orders.create(options);
-        await supabase.from('shop_orders').insert([{ user_id: req.user.id, order_id: order.id, items: JSON.stringify(items), total_amount: totalAmount, shipping_address: shippingAddress ? JSON.stringify(shippingAddress) : null, status: 'created' }]);
+        await supabase.from('shop_orders').insert([{ user_id: req.user.id, order_id: order.id, items: JSON.stringify(enrichedItems), total_amount: totalAmount, shipping_address: shippingAddress ? JSON.stringify(shippingAddress) : null, status: 'created' }]);
         res.json({ success: true, orderId: order.id, amount: totalAmount, currency: 'INR', razorpayKeyId: process.env.RAZORPAY_KEY_ID });
     } catch (error) {
         res.status(500).json({ error: 'Failed to create shop order' });
@@ -1056,10 +1079,78 @@ app.post('/api/shop/verify-payment', authenticateToken, async (req, res) => {
 
 app.get('/api/shop/orders', authenticateToken, async (req, res) => {
     try {
-        const { data: orders } = await supabase.from('shop_orders').select('*').eq('user_id', req.user.id).order('created_at', { ascending: false });
-        res.json({ success: true, orders: orders || [] });
+        const { data: orders, error } = await supabase.from('shop_orders').select('*').eq('user_id', req.user.id).order('created_at', { ascending: false });
+        if (error) throw error;
+
+        // Populate product details for each order's items
+        const enrichedOrders = await Promise.all((orders || []).map(async (order) => {
+            try {
+                let items = [];
+                if (typeof order.items === 'string') {
+                    items = JSON.parse(order.items);
+                } else {
+                    items = order.items || [];
+                }
+
+                const enrichedItems = await Promise.all(items.map(async (item) => {
+                    try {
+                        const productId = item.productId || item.id;
+                        if (productId) {
+                            const product = await ClientProduct.findById(productId).select('name images').lean();
+                            if (product) {
+                                const imageUrl = (product.images && product.images.length > 0) ? product.images[0].url : '';
+                                return {
+                                    ...item,
+                                    productName: product.name,
+                                    productImage: imageUrl,
+                                    // Add these as fallbacks too
+                                    name: product.name,
+                                    image: imageUrl
+                                };
+                            }
+                        }
+                    } catch (e) {
+                        console.warn(`Failed to enrich product ${item.productId}:`, e.message);
+                    }
+                    return item;
+                }));
+
+                return { ...order, items: enrichedItems };
+            } catch (e) {
+                console.warn(`Failed to process order ${order.order_id} items:`, e.message);
+                return order;
+            }
+        }));
+
+        res.json({ success: true, orders: enrichedOrders });
     } catch (error) {
+        console.error('Fetch orders error:', error);
         res.status(500).json({ error: 'Failed to fetch order history' });
+    }
+});
+
+app.delete('/api/shop/orders/:orderId', authenticateToken, async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        // Verify ownership and status
+        const { data: order } = await supabase.from('shop_orders').select('user_id, status').eq('order_id', orderId).single();
+
+        if (!order) return res.status(404).json({ error: 'Order not found' });
+        if (order.user_id !== req.user.id) return res.status(403).json({ error: 'Unauthorized' });
+
+        // Only allow deleting orders that aren't paid/processed yet
+        const subStatuses = ['initialized', 'created', 'cancelled', 'failed'];
+        if (!subStatuses.includes(order.status.toLowerCase())) {
+            return res.status(400).json({ error: `Cannot remove an order with status: ${order.status}` });
+        }
+
+        const { error } = await supabase.from('shop_orders').delete().eq('order_id', orderId);
+        if (error) throw error;
+
+        res.json({ success: true, message: 'Order removed from history' });
+    } catch (error) {
+        console.error('Delete order error:', error);
+        res.status(500).json({ error: 'Failed to delete order' });
     }
 });
 
@@ -2500,7 +2591,7 @@ app.get('/api/search/users', authenticateToken, async (req, res) => {
         const searchTerm = query.trim().toLowerCase();
         const { data: allUsers, error } = await supabase.from('users').select('id,username,email,registration_number,college,profile_pic,bio').limit(100);
         if (error) throw error;
-        
+
         const blockedIds = await getBlockedIds(req.user.id);
         const matchedUsers = (allUsers || []).filter(user => {
             if (user.id === req.user.id) return false;
@@ -2543,7 +2634,8 @@ app.post('/api/combine/request', authenticateToken, async (req, res) => {
             type: 'combine_request',
             message: `❤️ ${req.user.username} sent you a Combine Request!`,
             from: req.user.username,
-            senderId: senderId
+            senderId: senderId,
+            requestId: request._id.toString()
         });
 
         res.json({ success: true, message: 'Request sent', request });
@@ -2633,26 +2725,39 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
         const { userId } = req.params;
         const myUid = req.user.id;
 
+        // Each query has its own catch so one missing table doesn't crash the whole profile
         const [userResult, followersCountResult, followingCountResult, isFollowingResult, isFollowedByResult, likeCountResult, isLikedResult, myBlockResult, blockedByResult, partnerLink] = await Promise.all([
-            supabase.from('users').select('id,username,email,registration_number,college,profile_pic,cover_photo,bio,badges,community_joined,created_at,note,is_premium').eq('id', userId).single(),
-            supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId),
-            supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', userId),
-            supabase.from('followers').select('id').eq('follower_id', myUid).eq('following_id', userId).maybeSingle(),
-            supabase.from('followers').select('id').eq('follower_id', userId).eq('following_id', myUid).maybeSingle(),
-            supabase.from('profile_likes').select('id', { count: 'exact', head: true }).eq('user_id', userId),
-            supabase.from('profile_likes').select('id').eq('user_id', userId).eq('liker_id', myUid).maybeSingle(),
-            Block.findOne({ blockerId: myUid, blockedId: userId }).lean(),
-            Block.findOne({ blockerId: userId, blockedId: myUid }).lean(),
+            supabase.from('users').select('id,username,email,registration_number,college,profile_pic,cover_photo,bio,badges,community_joined,created_at,note,is_premium').eq('id', userId).single()
+                .catch(e => { console.error('⚠️ Profile: user query failed:', e.message); return { data: null, error: e }; }),
+            supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId)
+                .catch(() => ({ count: 0 })),
+            supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', userId)
+                .catch(() => ({ count: 0 })),
+            supabase.from('followers').select('id').eq('follower_id', myUid).eq('following_id', userId).maybeSingle()
+                .catch(() => ({ data: null })),
+            supabase.from('followers').select('id').eq('follower_id', userId).eq('following_id', myUid).maybeSingle()
+                .catch(() => ({ data: null })),
+            supabase.from('profile_likes').select('id', { count: 'exact', head: true }).eq('user_id', userId)
+                .catch(() => ({ count: 0 })),
+            supabase.from('profile_likes').select('id').eq('user_id', userId).eq('liker_id', myUid).maybeSingle()
+                .catch(() => ({ data: null })),
+            Block.findOne({ blockerId: myUid, blockedId: userId }).lean()
+                .catch(() => null),
+            Block.findOne({ blockerId: userId, blockedId: myUid }).lean()
+                .catch(() => null),
             PartnerLink.findOne({ $or: [{ user1Id: userId }, { user2Id: userId }] }).lean()
+                .catch(() => null)
         ]);
         const user = userResult.data;
 
         // Fetch partner details if linked
         let partner = null;
         if (partnerLink) {
-            const partnerId = partnerLink.user1Id === userId ? partnerLink.user2Id : partnerLink.user1Id;
-            const { data: partnerData } = await supabase.from('users').select('id,username,profile_pic,college').eq('id', partnerId).single();
-            partner = partnerData;
+            try {
+                const partnerId = partnerLink.user1Id === userId ? partnerLink.user2Id : partnerLink.user1Id;
+                const { data: partnerData } = await supabase.from('users').select('id,username,profile_pic,college').eq('id', partnerId).single();
+                partner = partnerData;
+            } catch (_) { /* non-critical */ }
         }
         if (userResult.error || !user) return res.status(404).json({ error: 'User not found' });
 
@@ -2661,24 +2766,25 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
         try { postCount = await Post.countDocuments({ userId }); } catch (_) { }
 
         const isMutualFollow = !!isFollowingResult.data && !!isFollowedByResult.data;
-        res.json({ 
-            success: true, 
-            user: { 
-                ...user, 
-                postCount, 
-                followersCount: followersCountResult.count || 0, 
-                followingCount: followingCountResult.count || 0, 
-                profileLikes: likeCountResult.count || 0, 
-                isProfileLiked: !!isLikedResult.data, 
-                isFollowing: !!isFollowingResult.data, 
-                isFollowedBy: !!isFollowedByResult.data, 
+        res.json({
+            success: true,
+            user: {
+                ...user,
+                postCount,
+                followersCount: followersCountResult.count || 0,
+                followingCount: followingCountResult.count || 0,
+                profileLikes: likeCountResult.count || 0,
+                isProfileLiked: !!isLikedResult.data,
+                isFollowing: !!isFollowingResult.data,
+                isFollowedBy: !!isFollowedByResult.data,
                 isMutualFollow,
                 isBlocked: !!myBlockResult,
                 isBlockingMe: !!blockedByResult,
                 partner: partner
-            } 
+            }
         });
     } catch (error) {
+        console.error('❌ Profile fetch error for', req.params.userId, ':', error.message, error.stack?.split('\n')[1] || '');
         res.status(500).json({ error: 'Failed to fetch profile' });
     }
 });
@@ -2756,10 +2862,71 @@ app.delete('/api/user/profile-photo', authenticateToken, async (req, res) => {
     try {
         const { error } = await supabase.from('users').update({ profile_pic: null }).eq('id', req.user.id);
         if (error) throw error;
+
+        const { data: updatedUser } = await supabase.from('users').select('*').eq('id', req.user.id).single();
+
         io.emit('profile_updated', { userId: req.user.id, profile_pic: null });
-        res.json({ success: true, message: 'Profile photo removed' });
+        res.json({ success: true, message: 'Profile photo removed', user: updatedUser });
     } catch (error) {
         console.error('Profile photo remove error:', error);
+        res.status(500).json({ error: 'Failed to remove photo' });
+    }
+});
+
+// Backward compatibility endpoints for mobile client
+app.post('/api/profile/upload-pic', authenticateToken, upload.single('media'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+        const result = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/profiles');
+        const photoUrl = result.secure_url;
+        const { error } = await supabase.from('users').update({ profile_pic: photoUrl }).eq('id', req.user.id);
+        if (error) throw error;
+
+        // Fetch updated user to return in expected schema
+        const { data: updatedUser } = await supabase.from('users').select('*').eq('id', req.user.id).single();
+
+        io.emit('profile_updated', { userId: req.user.id, profile_pic: photoUrl });
+        res.json({
+            success: true,
+            url: photoUrl,
+            user: {
+                id: updatedUser.id,
+                username: updatedUser.username,
+                email: updatedUser.email,
+                profilePic: updatedUser.profile_pic,
+                profile_pic: updatedUser.profile_pic,
+                bio: updatedUser.bio || ''
+            }
+        });
+    } catch (error) {
+        console.error('Profile photo error (legacy):', error);
+        res.status(500).json({ error: 'Failed to upload photo' });
+    }
+});
+
+app.delete('/api/profile/remove-pic', authenticateToken, async (req, res) => {
+    try {
+        const { error } = await supabase.from('users').update({ profile_pic: null }).eq('id', req.user.id);
+        if (error) throw error;
+
+        // Fetch updated user
+        const { data: updatedUser } = await supabase.from('users').select('*').eq('id', req.user.id).single();
+
+        io.emit('profile_updated', { userId: req.user.id, profile_pic: null });
+        res.json({
+            success: true,
+            message: 'Profile photo removed',
+            user: {
+                id: updatedUser.id,
+                username: updatedUser.username,
+                email: updatedUser.email,
+                profilePic: null,
+                profile_pic: null,
+                bio: updatedUser.bio || ''
+            }
+        });
+    } catch (error) {
+        console.error('Profile photo remove error (legacy):', error);
         res.status(500).json({ error: 'Failed to remove photo' });
     }
 });
@@ -3425,24 +3592,46 @@ const enrichPosts = async (posts, currentUserId) => {
     const userMap = {};
     (users || []).forEach(u => { userMap[u.id] = u; });
 
-    return await Promise.all(posts.map(async (post) => {
+    const postIds = posts.map(p => p._id);
+    const [likesData, commentsData, sharesData, myLikes] = await Promise.all([
+        PostLike.aggregate([
+            { $match: { postId: { $in: postIds } } },
+            { $group: { _id: "$postId", count: { $sum: 1 } } }
+        ]),
+        PostComment.aggregate([
+            { $match: { postId: { $in: postIds } } },
+            { $group: { _id: "$postId", count: { $sum: 1 } } }
+        ]),
+        PostShare.aggregate([
+            { $match: { postId: { $in: postIds } } },
+            { $group: { _id: "$postId", count: { $sum: 1 } } }
+        ]),
+        currentUserId ? PostLike.find({ postId: { $in: postIds }, userId: currentUserId }).lean() : []
+    ]);
+
+    const likeMap = {};
+    (likesData || []).forEach(item => { if (item._id) likeMap[item._id.toString()] = item.count; });
+
+    const commentMap = {};
+    (commentsData || []).forEach(item => { if (item._id) commentMap[item._id.toString()] = item.count; });
+
+    const shareMap = {};
+    (sharesData || []).forEach(item => { if (item._id) shareMap[item._id.toString()] = item.count; });
+
+    const myLikesSet = new Set((myLikes || []).map(l => l.postId ? l.postId.toString() : ''));
+
+    return posts.map((post) => {
         const postId = post._id.toString();
-        const [likeCount, commentCount, shareCount, isLiked] = await Promise.all([
-            PostLike.countDocuments({ postId: post._id }),
-            PostComment.countDocuments({ postId: post._id }),
-            PostShare.countDocuments({ postId: post._id }),
-            PostLike.findOne({ postId: post._id, userId: currentUserId })
-        ]);
         return {
             ...post.toObject(),
             id: postId,
             users: userMap[post.userId] || { id: post.userId, username: 'User', profile_pic: null, college: null },
-            like_count: likeCount,
-            comment_count: commentCount,
-            share_count: shareCount,
-            is_liked: !!isLiked
+            like_count: likeMap[postId] || 0,
+            comment_count: commentMap[postId] || 0,
+            share_count: shareMap[postId] || 0,
+            is_liked: myLikesSet.has(postId)
         };
-    }));
+    });
 };
 
 // GET my posts
@@ -3605,6 +3794,60 @@ app.get('/api/posts/shared', authenticateToken, async (req, res) => {
     }
 });
 
+// GET single post (also checks RealVibes)
+app.get('/api/posts/:postId', authenticateToken, async (req, res) => {
+    try {
+        const { postId } = req.params;
+        console.log(`[DEBUG] Fetching single item: ${postId}`);
+
+        // standard validation for mongodb ID
+        const isValidId = mongoose.Types.ObjectId.isValid(postId);
+        console.log(`[DEBUG] isValidId: ${isValidId}`);
+
+        if (isValidId) {
+            let post = await Post.findById(postId);
+            if (post) {
+                console.log(`[DEBUG] Found regular post: ${postId}`);
+                const enriched = await enrichPosts([post], req.user.id);
+                return res.json({ success: true, post: enriched[0] });
+            }
+
+            // Try as a vibeId
+            let vibe = await RealVibe.findById(postId);
+            if (vibe) {
+                console.log(`[DEBUG] Found RealVibe: ${postId}`);
+                const enriched = await enrichVibes([vibe], req.user.id);
+                const vibeObj = enriched[0];
+                if (!vibeObj.media && vibeObj.media_url) {
+                    vibeObj.media = [{ url: vibeObj.media_url, type: vibeObj.media_type || 'video', id: 'v_media_' + vibeObj.id }];
+                }
+                if (!vibeObj.content && vibeObj.caption) vibeObj.content = vibeObj.caption;
+                return res.json({ success: true, post: vibeObj, isVibe: true });
+            }
+            console.log(`[DEBUG] No post or vibe found for ID: ${postId}`);
+        } else {
+            console.log(`[DEBUG] Invalid ObjectId format: ${postId}`);
+        }
+
+        res.status(404).json({ success: false, error: 'Post not found', id: postId });
+    } catch (error) {
+        console.error('Fetch single post error:', error);
+        res.status(500).json({ error: 'Failed to fetch post' });
+    }
+});
+
+// GET single RealVibe
+app.get('/api/realvibes/:vibeId', authenticateToken, async (req, res) => {
+    try {
+        const vibe = await RealVibe.findById(req.params.vibeId);
+        if (!vibe) return res.status(404).json({ error: 'RealVibe not found' });
+        const enriched = await enrichVibes([vibe], req.user.id);
+        res.json({ success: true, vibe: enriched[0] });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to load RealVibe' });
+    }
+});
+
 // GET all posts (global feed — Zero Velocity)
 // Returns profile + both posts for the "0 Velocity" feed
 app.get('/api/posts', authenticateToken, async (req, res) => {
@@ -3617,15 +3860,25 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
         const posts = await Post.find(query).sort({ createdAt: -1 }).limit(50);
         const enriched = await enrichPosts(posts, req.user.id);
 
-        // Check follow status for each post author
-        const postWithFollow = await Promise.all(enriched.map(async (post) => {
-            let isFollowingAuthor = false;
-            if (post.userId && post.userId !== req.user.id) {
-                const { data: fc } = await supabase.from('followers').select('id').eq('follower_id', req.user.id).eq('following_id', post.userId).maybeSingle();
-                isFollowingAuthor = !!fc;
+        // Check follow status in a single bulk query
+        const authorIds = [...new Set(enriched.map(p => p.userId).filter(id => id && id !== req.user.id))];
+        const followSet = new Set();
+        if (authorIds.length > 0) {
+            const { data: followRecords } = await supabase
+                .from('followers')
+                .select('following_id')
+                .eq('follower_id', req.user.id)
+                .in('following_id', authorIds);
+
+            if (followRecords) {
+                followRecords.forEach(r => followSet.add(r.following_id));
             }
+        }
+
+        const postWithFollow = enriched.map((post) => {
+            const isFollowingAuthor = post.userId === req.user.id ? false : followSet.has(post.userId);
             return { ...post, is_following_author: isFollowingAuthor };
-        }));
+        });
 
         res.json({ success: true, posts: postWithFollow });
     } catch (error) {
@@ -3644,14 +3897,25 @@ app.get('/api/posts/foryou', authenticateToken, async (req, res) => {
         const posts = await Post.find(query).sort({ createdAt: -1 }).limit(50);
         const enriched = await enrichPosts(posts, req.user.id);
 
-        const postWithFollow = await Promise.all(enriched.map(async (post) => {
-            let isFollowingAuthor = false;
-            if (post.userId && post.userId !== req.user.id) {
-                const { data: fc } = await supabase.from('followers').select('id').eq('follower_id', req.user.id).eq('following_id', post.userId).maybeSingle();
-                isFollowingAuthor = !!fc;
+        // Check follow status in a single bulk query
+        const authorIds = [...new Set(enriched.map(p => p.userId).filter(id => id && id !== req.user.id))];
+        const followSet = new Set();
+        if (authorIds.length > 0) {
+            const { data: followRecords } = await supabase
+                .from('followers')
+                .select('following_id')
+                .eq('follower_id', req.user.id)
+                .in('following_id', authorIds);
+
+            if (followRecords) {
+                followRecords.forEach(r => followSet.add(r.following_id));
             }
+        }
+
+        const postWithFollow = enriched.map((post) => {
+            const isFollowingAuthor = post.userId === req.user.id ? false : followSet.has(post.userId);
             return { ...post, is_following_author: isFollowingAuthor };
-        }));
+        });
 
         res.json({ success: true, posts: postWithFollow });
     } catch (error) {
@@ -3777,7 +4041,28 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
     }
 });
 
-// POST like/unlike comment
+// GET post likes
+app.get('/api/posts/:postId/likes', authenticateToken, async (req, res) => {
+    try {
+        const { postId } = req.params;
+        const likes = await PostLike.find({ postId }).sort({ createdAt: -1 });
+        const userIds = likes.map(l => l.userId);
+        const { data: users } = await supabase.from('users').select('id,username,profile_pic,college').in('id', userIds);
+        const userMap = {};
+        (users || []).forEach(u => { userMap[u.id] = u; });
+        const result = likes.map(l => ({
+            id: l._id,
+            userId: l.userId,
+            users: userMap[l.userId] || { id: l.userId, username: 'User', profile_pic: null },
+            createdAt: l.createdAt
+        }));
+        res.json({ success: true, users: result });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch likes' });
+    }
+});
+
+// POST like / unlike comment
 app.post('/api/comments/:commentId/like', authenticateToken, async (req, res) => {
     try {
         const { commentId } = req.params;
@@ -3909,6 +4194,8 @@ app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
 app.get('/api/notifications', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
+        const userRegisterTime = req.user.created_at ? new Date(req.user.created_at).getTime() : 0;
+
         // 1. Fetch user-specific notifications from Redis
         const redisNotifications = await getNotifications(userId, 30);
 
@@ -3934,12 +4221,18 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
 
         // 3. Merge and sort by timestamp
         let allNotifications = [...redisNotifications, ...platformNotifications];
-        
+
         // Filter out notifications from blocked users
         const blockedIds = await getBlockedIds(userId);
         allNotifications = allNotifications.filter(n => {
             if (n.from && blockedIds.includes(n.from)) return false;
             return true;
+        });
+
+        // Filter out notifications created before user registered
+        allNotifications = allNotifications.filter(n => {
+            const notifTime = n.timestamp || (n.createdAt ? new Date(n.createdAt).getTime() : 0);
+            return notifTime >= userRegisterTime;
         });
 
         allNotifications.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
@@ -3957,8 +4250,18 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
 
 app.get('/api/notifications/count', authenticateToken, async (req, res) => {
     try {
-        const notifications = await getNotifications(req.user.id, 50);
-        const unreadCount = notifications.filter(n => !n.read).length;
+        const userId = req.user.id;
+        const userRegisterTime = req.user.created_at ? new Date(req.user.created_at).getTime() : 0;
+
+        const notifications = await getNotifications(userId, 50);
+
+        // Filter out notifications created before user registered
+        const filteredNotifications = notifications.filter(n => {
+            const notifTime = n.timestamp || (n.createdAt ? new Date(n.createdAt).getTime() : 0);
+            return notifTime >= userRegisterTime;
+        });
+
+        const unreadCount = filteredNotifications.filter(n => !n.read).length;
         res.json({ success: true, unreadCount });
     } catch (error) {
         res.status(500).json({ error: 'Failed to get count' });
@@ -3985,10 +4288,10 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
         fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
         const { data: messages, error } = await supabase.from('community_messages').select('*').eq('college_name', req.user.college).gte('created_at', fiveDaysAgo.toISOString()).order('created_at', { ascending: true }).limit(500);
         if (error) throw error;
-        
+
         const blockedIds = await getBlockedIds(req.user.id);
         let enriched = (messages || []).filter(m => !blockedIds.includes(m.sender_id));
-        
+
         if (enriched.length > 0) {
             const senderIds = [...new Set(enriched.map(m => m.sender_id))];
             const { data: users } = await supabase.from('users').select('id,username,profile_pic').in('id', senderIds);
@@ -4459,17 +4762,46 @@ const enrichVibes = async (vibes, currentUserId) => {
     const { data: users } = await supabase.from('users').select('id,username,profile_pic,college').in('id', userIds);
     const userMap = {};
     (users || []).forEach(u => { userMap[u.id] = u; });
-    return await Promise.all(vibes.map(async (vibe) => {
-        const vibeId = vibe._id;
-        const [likeCount, commentCount, isLiked] = await Promise.all([
-            RealVibeLike.countDocuments({ vibeId }),
-            RealVibeComment.countDocuments({ vibeId }),
-            RealVibeLike.findOne({ vibeId, userId: currentUserId })
-        ]);
+
+    const vibeIds = vibes.map(v => v._id);
+    const [likesData, commentsData, myLikes] = await Promise.all([
+        RealVibeLike.aggregate([
+            { $match: { vibeId: { $in: vibeIds } } },
+            { $group: { _id: "$vibeId", count: { $sum: 1 } } }
+        ]),
+        RealVibeComment.aggregate([
+            { $match: { vibeId: { $in: vibeIds } } },
+            { $group: { _id: "$vibeId", count: { $sum: 1 } } }
+        ]),
+        currentUserId ? RealVibeLike.find({ vibeId: { $in: vibeIds }, userId: currentUserId }).lean() : []
+    ]);
+
+    const likeMap = {};
+    (likesData || []).forEach(item => { if (item._id) likeMap[item._id.toString()] = item.count; });
+
+    const commentMap = {};
+    (commentsData || []).forEach(item => { if (item._id) commentMap[item._id.toString()] = item.count; });
+
+    const myLikesSet = new Set((myLikes || []).map(l => l.vibeId ? l.vibeId.toString() : ''));
+
+    return vibes.map((vibe) => {
+        const vibeIdStr = vibe._id.toString();
         const hoursLeft = Math.max(0, Math.ceil((new Date(vibe.expiresAt) - new Date()) / (1000 * 60 * 60)));
         const obj = vibe.toObject();
-        return { ...obj, id: vibe._id.toString(), media_url: obj.mediaUrl, media_type: obj.mediaType, plan_type: obj.planType, user_id: obj.userId, users: userMap[vibe.userId] || { id: vibe.userId, username: 'User', profile_pic: null, college: null }, like_count: likeCount, comment_count: commentCount, is_liked: !!isLiked, hours_left: hoursLeft };
-    }));
+        return {
+            ...obj,
+            id: vibeIdStr,
+            media_url: obj.mediaUrl,
+            media_type: obj.mediaType,
+            plan_type: obj.planType,
+            user_id: obj.userId,
+            users: userMap[vibe.userId] || { id: vibe.userId, username: 'User', profile_pic: null, college: null },
+            like_count: likeMap[vibeIdStr] || 0,
+            comment_count: commentMap[vibeIdStr] || 0,
+            is_liked: myLikesSet.has(vibeIdStr),
+            hours_left: hoursLeft
+        };
+    });
 };
 
 // GET all approved realvibes
@@ -4492,7 +4824,7 @@ app.post('/api/realvibes', authenticateToken, upload.single('media'), async (req
         if (!req.user.is_premium || !req.user.subscription_plan) return res.status(403).json({ error: 'Premium subscription required', code: 'PREMIUM_REQUIRED' });
         if (req.user.subscription_end && new Date(req.user.subscription_end) < new Date()) return res.status(403).json({ error: 'Subscription expired', code: 'SUBSCRIPTION_EXPIRED' });
         if (!req.file) return res.status(400).json({ error: 'Media file required' });
-        const { caption = '', visibility = 'public' } = req.body;
+        const { caption = '', visibility = 'public', brandLink = null, brandLinkType = 'website' } = req.body;
         const plan = req.user.subscription_plan;
         const isVideo = req.file.mimetype.startsWith('video/');
         const photoQuota = 5; // noble and royal both allow 5 photos
@@ -4513,7 +4845,8 @@ app.post('/api/realvibes', authenticateToken, upload.single('media'), async (req
             userId: req.user.id, caption: caption.trim(),
             mediaUrl: vibeResult.secure_url, mediaPublicId: vibeResult.public_id,
             mediaType: isVideo ? 'video' : 'image', planType: plan, visibility,
-            status: 'pending', expiresAt
+            status: 'pending', expiresAt,
+            brandLink, brandLinkType
         });
 
         // Skip auto-post to Zero Velocity for now, or post as 'pending'? 
@@ -4522,7 +4855,8 @@ app.post('/api/realvibes', authenticateToken, upload.single('media'), async (req
 
         res.json({ success: true, vibe, pending: true, message: 'Your RealVibe has been submitted and is currently in processing by admin.' });
     } catch (error) {
-        res.status(500).json({ error: 'Failed to create RealVibe' });
+        console.error('❌ Create RealVibe error:', error);
+        res.status(500).json({ error: 'Failed to create RealVibe: ' + error.message });
     }
 });
 
@@ -4572,6 +4906,27 @@ app.post('/api/realvibes/:vibeId/like', authenticateToken, async (req, res) => {
         res.json({ success: true, liked: !existing, likeCount });
     } catch (error) {
         res.status(500).json({ error: 'Failed to like RealVibe' });
+    }
+});
+
+// GET realvibe likes
+app.get('/api/realvibes/:vibeId/likes', authenticateToken, async (req, res) => {
+    try {
+        const { vibeId } = req.params;
+        const likes = await RealVibeLike.find({ vibeId }).sort({ createdAt: -1 });
+        const userIds = likes.map(l => l.userId);
+        const { data: users } = await supabase.from('users').select('id,username,profile_pic,college').in('id', userIds);
+        const userMap = {};
+        (users || []).forEach(u => { userMap[u.id] = u; });
+        const result = likes.map(l => ({
+            id: l._id,
+            userId: l.userId,
+            users: userMap[l.userId] || { id: l.userId, username: 'User', profile_pic: null },
+            createdAt: l.createdAt
+        }));
+        res.json({ success: true, users: result });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch likes' });
     }
 });
 
