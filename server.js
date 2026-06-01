@@ -39,6 +39,7 @@ const io = socketIO(server, {
 
 const userSockets = new Map();
 const collegeGhostNames = new Map();
+const communityReactions = new Map();
 
 function registerGhostName(userId, collegeName, ghostName) {
     if (!collegeName || !ghostName) return { success: false, error: 'Missing college or ghost name' };
@@ -383,7 +384,12 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
         await supabase.from('payment_orders').insert([{
             user_id: req.user.id, order_id: order.id, amount, plan_type: planType, status: 'created'
         }]);
-        res.json({ success: true, orderId: order.id, amount, razorpayKeyId: process.env.RAZORPAY_KEY_ID });
+        res.json({ 
+            success: true, 
+            orderId: order.id, 
+            amount, 
+            razorpayKeyId: process.env.RAZORPAY_KEY_ID || 'rzp_live_SN88LJaubRdhxS' 
+        });
     } catch (error) {
         console.error('❌ Create order error:', error);
         res.status(500).json({ error: 'Failed to create payment order' });
@@ -401,8 +407,11 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
         if (generated_signature !== razorpay_signature)
             return res.status(400).json({ success: false, error: 'Invalid payment signature' });
 
-        const plans = { noble: { posters: 5, videos: 1, days: 15 }, royal: { posters: 5, videos: 3, days: 23 } };
-        const plan = plans[planType];
+        const plans = { 
+            noble: { posters: 3, videos: 1, days: 7 }, 
+            royal: { posters: 4, videos: 4, days: 10 } 
+        };
+        const plan = plans[planType.toLowerCase()];
         if (!plan) return res.status(400).json({ error: 'Invalid plan type' });
         const endDate = new Date(Date.now() + plan.days * 24 * 60 * 60 * 1000);
 
@@ -590,7 +599,9 @@ app.get('/api/search/users', authenticateToken, async (req, res) => {
 app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
     try {
         const { userId } = req.params;
-        const [userResult, followersCountResult, followingCountResult, isFollowingResult, isFollowedByResult, likeCountResult, isLikedResult] = await Promise.all([
+
+        // Use allSettled so a missing/broken table (e.g. profile_likes) never crashes the whole endpoint
+        const [userRes, followersRes, followingRes, isFollowingRes, isFollowedByRes, likeCountRes, isLikedRes] = await Promise.allSettled([
             supabase.from('users').select('id,username,email,registration_number,college,profile_pic,cover_photo,bio,badges,community_joined,created_at,note').eq('id', userId).single(),
             supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId),
             supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', userId),
@@ -599,6 +610,16 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
             supabase.from('profile_likes').select('id', { count: 'exact', head: true }).eq('user_id', userId),
             supabase.from('profile_likes').select('id').eq('user_id', userId).eq('liker_id', req.user.id).maybeSingle()
         ]);
+
+        // Safely extract each result (fulfilled → .value, rejected → null/0 fallback)
+        const userResult      = userRes.status      === 'fulfilled' ? userRes.value      : { data: null, error: true };
+        const followersCount  = followersRes.status  === 'fulfilled' ? (followersRes.value.count  || 0) : 0;
+        const followingCount  = followingRes.status  === 'fulfilled' ? (followingRes.value.count  || 0) : 0;
+        const isFollowingData = isFollowingRes.status === 'fulfilled' ? isFollowingRes.value.data  : null;
+        const isFollowedByData= isFollowedByRes.status=== 'fulfilled' ? isFollowedByRes.value.data : null;
+        const profileLikes    = likeCountRes.status  === 'fulfilled' ? (likeCountRes.value.count  || 0) : 0;
+        const isLikedData     = isLikedRes.status    === 'fulfilled' ? isLikedRes.value.data       : null;
+
         const user = userResult.data;
         if (userResult.error || !user) return res.status(404).json({ error: 'User not found' });
 
@@ -606,9 +627,25 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
         let postCount = 0;
         try { postCount = await Post.countDocuments({ userId }); } catch (_) {}
 
-        const isMutualFollow = !!isFollowingResult.data && !!isFollowedByResult.data;
-        res.json({ success: true, user: { ...user, postCount, followersCount: followersCountResult.count || 0, followingCount: followingCountResult.count || 0, profileLikes: likeCountResult.count || 0, isProfileLiked: !!isLikedResult.data, isFollowing: !!isFollowingResult.data, isFollowedBy: !!isFollowedByResult.data, isMutualFollow } });
+        const isMutualFollow = !!isFollowingData && !!isFollowedByData;
+        res.json({
+            success: true,
+            user: {
+                ...user,
+                postCount,
+                followersCount,
+                followingCount,
+                profileLikes,
+                isProfileLiked: !!isLikedData,
+                isFollowing: !!isFollowingData,
+                isFollowedBy: !!isFollowedByData,
+                isMutualFollow,
+                // Also include a stats block so Flutter can read stats['following'] reliably
+                stats: { followers: followersCount, following: followingCount }
+            }
+        });
     } catch (error) {
+        console.error('❌ Profile fetch error:', error);
         res.status(500).json({ error: 'Failed to fetch profile' });
     }
 });
@@ -778,6 +815,77 @@ app.post('/api/register', async (req, res) => {
         res.status(201).json({ success: true, message: 'Account created successfully! Please log in.', userId: newUser.id });
     } catch (error) {
         res.status(500).json({ error: error.message || 'Registration failed' });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
+// EMAIL VERIFICATION
+// ══════════════════════════════════════════════════════════════
+// Simple in-memory cache for signup OTPs
+const signupOtpCache = new Map();
+
+app.post('/api/send-email-verification', async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email) return res.status(400).json({ error: 'Email required' });
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) return res.status(400).json({ error: 'Invalid email format' });
+
+        // Check if an account already exists
+        const { data: existingUser } = await supabase.from('users').select('email').eq('email', email).maybeSingle();
+        if (existingUser) return res.status(400).json({ error: 'Email already registered' });
+
+        const code = generateCode();
+        const expiresAt = Date.now() + 15 * 60 * 1000; // 15 mins
+
+        signupOtpCache.set(email, { code, expiresAt });
+
+        const emailSent = await sendEmail(
+            email,
+            '📧 Verify your email - VibeXpert',
+            `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
+                <h1 style="color:#4F46E5;">Email Verification</h1>
+                <p>Hi there,</p>
+                <p>Here is your code to verify your email address on VibeXpert:</p>
+                <div style="background:#F3F4F6;padding:20px;text-align:center;border-radius:8px;">
+                    <h2 style="font-size:32px;letter-spacing:4px;">${code}</h2>
+                </div>
+                <p>Expires in 15 minutes.</p>
+            </div>`
+        );
+
+        if (!emailSent) {
+            return res.status(500).json({ error: 'Failed to send email. Ensure the email provided is valid.' });
+        }
+
+        res.json({ success: true, message: 'Verification code sent' });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to send verification code' });
+    }
+});
+
+app.post('/api/verify-email', async (req, res) => {
+    try {
+        const { email, code } = req.body;
+        if (!email || !code) return res.status(400).json({ error: 'Email and code required' });
+
+        const cached = signupOtpCache.get(email);
+        if (!cached) return res.status(400).json({ error: 'No verification pending or code expired' });
+        
+        if (Date.now() > cached.expiresAt) {
+            signupOtpCache.delete(email);
+            return res.status(400).json({ error: 'Verification code expired' });
+        }
+
+        if (cached.code !== String(code).trim()) {
+            return res.status(400).json({ error: 'Invalid verification code' });
+        }
+
+        // Successfully verified, clean up cache
+        signupOtpCache.delete(email);
+        res.json({ success: true, message: 'Email verified successfully' });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to verify email' });
     }
 });
 
@@ -1446,6 +1554,13 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
             }
             enriched = enriched.map(msg => ({ ...msg, reply_to: msg.reply_to_id ? (replyMsgMap[msg.reply_to_id] || null) : null }));
         }
+
+        // Enrich community (Ghost) messages with in-memory/Redis fallback reactions
+        enriched = enriched.map(msg => ({
+            ...msg,
+            reactions: communityReactions.get(msg.id.toString()) || {}
+        }));
+
         res.json({ success: true, messages: enriched });
     } catch (error) {
         res.status(500).json({ error: 'Failed to load messages', details: error.message });
@@ -1461,6 +1576,59 @@ app.delete('/api/community/messages/:messageId', authenticateToken, async (req, 
         res.json({ success: true, message: 'Message deleted' });
     } catch (error) {
         res.status(500).json({ error: 'Failed to delete message' });
+    }
+});
+
+app.put('/api/community/messages/:messageId', authenticateToken, async (req, res) => {
+    try {
+        const { messageId } = req.params;
+        const { content } = req.body;
+        if (!content?.trim()) return res.status(400).json({ error: 'Content required' });
+        const { data: message } = await supabase.from('community_messages').select('sender_id,college_name').eq('id', messageId).single();
+        if (!message || message.sender_id !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
+        const { data: updated, error } = await supabase.from('community_messages').update({ content: content.trim(), is_edited: true, edited_at: new Date().toISOString() }).eq('id', messageId).select('*').single();
+        if (error) throw error;
+        io.to(message.college_name).emit('community_message_edited', { id: messageId, content: content.trim(), edited_at: updated.edited_at });
+        res.json({ success: true, message: updated });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to edit message' });
+    }
+});
+
+app.post('/api/community/react/:messageId', authenticateToken, async (req, res) => {
+    try {
+        const { messageId } = req.params;
+        const { emoji } = req.body;
+        const uid = req.user.id;
+        if (!emoji) return res.status(400).json({ error: 'emoji required' });
+        const { data: message } = await supabase.from('community_messages').select('id,college_name').eq('id', messageId).single();
+        if (!message) return res.status(404).json({ error: 'Message not found' });
+        
+        // Use in-memory reaction map
+        const key = messageId.toString();
+        const reactions = communityReactions.get(key) || {};
+        const users = reactions[emoji] || [];
+        const alreadyReacted = users.includes(uid);
+        if (alreadyReacted) {
+            const newUsers = users.filter(id => id !== uid);
+            if (newUsers.length === 0) delete reactions[emoji];
+            else reactions[emoji] = newUsers;
+        } else {
+            // Remove user from all other emojis
+            for (const key in reactions) {
+                if (reactions.hasOwnProperty(key)) {
+                    reactions[key] = (reactions[key] || []).filter(id => id !== uid);
+                    if (reactions[key].length === 0) delete reactions[key];
+                }
+            }
+            reactions[emoji] = [...(reactions[emoji] || []), uid];
+        }
+        communityReactions.set(key, reactions);
+
+        io.to(message.college_name).emit('community_reaction_update', { messageId, reactions, reactorId: uid });
+        res.json({ success: true, reactions });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to react: ' + error.message });
     }
 });
 
@@ -1623,8 +1791,20 @@ app.post('/api/dm/react/:messageId', authenticateToken, async (req, res) => {
         const reactions = msg.reactions || {};
         const users = reactions[emoji] || [];
         const alreadyReacted = users.includes(uid);
-        if (alreadyReacted) { const newUsers = users.filter(id => id !== uid); if (newUsers.length === 0) delete reactions[emoji]; else reactions[emoji] = newUsers; }
-        else reactions[emoji] = [...users, uid];
+        if (alreadyReacted) {
+            const newUsers = users.filter(id => id !== uid);
+            if (newUsers.length === 0) delete reactions[emoji];
+            else reactions[emoji] = newUsers;
+        } else {
+            // Remove user from all other emojis
+            for (const key in reactions) {
+                if (reactions.hasOwnProperty(key)) {
+                    reactions[key] = (reactions[key] || []).filter(id => id !== uid);
+                    if (reactions[key].length === 0) delete reactions[key];
+                }
+            }
+            reactions[emoji] = [...(reactions[emoji] || []), uid];
+        }
         const { data: updated, error: updateErr } = await supabase.from('direct_messages').update({ reactions }).eq('id', messageId).select().single();
         if (updateErr) throw updateErr;
         const otherId = msg.sender_id === uid ? msg.receiver_id : msg.sender_id;
@@ -1635,6 +1815,43 @@ app.post('/api/dm/react/:messageId', authenticateToken, async (req, res) => {
         res.status(500).json({ error: 'Failed to react: ' + error.message });
     }
 });
+
+app.put('/api/dm/messages/:messageId', authenticateToken, async (req, res) => {
+    try {
+        const { messageId } = req.params;
+        const { content } = req.body;
+        const uid = req.user.id;
+        if (!content) return res.status(400).json({ error: 'Content required' });
+        const { data: msg, error: fetchErr } = await supabase.from('direct_messages').select('id,sender_id,receiver_id').eq('id', messageId).single();
+        if (fetchErr || !msg) return res.status(404).json({ error: 'Message not found' });
+        if (msg.sender_id !== uid) return res.status(403).json({ error: 'Edit forbidden' });
+        const { data: updated, error: updateErr } = await supabase.from('direct_messages').update({ content, is_edited: true, updated_at: new Date() }).eq('id', messageId).select().single();
+        if (updateErr) throw updateErr;
+        const otherSocket = userSockets.get(msg.receiver_id);
+        if (otherSocket) io.to(otherSocket).emit('dm_message_updated', updated);
+        res.json({ success: true, dm: updated });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to edit DM: ' + error.message });
+    }
+});
+
+app.delete('/api/dm/messages/:messageId', authenticateToken, async (req, res) => {
+    try {
+        const { messageId } = req.params;
+        const uid = req.user.id;
+        const { data: msg, error: fetchErr } = await supabase.from('direct_messages').select('id,sender_id,receiver_id').eq('id', messageId).single();
+        if (fetchErr || !msg) return res.status(404).json({ error: 'Message not found' });
+        if (msg.sender_id !== uid) return res.status(403).json({ error: 'Delete forbidden' });
+        const { error: delErr } = await supabase.from('direct_messages').delete().eq('id', messageId);
+        if (delErr) throw delErr;
+        const otherSocket = userSockets.get(msg.receiver_id);
+        if (otherSocket) io.to(otherSocket).emit('dm_message_deleted', { id: messageId });
+        res.json({ success: true, message: 'Deleted' });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to delete DM: ' + error.message });
+    }
+});
+
 
 app.get('/api/dm/mutual-follows', authenticateToken, async (req, res) => {
     try {
@@ -1745,23 +1962,24 @@ app.post('/api/realvibes', authenticateToken, upload.single('media'), async (req
         if (!req.user.is_premium || !req.user.subscription_plan) return res.status(403).json({ error: 'Premium subscription required', code: 'PREMIUM_REQUIRED' });
         if (req.user.subscription_end && new Date(req.user.subscription_end) < new Date()) return res.status(403).json({ error: 'Subscription expired', code: 'SUBSCRIPTION_EXPIRED' });
         if (!req.file) return res.status(400).json({ error: 'Media file required' });
-        const { caption = '', visibility = 'public' } = req.body;
+        const { caption = '', visibility = 'public', brand_link = '', brand_link_type = 'website' } = req.body;
         const plan = req.user.subscription_plan;
         const isVideo = req.file.mimetype.startsWith('video/');
         if (isVideo) {
-            const videoQuota = plan === 'royal' ? 3 : 1;
-            const videoCount = await RealVibe.countDocuments({ userId: req.user.id, mediaType: 'video' });
+            const videoQuota = plan === 'royal' ? 4 : 1; // Updated to match app plans
+            const videoCount = await RealVibe.countDocuments({ userId: req.user.id, mediaType: 'video', status: { $ne: 'rejected' } });
             if (videoCount >= videoQuota) return res.status(403).json({ error: `Video quota reached (${videoQuota} for ${plan} plan)`, code: 'QUOTA_EXCEEDED' });
         }
 
         const vibeResult = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/realvibes');
-        const daysToExpire = plan === 'royal' ? 25 : 15;
+        const daysToExpire = plan === 'royal' ? 10 : 7; // Updated to match app plans
         const expiresAt = new Date(Date.now() + daysToExpire * 24 * 60 * 60 * 1000);
 
         const vibe = await RealVibe.create({
             userId: req.user.id, caption: caption.trim(),
             mediaUrl: vibeResult.secure_url, mediaPublicId: vibeResult.public_id,
             mediaType: isVideo ? 'video' : 'image', planType: plan, visibility,
+            brand_link: brand_link.trim(), brand_link_type,
             status: 'pending', expiresAt
         });
 
@@ -2060,8 +2278,16 @@ app.post('/api/executive/reactions', authenticateToken, async (req, res) => {
         if (!msg) return res.status(404).json({ error: 'Message not found' });
         const { data: existing } = await supabase.from('executive_message_reactions').select('id').eq('message_id', message_id).eq('user_id', req.user.id).eq('emoji', emoji).single();
         let action;
-        if (existing) { await supabase.from('executive_message_reactions').delete().eq('id', existing.id); action = 'removed'; }
-        else { await supabase.from('executive_message_reactions').insert([{ message_id, user_id: req.user.id, emoji }]); action = 'added'; }
+        if (existing) {
+            await supabase.from('executive_message_reactions').delete().eq('id', existing.id);
+            action = 'removed';
+        } else {
+            // Delete all prior reactions on this message by this user
+            await supabase.from('executive_message_reactions').delete().eq('message_id', message_id).eq('user_id', req.user.id);
+            // Insert the new reaction
+            await supabase.from('executive_message_reactions').insert([{ message_id, user_id: req.user.id, emoji }]);
+            action = 'added';
+        }
         const { data: allReactions } = await supabase.from('executive_message_reactions').select('message_id,user_id,emoji').eq('message_id', message_id);
         const update = { message_id, reactions: allReactions || [], action, userId: req.user.id, emoji, collegeName: msg.college_name };
         io.to(`exec_${msg.college_name}`).emit('exec_reaction_update', update);
