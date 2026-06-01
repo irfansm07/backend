@@ -2708,13 +2708,16 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
 
         // Fetch partner details if linked
         let partner = null;
-        if (partnerLink) {
-            try {
+        try {
+            const partnerLink = await PartnerLink.findOne({
+                $or: [{ user1Id: userId }, { user2Id: userId }]
+            });
+            if (partnerLink) {
                 const partnerId = partnerLink.user1Id === userId ? partnerLink.user2Id : partnerLink.user1Id;
                 const { data: partnerData } = await supabase.from('users').select('id,username,profile_pic,college').eq('id', partnerId).single();
                 partner = partnerData;
-            } catch (_) { /* non-critical */ }
-        }
+            }
+        } catch (_) { /* non-critical — partner linking is optional */ }
         if (userResult.error || !user) return res.status(404).json({ error: 'User not found' });
 
         // Get post count from MongoDB — won't crash profile if Mongo is down
@@ -2734,6 +2737,7 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
                 isFollowing: !!isFollowingData,
                 isFollowedBy: !!isFollowedByData,
                 isMutualFollow,
+                partner,
                 // Also include a stats block so Flutter can read stats['following'] reliably
                 stats: { followers: followersCount, following: followingCount }
             }
