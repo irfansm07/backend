@@ -1,0 +1,5 @@
+﻿6b14bdacca704747214055a2cca32dd10a8a7abe Update backend files with local workspace changes and client setup fix
+222bba0c85280b1894987da54a1bd2145101cb74 Fix issues and update chat functionality
+ab1361d0f246771a53f25e82083e00aac7439837 fix: chat photo sending - remove required constraint on message field, improve validation and logging
+ab3d931a9700456219a15e91789673b3b7fe72bc fix: add multer error handling for image uploads
+9760d8994bdbb65c1b1dc61d0506c71eb9f56f67 fix: surface error message for zero velocity posts

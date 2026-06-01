@@ -1,0 +1,34 @@
+﻿git : From https://git
+hub.com/irfansm07/back
+end
+At line:1 char:74
++ ... te and 
+backend\backend" ; 
+git pull origin main 
+--no-edit 2>&1 | 
+Out-F ...
++                     
+          ~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~
+~
+    + CategoryInfo    
+          : 
+NotSpecified: (F    
+rom https://gi...fans 
+   
+m07/backend:String) [ 
+   ], RemoteException
+    + 
+FullyQualifiedError   
+ Id : 
+NativeCommandErr    or
+ 
+ * branch            
+main       -> 
+FETCH_HEAD
+   6b14bda..6657b63  
+main       -> 
+origin/main
+Auto-merging server.js
+CONFLICT (content): Merge conflict in server.js
+Automatic merge failed; fix conflicts and then commit the result.

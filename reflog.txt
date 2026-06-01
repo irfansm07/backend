@@ -1,0 +1,5 @@
+﻿222bba0 HEAD@{0}: rebase (abort): returning to refs/heads/main
+222bba0 HEAD@{1}: rebase (abort): returning to refs/heads/main
+aa8c3a1 HEAD@{2}: commit: fix: resolve partially registered account setup error and missing registration_number
+a8fbaf8 HEAD@{3}: commit: Fix: Add is_real_vibe to Post to display gold colour in feed
+930c2a1 HEAD@{4}: commit: Add temp endpoint to mass-approve pending RealVibes
