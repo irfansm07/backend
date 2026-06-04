@@ -57,7 +57,9 @@ postLikeSchema.index({ postId: 1, userId: 1 }, { unique: true });
 const postCommentSchema = new mongoose.Schema({
     postId: { type: mongoose.Schema.Types.ObjectId, ref: 'Post', required: true, index: true },
     userId: { type: String, required: true },
-    content: { type: String, required: true }
+    content: { type: String, required: true },
+    likes: { type: Number, default: 0 },
+    likes_users: { type: [String], default: [] }
 }, { timestamps: true });
 
 // Post Shares
@@ -93,13 +95,16 @@ const realVibeLikeSchema = new mongoose.Schema({
     userId: { type: String, required: true }
 }, { timestamps: true });
 
+// RealVibe Likes Index
 realVibeLikeSchema.index({ vibeId: 1, userId: 1 }, { unique: true });
 
 // RealVibe Comments
 const realVibeCommentSchema = new mongoose.Schema({
     vibeId: { type: mongoose.Schema.Types.ObjectId, ref: 'RealVibe', required: true, index: true },
     userId: { type: String, required: true },
-    content: { type: String, required: true }
+    content: { type: String, required: true },
+    likes: { type: Number, default: 0 },
+    likes_users: { type: [String], default: [] }
 }, { timestamps: true });
 
 // Seller Requests
