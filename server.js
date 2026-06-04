@@ -5182,7 +5182,8 @@ app.get('/api/executive/messages', authenticateToken, async (req, res) => {
         const fiveDaysAgo = new Date(); fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
         const { data: messages, error } = await supabase.from('executive_messages').select('*').eq('college_name', req.user.college).eq('is_deleted', false).gte('created_at', fiveDaysAgo.toISOString()).order('created_at', { ascending: true }).limit(500);
         if (error) throw error;
-        let enriched = messages || [];
+        const blockedIds = await getBlockedIds(req.user.id);
+        let enriched = (messages || []).filter(m => !blockedIds.includes(m.sender_id));
         if (enriched.length > 0) {
             const senderIds = [...new Set(enriched.map(m => m.sender_id))];
             const { data: users } = await supabase.from('users').select('id,username,profile_pic').in('id', senderIds);
