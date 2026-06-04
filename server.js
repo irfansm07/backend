@@ -4520,8 +4520,8 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
                 const sockets = userSockets.get(uid);
                 if (sockets) {
                     sockets.forEach(sid => {
-                        // Don't emit back to the EXACT socket that sent it (it already handled it)
-                        if (sid !== socket.id) io.to(sid).emit('new_dm', payload);
+                        // In an HTTP route, we emit to ALL sockets of the participants
+                        io.to(sid).emit('new_dm', payload);
                     });
                 }
             });
