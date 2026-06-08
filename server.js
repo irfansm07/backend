@@ -750,24 +750,55 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
         const { amount, planType, isFirstTime, returnUrl } = req.body;
         if (!amount || !planType) return res.status(400).json({ error: 'Amount and plan type required' });
         if (amount < 1 || amount > 10000) return res.status(400).json({ error: 'Invalid amount' });
-        const options = {
-            amount: amount * 100, currency: 'INR',
-            receipt: `rcpt_${req.user.id.slice(-8)}_${Date.now()}`,
-            notes: { userId: req.user.id, username: req.user.username, planType, isFirstTime }
-        };
-        const order = await razorpay.orders.create(options);
+
+        const orderId = `order_vibexpert_${req.user.id.slice(-8)}_${Date.now()}`;
+        const customerName = req.user.username || req.user.email.split('@')[0];
+
+        // Create Cashfree order via API
+        const cashfreeResponse = await axios.post(
+            'https://api.cashfree.com/pg/orders',
+            {
+                order_id: orderId,
+                order_amount: amount,
+                order_currency: 'INR',
+                customer_details: {
+                    customer_id: req.user.id,
+                    customer_name: customerName,
+                    customer_email: req.user.email,
+                    customer_phone: req.user.phone || '9999999999'
+                },
+                order_meta: {
+                    return_url: returnUrl || `https://vibexpert.in/payment-success?order_id={order_id}&planType=${planType}`,
+                    notify_url: `${process.env.API_URL || 'https://api.vibexpert.in'}/api/cashfree/webhook`
+                },
+                order_note: `VibeXpert ${planType} Plan Subscription`
+            },
+            {
+                headers: {
+                    'x-api-version': '2023-08-01',
+                    'x-client-id': CASHFREE_APP_ID,
+                    'x-client-secret': CASHFREE_SECRET_KEY,
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
+
+        const cashfreeOrder = cashfreeResponse.data;
+        const paymentSessionId = cashfreeOrder.payment_session_id;
+
         await supabase.from('payment_orders').insert([{
-            user_id: req.user.id, order_id: order.id, amount, plan_type: planType, status: 'created'
+            user_id: req.user.id, order_id: orderId, amount, plan_type: planType, status: 'created'
         }]);
+
         res.json({ 
             success: true, 
-            orderId: order.id, 
-            amount, 
-            razorpayKeyId: process.env.RAZORPAY_KEY_ID || 'rzp_live_SN88LJaubRdhxS' 
+            orderId: orderId, 
+            payment_session_id: paymentSessionId,
+            amount 
         });
     } catch (error) {
         console.error('❌ Create Cashfree order error:', error.response?.data || error.message);
-        res.status(500).json({ error: 'Failed to create payment order' });
+        res.status(500).json({ error: 'Failed to create payment order: ' + (error.response?.data?.message || error.message) });
     }
 });
 
@@ -869,7 +900,7 @@ app.get('/api/subscription/status', authenticateToken, async (req, res) => {
             await supabase.from('users').update({ is_premium: false, subscription_plan: null }).eq('id', req.user.id);
             return res.json({ success: true, subscription: null, message: 'Subscription expired' });
         }
-        res.json({ success: true, subscription: { plan: user.subscription_plan, startDate: user.subscription_start, endDate: user.subscription_end, postersQuota: user.posters_quota, videosQuota: user.videos_quota, daysRemaining: Math.ceil((endDate - now) / (1000 * 60 * 60 * 24)) } });
+        res.json({ success: true, subscription: { status: 'active', plan: user.subscription_plan, startDate: user.subscription_start, endDate: user.subscription_end, postersQuota: user.posters_quota, videosQuota: user.videos_quota, daysRemaining: Math.ceil((endDate - now) / (1000 * 60 * 60 * 24)) } });
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch subscription status' });
     }
@@ -4892,10 +4923,23 @@ const enrichVibes = async (vibes, currentUserId) => {
 app.get('/api/realvibes', authenticateToken, async (req, res) => {
     try {
         const blockedIds = await getBlockedIds(req.user.id);
-        const query = { status: 'approved', expiresAt: { $gt: new Date() } };
-        if (blockedIds.length > 0) query.userId = { $nin: blockedIds };
-        const vibes = await RealVibe.find(query).sort({ createdAt: -1 }).limit(50);
-        const enriched = await enrichVibes(vibes, req.user.id);
+        // Show approved vibes to everyone + show own pending vibes to the creator
+        const approvedQuery = { status: 'approved', expiresAt: { $gt: new Date() } };
+        if (blockedIds.length > 0) approvedQuery.userId = { $nin: blockedIds };
+
+        const pendingQuery = { status: 'pending', userId: req.user.id, expiresAt: { $gt: new Date() } };
+
+        const [approvedVibes, myPendingVibes] = await Promise.all([
+            RealVibe.find(approvedQuery).sort({ createdAt: -1 }).limit(50),
+            RealVibe.find(pendingQuery).sort({ createdAt: -1 }).limit(10)
+        ]);
+
+        // Merge: pending own vibes first, then approved (deduplicated)
+        const approvedIds = new Set(approvedVibes.map(v => v._id.toString()));
+        const uniquePending = myPendingVibes.filter(v => !approvedIds.has(v._id.toString()));
+        const allVibes = [...uniquePending, ...approvedVibes];
+
+        const enriched = await enrichVibes(allVibes, req.user.id);
         res.json({ success: true, vibes: enriched });
     } catch (error) {
         res.status(500).json({ error: 'Failed to load RealVibes' });
