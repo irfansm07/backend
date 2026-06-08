@@ -2718,6 +2718,20 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
                 partner = partnerData;
             }
         } catch (_) { /* non-critical — partner linking is optional */ }
+
+        // Check block relationship
+        let isBlocked = false;
+        let isBlockingMe = false;
+        try {
+            const myId = req.user.id;
+            const [iBlockedThem, theyBlockedMe] = await Promise.all([
+                Block.findOne({ blockerId: myId, blockedId: userId }).lean(),
+                Block.findOne({ blockerId: userId, blockedId: myId }).lean()
+            ]);
+            isBlocked = !!iBlockedThem;
+            isBlockingMe = !!theyBlockedMe;
+        } catch (_) {}
+
         if (userResult.error || !user) return res.status(404).json({ error: 'User not found' });
 
         // Get post count from MongoDB — won't crash profile if Mongo is down
@@ -2738,6 +2752,8 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
                 isFollowedBy: !!isFollowedByData,
                 isMutualFollow,
                 partner,
+                isBlocked,
+                isBlockingMe,
                 // Also include a stats block so Flutter can read stats['following'] reliably
                 stats: { followers: followersCount, following: followingCount }
             }

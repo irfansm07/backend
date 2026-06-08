@@ -34,7 +34,7 @@ const postSchema = new mongoose.Schema({
         public_id: String,
         type: { type: String, enum: ['image', 'video', 'audio'] }
     }],
-    postedTo: { type: String, enum: ['profile', 'community'], default: 'profile' },
+    postedTo: { type: String, enum: ['profile', 'community', 'both'], default: 'profile' },
     college: { type: String, default: null },
     music: { type: mongoose.Schema.Types.Mixed, default: null },
     stickers: { type: [mongoose.Schema.Types.Mixed], default: [] },
