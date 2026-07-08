@@ -790,11 +790,11 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
             user_id: req.user.id, order_id: orderId, amount, plan_type: planType, status: 'created'
         }]);
 
-        res.json({ 
-            success: true, 
-            orderId: orderId, 
+        res.json({
+            success: true,
+            orderId: orderId,
             payment_session_id: paymentSessionId,
-            amount 
+            amount
         });
     } catch (error) {
         console.error('❌ Create Cashfree order error:', error.response?.data || error.message);
@@ -810,9 +810,9 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
             return res.status(400).json({ success: false, error: 'Order ID is required' });
         }
 
-        const plans = { 
-            noble: { posters: 3, videos: 1, days: 7 }, 
-            royal: { posters: 4, videos: 4, days: 10 } 
+        const plans = {
+            noble: { posters: 3, videos: 1, days: 7 },
+            royal: { posters: 4, videos: 4, days: 10 }
         };
         const plan = plans[planType.toLowerCase()];
         if (!plan) return res.status(400).json({ error: 'Invalid plan type' });
@@ -2727,13 +2727,13 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
         ]);
 
         // Safely extract each result (fulfilled → .value, rejected → null/0 fallback)
-        const userResult      = userRes.status      === 'fulfilled' ? userRes.value      : { data: null, error: true };
-        const followersCount  = followersRes.status  === 'fulfilled' ? (followersRes.value.count  || 0) : 0;
-        const followingCount  = followingRes.status  === 'fulfilled' ? (followingRes.value.count  || 0) : 0;
-        const isFollowingData = isFollowingRes.status === 'fulfilled' ? isFollowingRes.value.data  : null;
-        const isFollowedByData= isFollowedByRes.status=== 'fulfilled' ? isFollowedByRes.value.data : null;
-        const profileLikes    = likeCountRes.status  === 'fulfilled' ? (likeCountRes.value.count  || 0) : 0;
-        const isLikedData     = isLikedRes.status    === 'fulfilled' ? isLikedRes.value.data       : null;
+        const userResult = userRes.status === 'fulfilled' ? userRes.value : { data: null, error: true };
+        const followersCount = followersRes.status === 'fulfilled' ? (followersRes.value.count || 0) : 0;
+        const followingCount = followingRes.status === 'fulfilled' ? (followingRes.value.count || 0) : 0;
+        const isFollowingData = isFollowingRes.status === 'fulfilled' ? isFollowingRes.value.data : null;
+        const isFollowedByData = isFollowedByRes.status === 'fulfilled' ? isFollowedByRes.value.data : null;
+        const profileLikes = likeCountRes.status === 'fulfilled' ? (likeCountRes.value.count || 0) : 0;
+        const isLikedData = isLikedRes.status === 'fulfilled' ? isLikedRes.value.data : null;
 
         const user = userResult.data;
 
@@ -2761,7 +2761,7 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
             ]);
             isBlocked = !!iBlockedThem;
             isBlockingMe = !!theyBlockedMe;
-        } catch (_) {}
+        } catch (_) { }
 
         if (userResult.error || !user) return res.status(404).json({ error: 'User not found' });
 
@@ -3122,7 +3122,7 @@ app.post('/api/verify-email', async (req, res) => {
 
         const cached = signupOtpCache.get(email);
         if (!cached) return res.status(400).json({ error: 'No verification pending or code expired' });
-        
+
         if (Date.now() > cached.expiresAt) {
             signupOtpCache.delete(email);
             return res.status(400).json({ error: 'Verification code expired' });
@@ -3640,6 +3640,48 @@ const enrichPosts = async (posts, currentUserId) => {
     });
 };
 
+// GET search posts by hashtag/query
+app.get('/api/search/posts', authenticateToken, async (req, res) => {
+    try {
+        const { query } = req.query;
+        if (!query || query.trim().length < 2) return res.json({ success: true, posts: [], count: 0 });
+        const searchTerm = query.trim();
+
+        const blockedIds = await getBlockedIds(req.user.id);
+        const findQuery = {
+            content: { $regex: searchTerm, $options: 'i' }
+        };
+        if (blockedIds.length > 0) findQuery.userId = { $nin: blockedIds };
+
+        const posts = await Post.find(findQuery).sort({ createdAt: -1 }).limit(50);
+        const enriched = await enrichPosts(posts, req.user.id);
+
+        const authorIds = [...new Set(enriched.map(p => p.userId).filter(id => id && id !== req.user.id))];
+        const followSet = new Set();
+        if (authorIds.length > 0) {
+            const { data: followRecords } = await supabase
+                .from('followers')
+                .select('following_id')
+                .eq('follower_id', req.user.id)
+                .in('following_id', authorIds);
+
+            if (followRecords) {
+                followRecords.forEach(r => followSet.add(r.following_id));
+            }
+        }
+
+        const postsWithFollow = enriched.map((post) => {
+            const isFollowingAuthor = post.userId === req.user.id ? false : followSet.has(post.userId);
+            return { ...post, is_following_author: isFollowingAuthor };
+        });
+
+        res.json({ success: true, posts: postsWithFollow, count: postsWithFollow.length });
+    } catch (error) {
+        console.error("❌ Search posts error:", error);
+        res.status(500).json({ error: 'Search failed', success: false, posts: [], count: 0 });
+    }
+});
+
 // GET my posts
 app.get('/api/posts/my', authenticateToken, async (req, res) => {
     try {
@@ -3934,7 +3976,12 @@ app.patch('/api/posts/:postId', authenticateToken, async (req, res) => {
     try {
         const post = await Post.findById(req.params.postId);
         if (!post || post.userId !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
-        post.content = req.body.content ?? '';
+        if (req.body.content !== undefined) {
+            if (!req.body.content || !/#\w+/.test(req.body.content)) {
+                return res.status(400).json({ error: 'Post must contain at least one hashtag (e.g., #vibers, #paper, #trip)' });
+            }
+            post.content = req.body.content;
+        }
         post.updatedAt = new Date();
         await post.save();
         res.json({ success: true, post: { ...post.toObject(), id: post._id.toString() } });
@@ -3947,8 +3994,9 @@ app.patch('/api/posts/:postId', authenticateToken, async (req, res) => {
 app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req, res) => {
     try {
         const { content, postTo, music, stickers } = req.body;
-        if (!content && (!req.files || req.files.length === 0))
-            return res.status(400).json({ error: 'Post content or media required' });
+        if (!content || !/#\w+/.test(content)) {
+            return res.status(400).json({ error: 'Post must contain at least one hashtag (e.g., #vibers, #paper, #trip)' });
+        }
         if (postTo === 'community' && (!req.user.community_joined || !req.user.college))
             return res.status(400).json({ error: 'Join a university community first' });
 
@@ -4367,7 +4415,7 @@ app.post('/api/community/react/:messageId', authenticateToken, async (req, res) 
         if (!emoji) return res.status(400).json({ error: 'emoji required' });
         const { data: message } = await supabase.from('community_messages').select('id,college_name').eq('id', messageId).single();
         if (!message) return res.status(404).json({ error: 'Message not found' });
-        
+
         // Use in-memory reaction map
         const key = messageId.toString();
         const reactions = communityReactions.get(key) || {};
