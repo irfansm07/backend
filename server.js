@@ -33,7 +33,7 @@ const {
     PlatformNotification, SellerRequest,
     ClientRequest, ClientProduct, OrderMessage,
     Complaint, Coupon, ProductReview, CollegeRequest,
-    Block, CombineRequest, PartnerLink
+    Block, CombineRequest, PartnerLink, PinnedMessage
 } = require('./config/mongodb');
 const redis = require('./config/redis');
 
@@ -661,6 +661,91 @@ app.get('/api/blocks', authenticateToken, async (req, res) => {
         res.json({ success: true, blocks: enriched });
     } catch (err) {
         res.status(500).json({ error: 'Failed to load block list' });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
+// PINNED MESSAGES — user-specific message pinning, stored in MongoDB
+// ══════════════════════════════════════════════════════════════
+
+// POST /api/messages/pin — pin a message
+app.post('/api/messages/pin', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const {
+            messageId,
+            chatType,
+            chatName,
+            messageContent,
+            mediaUrl,
+            mediaType,
+            senderId,
+            senderName,
+            senderProfilePic
+        } = req.body;
+
+        if (!messageId || !chatType || !chatName || !senderId || !senderName) {
+            return res.status(400).json({ error: 'Missing required parameters' });
+        }
+
+        const pinned = await PinnedMessage.findOneAndUpdate(
+            { userId, messageId },
+            {
+                userId,
+                messageId,
+                chatType,
+                chatName,
+                messageContent: messageContent || '',
+                mediaUrl: mediaUrl || null,
+                mediaType: mediaType || null,
+                senderId,
+                senderName,
+                senderProfilePic: senderProfilePic || null
+            },
+            { upsert: true, new: true }
+        );
+
+        res.json({ success: true, pinned });
+    } catch (err) {
+        console.error('Pin message error:', err.message);
+        res.status(500).json({ error: 'Failed to pin message' });
+    }
+});
+
+// DELETE /api/messages/pin/:messageId — unpin a message
+app.delete('/api/messages/pin/:messageId', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { messageId } = req.params;
+        await PinnedMessage.findOneAndDelete({ userId, messageId });
+        res.json({ success: true, message: 'Message unpinned' });
+    } catch (err) {
+        console.error('Unpin message error:', err.message);
+        res.status(500).json({ error: 'Failed to unpin message' });
+    }
+});
+
+// GET /api/messages/pinned — get all pinned messages for the current user
+app.get('/api/messages/pinned', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const pinned = await PinnedMessage.find({ userId }).sort({ createdAt: -1 }).lean();
+        res.json({ success: true, pinned });
+    } catch (err) {
+        console.error('Get pinned messages error:', err.message);
+        res.status(500).json({ error: 'Failed to fetch pinned messages' });
+    }
+});
+
+// GET /api/messages/pinned/check/:messageId — check if a message is pinned by the user
+app.get('/api/messages/pinned/check/:messageId', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { messageId } = req.params;
+        const exists = await PinnedMessage.findOne({ userId, messageId }).lean();
+        res.json({ success: true, isPinned: !!exists });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to check pin status' });
     }
 });
 

@@ -278,6 +278,22 @@ const partnerLinkSchema = new mongoose.Schema({
 partnerLinkSchema.index({ user1Id: 1 }, { unique: true });
 partnerLinkSchema.index({ user2Id: 1 }, { unique: true });
 
+// ── Pinned Messages ──────────────────────────────────────────
+const pinnedMessageSchema = new mongoose.Schema({
+    userId: { type: String, required: true, index: true },
+    messageId: { type: String, required: true, index: true },
+    chatType: { type: String, required: true }, // e.g., 'community', 'ghost', 'mutual', 'executive'
+    chatName: { type: String, required: true },
+    messageContent: { type: String, default: '' },
+    mediaUrl: { type: String, default: null },
+    mediaType: { type: String, default: null },
+    senderId: { type: String, required: true },
+    senderName: { type: String, required: true },
+    senderProfilePic: { type: String, default: null }
+}, { timestamps: true });
+
+pinnedMessageSchema.index({ userId: 1, messageId: 1 }, { unique: true });
+
 // ── Models ────────────────────────────────────────────────────
 const Post = mongoose.models.Post || mongoose.model('Post', postSchema);
 const PostLike = mongoose.models.PostLike || mongoose.model('PostLike', postLikeSchema);
@@ -299,6 +315,7 @@ const CollegeRequest = mongoose.models.CollegeRequest || mongoose.model('College
 const Block = mongoose.models.Block || mongoose.model('Block', blockSchema);
 const CombineRequest = mongoose.models.CombineRequest || mongoose.model('CombineRequest', combineRequestSchema);
 const PartnerLink = mongoose.models.PartnerLink || mongoose.model('PartnerLink', partnerLinkSchema);
+const PinnedMessage = mongoose.models.PinnedMessage || mongoose.model('PinnedMessage', pinnedMessageSchema);
 
 module.exports = {
     connectMongo,
@@ -321,5 +338,6 @@ module.exports = {
     CollegeRequest,
     Block,
     CombineRequest,
-    PartnerLink
+    PartnerLink,
+    PinnedMessage
 };
