@@ -294,6 +294,12 @@ const pinnedMessageSchema = new mongoose.Schema({
 
 pinnedMessageSchema.index({ userId: 1, messageId: 1 }, { unique: true });
 
+// ── FCM Tokens ──────────────────────────────────────────
+const fcmTokenSchema = new mongoose.Schema({
+    userId: { type: String, required: true, index: true },
+    token: { type: String, required: true, unique: true }
+}, { timestamps: true });
+
 // ── Models ────────────────────────────────────────────────────
 const Post = mongoose.models.Post || mongoose.model('Post', postSchema);
 const PostLike = mongoose.models.PostLike || mongoose.model('PostLike', postLikeSchema);
@@ -316,6 +322,7 @@ const Block = mongoose.models.Block || mongoose.model('Block', blockSchema);
 const CombineRequest = mongoose.models.CombineRequest || mongoose.model('CombineRequest', combineRequestSchema);
 const PartnerLink = mongoose.models.PartnerLink || mongoose.model('PartnerLink', partnerLinkSchema);
 const PinnedMessage = mongoose.models.PinnedMessage || mongoose.model('PinnedMessage', pinnedMessageSchema);
+const FcmToken = mongoose.models.FcmToken || mongoose.model('FcmToken', fcmTokenSchema);
 
 module.exports = {
     connectMongo,
@@ -339,5 +346,6 @@ module.exports = {
     Block,
     CombineRequest,
     PartnerLink,
-    PinnedMessage
+    PinnedMessage,
+    FcmToken
 };

@@ -33,9 +33,44 @@ const {
     PlatformNotification, SellerRequest,
     ClientRequest, ClientProduct, OrderMessage,
     Complaint, Coupon, ProductReview, CollegeRequest,
-    Block, CombineRequest, PartnerLink, PinnedMessage
+    Block, CombineRequest, PartnerLink, PinnedMessage,
+    FcmToken
 } = require('./config/mongodb');
 const redis = require('./config/redis');
+
+// Initialize Firebase Admin dynamically for FCM Background Notifications
+let firebaseAdmin = null;
+try {
+    const admin = require('firebase-admin');
+    let serviceAccount = null;
+
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+        try {
+            serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+            console.log('✅ Loaded Firebase credentials from FIREBASE_SERVICE_ACCOUNT env var.');
+        } catch (parseErr) {
+            console.error('❌ Failed to parse FIREBASE_SERVICE_ACCOUNT env var:', parseErr.message);
+        }
+    } else {
+        const serviceAccountPath = path.join(__dirname, 'firebase-service-account.json');
+        if (fs.existsSync(serviceAccountPath)) {
+            serviceAccount = require(serviceAccountPath);
+            console.log('✅ Loaded Firebase credentials from firebase-service-account.json.');
+        }
+    }
+
+    if (serviceAccount) {
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount)
+        });
+        firebaseAdmin = admin;
+        console.log('🔥 Firebase Admin SDK initialized successfully');
+    } else {
+        console.warn('⚠️ No Firebase service account config found (env var or JSON file). Background push notifications via FCM will be disabled (non-critical).');
+    }
+} catch (e) {
+    console.error('⚠️ Failed to initialize Firebase Admin SDK:', e.message);
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -342,6 +377,54 @@ const pushNotification = async (userId, notification) => {
         const targetSocketId = userSockets.get(userId);
         if (targetSocketId) {
             io.to(targetSocketId).emit('new_notification', { ...notification, timestamp: Date.now(), read: false });
+        }
+
+        // ── Send Firebase Background Push Notification (FCM) ──
+        if (firebaseAdmin) {
+            try {
+                // Find all FCM tokens registered for this user
+                const registeredTokens = await FcmToken.find({ userId });
+                if (registeredTokens && registeredTokens.length > 0) {
+                    const tokens = registeredTokens.map(t => t.token);
+
+                    const payload = {
+                        notification: {
+                            title: 'VIBEXPERT',
+                            body: notification.message || 'New notification received',
+                        },
+                        data: {
+                            type: notification.type || 'general',
+                            click_action: 'FLUTTER_NOTIFICATION_CLICK',
+                            payloadDetails: typeof notification.data === 'object' ? JSON.stringify(notification.data) : (notification.data || '')
+                        }
+                    };
+
+                    // Send to multiple tokens
+                    const response = await firebaseAdmin.messaging().sendEachForMulticast({
+                        tokens: tokens,
+                        notification: payload.notification,
+                        data: payload.data
+                    });
+
+                    console.log(`📡 FCM Multicast: successfully sent ${response.successCount} notifications`);
+
+                    // Cleanup invalid/expired tokens in background
+                    if (response.failureCount > 0) {
+                        response.responses.forEach(async (resp, idx) => {
+                            if (!resp.success) {
+                                const errCode = resp.error?.code;
+                                if (errCode === 'messaging/invalid-registration-token' || errCode === 'messaging/registration-token-not-registered') {
+                                    const badToken = tokens[idx];
+                                    await FcmToken.deleteOne({ token: badToken });
+                                    console.log(`🧹 Cleaned up invalid/expired FCM token: ${badToken.substring(0, 10)}...`);
+                                }
+                            }
+                        });
+                    }
+                }
+            } catch (fcmErr) {
+                console.error('⚠️ FCM notification delivery failed:', fcmErr.message);
+            }
         }
     } catch (err) {
         console.error('⚠️ Redis push failed (non-critical):', err.message);
@@ -1424,6 +1507,38 @@ app.post('/api/admin/users/:id/warn', authenticateToken, async (req, res) => {
         });
         res.json({ success: true, message: 'Warning sent.' });
     } catch (error) { res.status(500).json({ error: 'Failed to warn user' }); }
+});
+
+// ── FCM Token Management ─────────────────────────────────────────
+app.post('/api/notifications/register-token', authenticateToken, async (req, res) => {
+    try {
+        const { token } = req.body;
+        if (!token) return res.status(400).json({ error: 'Token is required' });
+
+        await FcmToken.findOneAndUpdate(
+            { token },
+            { userId: req.user.id, token },
+            { upsert: true, new: true }
+        );
+
+        res.json({ success: true, message: 'FCM Token registered successfully' });
+    } catch (e) {
+        console.error('⚠️ Error registering FCM token:', e.message);
+        res.status(500).json({ error: 'Failed to register FCM token' });
+    }
+});
+
+app.post('/api/notifications/unregister-token', authenticateToken, async (req, res) => {
+    try {
+        const { token } = req.body;
+        if (!token) return res.status(400).json({ error: 'Token is required' });
+
+        await FcmToken.findOneAndDelete({ token, userId: req.user.id });
+        res.json({ success: true, message: 'FCM Token unregistered successfully' });
+    } catch (e) {
+        console.error('⚠️ Error unregistering FCM token:', e.message);
+        res.status(500).json({ error: 'Failed to unregister FCM token' });
+    }
 });
 
 app.post('/api/admin/notifications', authenticateToken, async (req, res) => {
