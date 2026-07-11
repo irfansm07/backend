@@ -376,7 +376,7 @@ const pushNotification = async (userId, notification) => {
         // Emit socket event for real-time updates
         const targetSocketId = userSockets.get(userId);
         if (targetSocketId) {
-            io.to(targetSocketId).emit('new_notification', { ...notification, timestamp: Date.now(), read: false });
+            targetSocketId.forEach(sid => io.to(sid).emit('new_notification', { ...notification, timestamp: Date.now(), read: false }));
         }
 
         // ── Send Firebase Background Push Notification (FCM) ──
@@ -666,7 +666,9 @@ app.post('/api/users/:id/block', authenticateToken, async (req, res) => {
         // Real-time: tell the blocked user's socket that they can no longer see this user.
         // The client should remove the blocker from feeds/DM list immediately.
         const blockedSocket = userSockets.get(blockedId);
-        if (blockedSocket) io.to(blockedSocket).emit('user_blocked_you', { blockerId });
+        if (blockedSocket) {
+            blockedSocket.forEach(sid => io.to(sid).emit('user_blocked_you', { blockerId }));
+        }
 
         res.json({ success: true, blocked: true, message: 'User blocked' });
     } catch (err) {
@@ -891,7 +893,7 @@ app.delete('/api/user/delete-account', authenticateToken, async (req, res) => {
         // ── 7. Kick socket offline ─────────────────────────────────────────
         const socketId = userSockets.get(userId);
         if (socketId) {
-            io.to(socketId).emit('account_deleted');
+            socketId.forEach(sid => io.to(sid).emit('account_deleted'));
             userSockets.delete(userId);
         }
 
@@ -1557,7 +1559,7 @@ app.post('/api/admin/notifications', authenticateToken, async (req, res) => {
         if (target === 'specific' && targetUserId) {
             const targetSocketId = userSockets.get(targetUserId);
             if (targetSocketId) {
-                io.to(targetSocketId).emit('new_platform_notification', notif);
+                targetSocketId.forEach(sid => io.to(sid).emit('new_platform_notification', notif));
             }
         } else {
             io.emit('new_platform_notification', notif);
@@ -3183,7 +3185,9 @@ app.post('/api/follow/:userId', authenticateToken, async (req, res) => {
         const { count: tf } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId);
         const { count: mf } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', req.user.id);
         const targetSocketId = userSockets.get(userId);
-        if (targetSocketId) io.to(targetSocketId).emit('new_follow', { followerId: req.user.id, followerUsername: req.user.username, followerProfilePic: req.user.profile_pic || null, followingId: userId, newFollowersCount: tf || 0 });
+        if (targetSocketId) {
+            targetSocketId.forEach(sid => io.to(sid).emit('new_follow', { followerId: req.user.id, followerUsername: req.user.username, followerProfilePic: req.user.profile_pic || null, followingId: userId, newFollowersCount: tf || 0 }));
+        }
         // Push notification
         // Push notification to the person being followed
         await pushNotification(userId, { type: 'new_follow', message: `${req.user.username} started following you`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null });
@@ -3202,7 +3206,9 @@ app.post('/api/unfollow/:userId', authenticateToken, async (req, res) => {
         const { count: tf } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId);
         const { count: mf } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', req.user.id);
         const targetSocketId = userSockets.get(userId);
-        if (targetSocketId) io.to(targetSocketId).emit('lost_follow', { followerId: req.user.id, followingId: userId, newFollowersCount: tf || 0 });
+        if (targetSocketId) {
+            targetSocketId.forEach(sid => io.to(sid).emit('lost_follow', { followerId: req.user.id, followingId: userId, newFollowersCount: tf || 0 }));
+        }
         res.json({ success: true, isFollowing: false, targetFollowersCount: tf || 0, myFollowingCount: mf || 0 });
     } catch (error) {
         res.status(500).json({ error: 'Failed to unfollow user' });
@@ -4702,7 +4708,7 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
 
         const message = { ...insertedMsg, anon_name: anonName, users: { id: req.user.id, username: anonName, profile_pic: null }, reply_to: replyToData };
         const senderSocketId = userSockets.get(req.user.id);
-        if (senderSocketId) io.to(req.user.college).except(senderSocketId).emit('new_message', message);
+        if (senderSocketId) io.to(req.user.college).except(Array.from(senderSocketId)).emit('new_message', message);
         else io.to(req.user.college).emit('new_message', message);
         res.json({ success: true, message });
     } catch (error) {
@@ -4863,7 +4869,9 @@ app.post('/api/dm/react/:messageId', authenticateToken, async (req, res) => {
         if (updateErr) throw updateErr;
         const otherId = msg.sender_id === uid ? msg.receiver_id : msg.sender_id;
         const otherSocket = userSockets.get(otherId);
-        if (otherSocket) io.to(otherSocket).emit('dm_reaction', { messageId, reactions, reactorId: uid });
+        if (otherSocket) {
+            otherSocket.forEach(sid => io.to(sid).emit('dm_reaction', { messageId, reactions, reactorId: uid }));
+        }
         res.json({ success: true, reactions });
     } catch (error) {
         res.status(500).json({ error: 'Failed to react: ' + error.message });
@@ -4882,7 +4890,9 @@ app.put('/api/dm/messages/:messageId', authenticateToken, async (req, res) => {
         const { data: updated, error: updateErr } = await supabase.from('direct_messages').update({ content, is_edited: true, updated_at: new Date() }).eq('id', messageId).select().single();
         if (updateErr) throw updateErr;
         const otherSocket = userSockets.get(msg.receiver_id);
-        if (otherSocket) io.to(otherSocket).emit('dm_message_updated', updated);
+        if (otherSocket) {
+            otherSocket.forEach(sid => io.to(sid).emit('dm_message_updated', updated));
+        }
         res.json({ success: true, dm: updated });
     } catch (error) {
         res.status(500).json({ error: 'Failed to edit DM: ' + error.message });
@@ -4899,7 +4909,9 @@ app.delete('/api/dm/messages/:messageId', authenticateToken, async (req, res) =>
         const { error: delErr } = await supabase.from('direct_messages').delete().eq('id', messageId);
         if (delErr) throw delErr;
         const otherSocket = userSockets.get(msg.receiver_id);
-        if (otherSocket) io.to(otherSocket).emit('dm_message_deleted', { id: messageId });
+        if (otherSocket) {
+            otherSocket.forEach(sid => io.to(sid).emit('dm_message_deleted', { id: messageId }));
+        }
         res.json({ success: true, message: 'Deleted' });
     } catch (error) {
         res.status(500).json({ error: 'Failed to delete DM: ' + error.message });
@@ -4970,7 +4982,7 @@ app.get('/api/dm/messages/:otherId', authenticateToken, async (req, res) => {
         supabase.from('direct_messages').update({ is_read: true }).eq('sender_id', otherId).eq('receiver_id', uid).eq('is_read', false)
             // BUG FIX (BUG-27): conversationWith was incorrectly set to `uid` (reader's own ID).
             // It should be `otherId` so the sender knows which conversation was opened.
-            .then(() => { const s = userSockets.get(otherId); if (s) io.to(s).emit('dm_read', { readBy: uid, conversationWith: otherId }); }).catch(() => { });
+            .then(() => { const s = userSockets.get(otherId); if (s) s.forEach(sid => io.to(sid).emit('dm_read', { readBy: uid, conversationWith: otherId })); }).catch(() => { });
         const [u1, u2] = [uid, otherId].sort();
         const unreadField = u1 === uid ? 'unread_count_user1' : 'unread_count_user2';
         supabase.from('dm_conversations').update({ [unreadField]: 0 }).eq('user1_id', u1).eq('user2_id', u2).then(() => { }).catch(() => { });
@@ -5006,7 +5018,9 @@ app.delete('/api/dm/messages/:messageId', authenticateToken, async (req, res) =>
         // Notify the other person in real-time
         const otherId = String(msg.receiver_id);
         const otherSocket = userSockets.get(otherId);
-        if (otherSocket) io.to(otherSocket).emit('dm_message_deleted', { messageId });
+        if (otherSocket) {
+            otherSocket.forEach(sid => io.to(sid).emit('dm_message_deleted', { messageId }));
+        }
 
         // Update conversation's last_message if this was the most recent one
         try {
@@ -5062,7 +5076,9 @@ app.put('/api/dm/messages/:messageId', authenticateToken, async (req, res) => {
         // Notify the other person of the edit
         const otherId = String(msg.receiver_id);
         const otherSocket = userSockets.get(otherId);
-        if (otherSocket) io.to(otherSocket).emit('dm_message_edited', { messageId, content: content.trim() });
+        if (otherSocket) {
+            otherSocket.forEach(sid => io.to(sid).emit('dm_message_edited', { messageId, content: content.trim() }));
+        }
 
         res.json({ success: true, dm: updated });
     } catch (error) {
@@ -5092,7 +5108,9 @@ app.delete('/api/dm/conversations/:otherId/clear', authenticateToken, async (req
 
         // Notify the other person
         const otherSocket = userSockets.get(otherId);
-        if (otherSocket) io.to(otherSocket).emit('dm_chat_cleared', { clearedBy: uid });
+        if (otherSocket) {
+            otherSocket.forEach(sid => io.to(sid).emit('dm_chat_cleared', { clearedBy: uid }));
+        }
 
         res.json({ success: true, message: 'Chat cleared' });
     } catch (error) {
@@ -5417,7 +5435,9 @@ app.post('/api/admin/realvibes/:vibeId/approve', authenticateToken, async (req, 
         const enriched = (await enrichVibes([vibe], null))[0];
         io.emit('new_realvibe', enriched);
         const userSocketId = userSockets.get(vibe.userId);
-        if (userSocketId) io.to(userSocketId).emit('realvibe_status_update', { vibeId, status: 'approved', message: '✅ Your RealVibe has been approved and is now live!' });
+        if (userSocketId) {
+            userSocketId.forEach(sid => io.to(sid).emit('realvibe_status_update', { vibeId, status: 'approved', message: '✅ Your RealVibe has been approved and is now live!' }));
+        }
         res.json({ success: true, message: 'Vibe approved and published' });
     } catch (err) { res.status(500).json({ error: 'Failed to approve vibe' }); }
 });
@@ -5440,7 +5460,9 @@ app.post('/api/admin/realvibes/:vibeId/reject', authenticateToken, async (req, r
         await supabase.from('real_vibe_moderation_log').insert([{ vibe_id: vibeId, admin_id: admin_name, action: 'rejected', rejection_reason: rejectionMsg }]);
         await supabase.from('real_vibe_notifications').insert([{ user_id: vibe.userId, vibe_id: vibeId, type: 'rejected', message: rejectionMsg }]);
         const userSocketId = userSockets.get(vibe.userId);
-        if (userSocketId) io.to(userSocketId).emit('realvibe_status_update', { vibeId, status: 'rejected', message: rejectionMsg });
+        if (userSocketId) {
+            userSocketId.forEach(sid => io.to(sid).emit('realvibe_status_update', { vibeId, status: 'rejected', message: rejectionMsg }));
+        }
         res.json({ success: true, message: 'Vibe rejected and user notified' });
     } catch (err) { res.status(500).json({ error: 'Failed to reject vibe' }); }
 });
@@ -5572,7 +5594,7 @@ app.post('/api/executive/messages', authenticateToken, (req, res, next) => {
         const finalMsg = { ...inserted, users: sender || { id: req.user.id, username: req.user.username, profile_pic: null }, reactions: [], read_by: [], reply_to: replyToData, poll: pollData };
         const senderSocketId = userSockets.get(req.user.id);
         const room = `exec_${req.user.college}`;
-        if (senderSocketId) io.to(room).except(senderSocketId).emit('exec_new_message', finalMsg);
+        if (senderSocketId) io.to(room).except(Array.from(senderSocketId)).emit('exec_new_message', finalMsg);
         else io.to(room).emit('exec_new_message', finalMsg);
         res.json({ success: true, message: finalMsg });
     } catch (err) { res.status(500).json({ error: 'Failed to send message', details: err.message }); }
