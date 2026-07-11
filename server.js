@@ -398,20 +398,26 @@ const pushNotification = async (userId, notification) => {
         // ── Send Firebase Background Push Notification (FCM) ──
         if (firebaseAdmin) {
             try {
-                // Find all FCM tokens registered for this user
-                const registeredTokens = await FcmToken.find({ userId });
+                // Find all FCM tokens registered for this user (using stringified targetUserId)
+                const registeredTokens = await FcmToken.find({ userId: targetUserId });
                 if (registeredTokens && registeredTokens.length > 0) {
                     const tokens = registeredTokens.map(t => t.token);
 
                     const payload = {
                         notification: {
-                            title: 'VIBEXPERT',
+                            title: notification.fromUsername || 'VIBEXPERT',
                             body: notification.message || 'New notification received',
                         },
                         data: {
-                            type: notification.type || 'general',
+                            type: (notification.type || 'general').toString(),
                             click_action: 'FLUTTER_NOTIFICATION_CLICK',
-                            payloadDetails: typeof notification.data === 'object' ? JSON.stringify(notification.data) : (notification.data || '')
+                            message: (notification.message || '').toString(),
+                            from: (notification.from || '').toString(),
+                            fromUsername: (notification.fromUsername || '').toString(),
+                            fromPic: (notification.fromPic || '').toString(),
+                            postId: (notification.postId || '').toString(),
+                            vibeId: (notification.vibeId || '').toString(),
+                            payloadDetails: JSON.stringify(notification)
                         }
                     };
 
