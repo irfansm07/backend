@@ -82,6 +82,18 @@ const io = socketIO(server, {
 });
 
 const userSockets = new Map(); // userId -> Set(socketIds)
+
+// Bulletproof wrapper to automatically stringify Mongoose ObjectIds or other types used as keys
+const originalGet = userSockets.get.bind(userSockets);
+const originalSet = userSockets.set.bind(userSockets);
+const originalHas = userSockets.has.bind(userSockets);
+const originalDelete = userSockets.delete.bind(userSockets);
+
+userSockets.get = (key) => key ? originalGet(key.toString()) : undefined;
+userSockets.set = (key, value) => key ? originalSet(key.toString(), value) : userSockets;
+userSockets.has = (key) => key ? originalHas(key.toString()) : false;
+userSockets.delete = (key) => key ? originalDelete(key.toString()) : false;
+
 const collegeGhostNames = new Map();
 const communityReactions = new Map();
 
@@ -148,15 +160,17 @@ io.on('connection', (socket) => {
     });
 
     socket.on('user_online', async (userId) => {
-        socket.data.userId = userId;
-        if (!userSockets.has(userId)) userSockets.set(userId, new Set());
-        userSockets.get(userId).add(socket.id);
-        await supabase.from('users').update({ last_seen: null }).eq('id', userId);
+        if (!userId) return;
+        const targetUserId = userId.toString();
+        socket.data.userId = targetUserId;
+        if (!userSockets.has(targetUserId)) userSockets.set(targetUserId, new Set());
+        userSockets.get(targetUserId).add(socket.id);
+        await supabase.from('users').update({ last_seen: null }).eq('id', targetUserId);
         const targetCollege = socket.data.college;
         if (targetCollege) {
-            io.to(targetCollege).emit('user_online_broadcast', { userId });
+            io.to(targetCollege).emit('user_online_broadcast', { userId: targetUserId });
         } else {
-            socket.emit('user_online_broadcast', { userId });
+            socket.emit('user_online_broadcast', { userId: targetUserId });
         }
     });
 
@@ -368,13 +382,15 @@ const uploadToCloudinary = (fileBuffer, mimeType, folder = 'vibexpert/general') 
 // ══════════════════════════════════════════════════════════════
 const pushNotification = async (userId, notification) => {
     try {
-        await redis.lpush(`notifications:${userId}`, JSON.stringify({
+        if (!userId) return;
+        const targetUserId = userId.toString();
+        await redis.lpush(`notifications:${targetUserId}`, JSON.stringify({
             ...notification, id: `notif_${Date.now()}`, timestamp: Date.now(), read: false
         }));
-        await redis.ltrim(`notifications:${userId}`, 0, 49);
+        await redis.ltrim(`notifications:${targetUserId}`, 0, 49);
 
         // Emit socket event for real-time updates
-        const targetSocketId = userSockets.get(userId);
+        const targetSocketId = userSockets.get(targetUserId);
         if (targetSocketId) {
             targetSocketId.forEach(sid => io.to(sid).emit('new_notification', { ...notification, timestamp: Date.now(), read: false }));
         }
