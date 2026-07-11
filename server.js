@@ -4307,7 +4307,11 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
                 ]
             }).lean();
             if (!isAnyBlock) {
-                await pushNotification(post.userId, { type: 'post_liked', message: `${req.user.username} liked your post`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId });
+                const likeNotifData = { type: 'post_liked', message: `${req.user.username} liked your post`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId };
+                await pushNotification(post.userId, likeNotifData);
+                // Direct targeted socket emission (bypasses new_notification)
+                const ownerSockets = userSockets.get(post.userId);
+                if (ownerSockets) ownerSockets.forEach(sid => io.to(sid).emit('post_liked_notif', likeNotifData));
             }
         }
         // BUG FIX (BUG-29): Removed self-notification for liking — inflated actor's badge.
@@ -4421,7 +4425,11 @@ app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
         io.emit('post_commented', { postId, commentCount });
         // Push notification to post owner (only if not your own post)
         if (post && post.userId !== req.user.id) {
-            await pushNotification(post.userId, { type: 'new_comment', message: `${req.user.username} commented on your post`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId });
+            const commentNotifData = { type: 'new_comment', message: `${req.user.username} commented on your post`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId };
+            await pushNotification(post.userId, commentNotifData);
+            // Direct targeted socket emission (bypasses new_notification)
+            const ownerSockets = userSockets.get(post.userId);
+            if (ownerSockets) ownerSockets.forEach(sid => io.to(sid).emit('new_comment_notif', commentNotifData));
         }
         // BUG FIX (BUG-29): Removed self-notification for commenting — inflated actor's badge.
         res.json({ success: true, comment: { ...comment.toObject(), id: comment._id.toString() } });
@@ -4453,7 +4461,11 @@ app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
         // Push notification to post owner
         const post = await Post.findById(postId);
         if (post && post.userId !== req.user.id) {
-            await pushNotification(post.userId, { type: 'post_shared', message: `${req.user.username} shared your post`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId });
+            const shareNotifData = { type: 'post_shared', message: `${req.user.username} shared your post`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId };
+            await pushNotification(post.userId, shareNotifData);
+            // Direct targeted socket emission (bypasses new_notification)
+            const ownerSockets = userSockets.get(post.userId);
+            if (ownerSockets) ownerSockets.forEach(sid => io.to(sid).emit('post_shared_notif', shareNotifData));
         }
         // Also log in user's own activity as requested
         await pushNotification(req.user.id, { type: 'post_shared', message: `You shared a post`, from: req.user.id, fromUsername: 'You', fromPic: req.user.profile_pic || null, postId });
