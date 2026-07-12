@@ -1017,6 +1017,7 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
             success: true,
             orderId: orderId,
             payment_session_id: paymentSessionId,
+            payment_link: cashfreeOrder.payment_link,
             amount,
             environment: isProduction ? 'production' : 'sandbox'
         });
