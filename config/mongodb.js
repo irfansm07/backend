@@ -59,7 +59,8 @@ const postCommentSchema = new mongoose.Schema({
     userId: { type: String, required: true },
     content: { type: String, required: true },
     likes: { type: Number, default: 0 },
-    likes_users: { type: [String], default: [] }
+    likes_users: { type: [String], default: [] },
+    isPinned: { type: Boolean, default: false }
 }, { timestamps: true });
 
 // Post Shares
@@ -104,7 +105,8 @@ const realVibeCommentSchema = new mongoose.Schema({
     userId: { type: String, required: true },
     content: { type: String, required: true },
     likes: { type: Number, default: 0 },
-    likes_users: { type: [String], default: [] }
+    likes_users: { type: [String], default: [] },
+    isPinned: { type: Boolean, default: false }
 }, { timestamps: true });
 
 // Seller Requests

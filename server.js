@@ -4378,11 +4378,63 @@ app.post('/api/comments/:commentId/like', authenticateToken, async (req, res) =>
     }
 });
 
+// POST pin / unpin comment (post owner only)
+app.post('/api/comments/:commentId/pin', authenticateToken, async (req, res) => {
+    try {
+        const { commentId } = req.params;
+        let comment = await PostComment.findById(commentId);
+        let isRealVibe = false;
+        if (!comment) {
+            comment = await RealVibeComment.findById(commentId);
+            isRealVibe = true;
+        }
+        if (!comment) return res.status(404).json({ error: 'Comment not found' });
+
+        let ownerId;
+        if (isRealVibe) {
+            const vibe = await RealVibe.findById(comment.vibeId);
+            if (!vibe) return res.status(404).json({ error: 'RealVibe not found' });
+            ownerId = vibe.userId;
+        } else {
+            const post = await Post.findById(comment.postId);
+            if (!post) return res.status(404).json({ error: 'Post not found' });
+            ownerId = post.userId;
+        }
+
+        if (ownerId !== req.user.id) {
+            return res.status(403).json({ error: 'Only the Vibesoul can pin comments' });
+        }
+
+        const willPin = !comment.isPinned;
+
+        if (willPin) {
+            // Unpin ALL comments on this post/vibe first (only one pin allowed)
+            if (isRealVibe) {
+                await RealVibeComment.updateMany({ vibeId: comment.vibeId }, { $set: { isPinned: false } });
+            } else {
+                await PostComment.updateMany({ postId: comment.postId }, { $set: { isPinned: false } });
+            }
+        }
+
+        // Use findByIdAndUpdate — avoids stale in-memory document overwriting DB after updateMany
+        if (isRealVibe) {
+            await RealVibeComment.findByIdAndUpdate(commentId, { $set: { isPinned: willPin } });
+        } else {
+            await PostComment.findByIdAndUpdate(commentId, { $set: { isPinned: willPin } });
+        }
+
+        res.json({ success: true, pinned: willPin });
+    } catch (error) {
+        console.error('Comment pinning error:', error);
+        res.status(500).json({ error: 'Failed to pin/unpin comment: ' + error.message });
+    }
+});
+
 // GET comments
 app.get('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
     try {
         const blockedIds = await getBlockedIds(req.user.id);
-        const comments = await PostComment.find({ postId: req.params.postId }).sort({ createdAt: -1 });
+        const comments = await PostComment.find({ postId: req.params.postId }).sort({ isPinned: -1, createdAt: -1 });
         const userIds = [...new Set(comments.map(c => c.userId))];
         const { data: users } = await supabase.from('users').select('id,username,profile_pic').in('id', userIds);
         const userMap = {};
@@ -4398,7 +4450,10 @@ app.get('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
                     is_liked: likesUsers.includes(req.user.id),
                     liked: likesUsers.includes(req.user.id),
                     like_count: likesUsers.length,
-                    likeCount: likesUsers.length
+                    likeCount: likesUsers.length,
+                    isPinned: c.isPinned || false,
+                    pinned: c.isPinned || false,
+                    is_pinned: c.isPinned || false
                 };
             });
         res.json({ success: true, comments: enriched });
@@ -5360,7 +5415,7 @@ app.get('/api/realvibes/:vibeId/likes', authenticateToken, async (req, res) => {
 app.get('/api/realvibes/:vibeId/comments', authenticateToken, async (req, res) => {
     try {
         const blockedIds = await getBlockedIds(req.user.id);
-        const comments = await RealVibeComment.find({ vibeId: req.params.vibeId }).sort({ createdAt: 1 });
+        const comments = await RealVibeComment.find({ vibeId: req.params.vibeId }).sort({ isPinned: -1, createdAt: 1 });
         const userIds = [...new Set(comments.map(c => c.userId))];
         const { data: users } = await supabase.from('users').select('id,username,profile_pic').in('id', userIds);
         const userMap = {};
@@ -5376,7 +5431,10 @@ app.get('/api/realvibes/:vibeId/comments', authenticateToken, async (req, res) =
                     is_liked: likesUsers.includes(req.user.id),
                     liked: likesUsers.includes(req.user.id),
                     like_count: likesUsers.length,
-                    likeCount: likesUsers.length
+                    likeCount: likesUsers.length,
+                    isPinned: c.isPinned || false,
+                    pinned: c.isPinned || false,
+                    is_pinned: c.isPinned || false
                 };
             });
         res.json({ success: true, comments: enriched });
