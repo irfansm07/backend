@@ -932,6 +932,13 @@ app.delete('/api/user/delete-account', authenticateToken, async (req, res) => {
 app.get('/api/post-assets', (req, res) => res.json({ success: true, songs: availableSongs, stickers: availableStickers }));
 app.get('/api/music-library', (req, res) => res.json({ success: true, music: availableSongs }));
 app.get('/api/sticker-library', (req, res) => res.json({ success: true, stickers: availableStickers }));
+app.get('/api/debug-cashfree', (req, res) => {
+    res.json({
+        node_env: process.env.NODE_ENV,
+        app_id: process.env.CASHFREE_APP_ID || 'not_set',
+        secret_key_prefix: process.env.CASHFREE_SECRET_KEY ? process.env.CASHFREE_SECRET_KEY.slice(0, 12) : 'not_set'
+    });
+});
 
 const CASHFREE_APP_ID = process.env.CASHFREE_APP_ID;
 const CASHFREE_SECRET_KEY = process.env.CASHFREE_SECRET_KEY;
