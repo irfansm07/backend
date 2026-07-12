@@ -941,9 +941,18 @@ const CASHFREE_SECRET_KEY = process.env.CASHFREE_SECRET_KEY;
 // ══════════════════════════════════════════════════════════════
 app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
     try {
-        const { amount, planType, isFirstTime, returnUrl } = req.body;
-        if (!amount || !planType) return res.status(400).json({ error: 'Amount and plan type required' });
-        if (amount < 1 || amount > 10000) return res.status(400).json({ error: 'Invalid amount' });
+        const { planType, isFirstTime, returnUrl } = req.body;
+        if (!planType) return res.status(400).json({ error: 'Plan type is required' });
+
+        const lowerPlan = planType.toLowerCase();
+        let amount = 0;
+        if (lowerPlan === 'noble') {
+            amount = 15;
+        } else if (lowerPlan === 'royal') {
+            amount = 29;
+        } else {
+            return res.status(400).json({ error: 'Invalid plan type' });
+        }
 
         const orderId = `order_vibexpert_${req.user.id.slice(-8)}_${Date.now()}`;
         const customerName = req.user.username || req.user.email.split('@')[0];
@@ -1002,6 +1011,33 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
 
         if (!order_id) {
             return res.status(400).json({ success: false, error: 'Order ID is required' });
+        }
+
+        // Contact Cashfree to verify actual payment status of this order
+        try {
+            const verifyRes = await axios.get(
+                `https://api.cashfree.com/pg/orders/${order_id}`,
+                {
+                    headers: {
+                        'x-api-version': '2023-08-01',
+                        'x-client-id': CASHFREE_APP_ID,
+                        'x-client-secret': CASHFREE_SECRET_KEY
+                    }
+                }
+            );
+
+            const cfOrder = verifyRes.data;
+            console.log(`[Payment Verify] Cashfree order ${order_id} status is: ${cfOrder.order_status}`);
+
+            if (cfOrder.order_status !== 'PAID') {
+                return res.status(400).json({ success: false, error: 'Payment not completed or failed (status: ' + cfOrder.order_status + ')' });
+            }
+        } catch (cfErr) {
+            console.error('❌ Error checking order status on Cashfree:', cfErr.response?.data || cfErr.message);
+            return res.status(400).json({
+                success: false,
+                error: 'Could not verify payment status: ' + (cfErr.response?.data?.message || cfErr.message)
+            });
         }
 
         const plans = {
