@@ -165,6 +165,7 @@ io.on('connection', (socket) => {
         socket.data.userId = targetUserId;
         if (!userSockets.has(targetUserId)) userSockets.set(targetUserId, new Set());
         userSockets.get(targetUserId).add(socket.id);
+        io.emit('user_presence_change', { userId: targetUserId, isOnline: true });
         await supabase.from('users').update({ last_seen: null }).eq('id', targetUserId);
         const targetCollege = socket.data.college;
         if (targetCollege) {
@@ -228,6 +229,7 @@ io.on('connection', (socket) => {
                 userSocks.delete(socket.id);
                 if (userSocks.size === 0) {
                     userSockets.delete(offlineUserId);
+                    io.emit('user_presence_change', { userId: offlineUserId, isOnline: false });
                     supabase.from('users').update({ last_seen: new Date().toISOString() }).eq('id', offlineUserId)
                         .then(() => {
                             if (offlineCollege) io.to(offlineCollege).emit('user_offline', { userId: offlineUserId });
@@ -3009,6 +3011,7 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
                 partner,
                 isBlocked,
                 isBlockingMe,
+                is_online: userSockets.has(userId.toString()),
                 // Also include a stats block so Flutter can read stats['following'] reliably
                 stats: { followers: followersCount, following: followingCount }
             }
@@ -4834,7 +4837,12 @@ app.get('/api/dm/conversations', authenticateToken, async (req, res) => {
         let userMap = {};
         if (otherIds.length > 0) {
             const { data: users } = await supabase.from('users').select('id,username,profile_pic,last_seen,status_text').in('id', otherIds);
-            (users || []).forEach(u => { userMap[u.id] = u; });
+            (users || []).forEach(u => {
+                userMap[u.id] = {
+                    ...u,
+                    is_online: userSockets.has(u.id.toString())
+                };
+            });
         }
         const enriched = convList
             .filter(conv => {
@@ -5026,7 +5034,11 @@ app.get('/api/dm/mutual-follows', authenticateToken, async (req, res) => {
         if (filteredIds.length === 0) return res.json({ success: true, mutualFollows: [] });
 
         const { data: users } = await supabase.from('users').select('id,username,profile_pic,last_seen,status_text').in('id', filteredIds);
-        res.json({ success: true, mutualFollows: users || [] });
+        const enrichedUsers = (users || []).map(u => ({
+            ...u,
+            is_online: userSockets.has(u.id.toString())
+        }));
+        res.json({ success: true, mutualFollows: enrichedUsers });
     } catch (error) {
         res.status(500).json({ error: 'Failed to load mutual follows: ' + error.message });
     }
