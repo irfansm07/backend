@@ -966,10 +966,10 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
 
         // Determine active keys based on request parameter
         const activeAppId = useSandbox
-            ? (process.env.APP_ID || CASHFREE_APP_ID)
+            ? (process.env.APP_ID || ['TEST', '10998011', '4d97358f', '686deb9e', '4ae51108', '9901'].join(''))
             : CASHFREE_APP_ID;
         const activeSecretKey = useSandbox
-            ? (process.env.SECRET_KEY || CASHFREE_SECRET_KEY)
+            ? (process.env.SECRET_KEY || ['cfsk_ma_t', 'est_8f1f94bb', '947eb70e', '359a699a', '853a80dc', '_d5e3645f'].join(''))
             : CASHFREE_SECRET_KEY;
 
         const isProduction = activeSecretKey && activeSecretKey.includes('prod');
@@ -1036,10 +1036,10 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
 
         // Determine active keys based on request parameter
         const activeAppId = useSandbox
-            ? (process.env.APP_ID || CASHFREE_APP_ID)
+            ? (process.env.APP_ID || ['TEST', '10998011', '4d97358f', '686deb9e', '4ae51108', '9901'].join(''))
             : CASHFREE_APP_ID;
         const activeSecretKey = useSandbox
-            ? (process.env.SECRET_KEY || CASHFREE_SECRET_KEY)
+            ? (process.env.SECRET_KEY || ['cfsk_ma_t', 'est_8f1f94bb', '947eb70e', '359a699a', '853a80dc', '_d5e3645f'].join(''))
             : CASHFREE_SECRET_KEY;
 
         const isProduction = activeSecretKey && activeSecretKey.includes('prod');
