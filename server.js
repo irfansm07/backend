@@ -654,6 +654,47 @@ const getBlockedIds = async (userId) => {
 };
 
 // ══════════════════════════════════════════════════════════════
+// REPORT SYSTEM HELPER
+// Returns the list of reported postIds and userIds for a given userId.
+// Used to exclude reported content from feeds.
+// ══════════════════════════════════════════════════════════════
+const getReportedContent = async (userId) => {
+    if (!userId) return { postIds: [], userIds: [] };
+    try {
+        const reports = await Complaint.find({
+            userId,
+            type: { $in: ['report_post', 'report_user'] }
+        }).select('type message reportedPostId reportedUserId').lean();
+
+        const postIds = [];
+        const userIds = [];
+
+        reports.forEach(r => {
+            if (r.type === 'report_post') {
+                if (r.reportedPostId) {
+                    postIds.push(r.reportedPostId.toString());
+                } else {
+                    const match = r.message.match(/Post ID:\s*([a-f0-9]{24})/i);
+                    if (match) postIds.push(match[1]);
+                }
+            } else if (r.type === 'report_user') {
+                if (r.reportedUserId) {
+                    userIds.push(r.reportedUserId.toString());
+                } else {
+                    const match = r.message.match(/Reported User ID:\s*([a-zA-Z0-9_\-]+)/i);
+                    if (match) userIds.push(match[1]);
+                }
+            }
+        });
+
+        return { postIds, userIds };
+    } catch (err) {
+        console.error('⚠️ getReportedContent error:', err.message);
+        return { postIds: [], userIds: [] };
+    }
+};
+
+// ══════════════════════════════════════════════════════════════
 // BASIC ROUTES
 // ══════════════════════════════════════════════════════════════
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
@@ -1725,6 +1766,7 @@ app.post('/api/posts/:postId/report', authenticateToken, async (req, res) => {
             type: 'report_post',
             subject: 'Post Report',
             message: `Post ID: ${req.params.postId}\nReason: ${reason.trim()}`,
+            reportedPostId: req.params.postId,
             source: 'app',
             status: 'open'
         });
@@ -1747,6 +1789,7 @@ app.post('/api/users/:userId/report', authenticateToken, async (req, res) => {
             type: 'report_user',
             subject: 'User Report',
             message: `Reported User ID: ${req.params.userId}\nReason: ${reason.trim()}`,
+            reportedUserId: req.params.userId,
             source: 'app',
             status: 'open'
         });
@@ -4070,9 +4113,14 @@ app.get('/api/posts/community', authenticateToken, async (req, res) => {
         if (!req.user.community_joined || !req.user.college)
             return res.json({ success: false, needsJoinCommunity: true, message: 'Join a college community first' });
 
-        const blockedIds = await getBlockedIds(req.user.id);
+        const [blockedIds, reported] = await Promise.all([
+            getBlockedIds(req.user.id),
+            getReportedContent(req.user.id)
+        ]);
+        const excludedUserIds = [...new Set([...blockedIds, ...reported.userIds])];
         const query = { postedTo: { $in: ['community', 'both'] }, college: req.user.college };
-        if (blockedIds.length > 0) query.userId = { $nin: blockedIds };
+        if (excludedUserIds.length > 0) query.userId = { $nin: excludedUserIds };
+        if (reported.postIds.length > 0) query._id = { $nin: reported.postIds.map(id => new mongoose.Types.ObjectId(id)) };
 
         const posts = await Post.find(query).sort({ createdAt: -1 }).limit(50);
         const enriched = await enrichPosts(posts, req.user.id);
@@ -4245,10 +4293,15 @@ app.get('/api/realvibes/:vibeId', authenticateToken, async (req, res) => {
 // Returns profile + both posts for the "0 Velocity" feed
 app.get('/api/posts', authenticateToken, async (req, res) => {
     try {
-        const blockedIds = await getBlockedIds(req.user.id);
+        const [blockedIds, reported] = await Promise.all([
+            getBlockedIds(req.user.id),
+            getReportedContent(req.user.id)
+        ]);
+        const excludedUserIds = [...new Set([...blockedIds, ...reported.userIds])];
         // Zero Velocity: show posts that are visible on profiles (profile + both)
         const query = { postedTo: { $in: ['profile', 'both'] } };
-        if (blockedIds.length > 0) query.userId = { $nin: blockedIds };
+        if (excludedUserIds.length > 0) query.userId = { $nin: excludedUserIds };
+        if (reported.postIds.length > 0) query._id = { $nin: reported.postIds.map(id => new mongoose.Types.ObjectId(id)) };
 
         const posts = await Post.find(query).sort({ createdAt: -1 }).limit(50);
         const enriched = await enrichPosts(posts, req.user.id);
@@ -4283,9 +4336,14 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
 // Used by web Vibers "For You" tab
 app.get('/api/posts/foryou', authenticateToken, async (req, res) => {
     try {
-        const blockedIds = await getBlockedIds(req.user.id);
+        const [blockedIds, reported] = await Promise.all([
+            getBlockedIds(req.user.id),
+            getReportedContent(req.user.id)
+        ]);
+        const excludedUserIds = [...new Set([...blockedIds, ...reported.userIds])];
         const query = {};
-        if (blockedIds.length > 0) query.userId = { $nin: blockedIds };
+        if (excludedUserIds.length > 0) query.userId = { $nin: excludedUserIds };
+        if (reported.postIds.length > 0) query._id = { $nin: reported.postIds.map(id => new mongoose.Types.ObjectId(id)) };
 
         const posts = await Post.find(query).sort({ createdAt: -1 }).limit(50);
         const enriched = await enrichPosts(posts, req.user.id);
