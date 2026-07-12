@@ -948,7 +948,7 @@ const CASHFREE_SECRET_KEY = process.env.CASHFREE_SECRET_KEY;
 // ══════════════════════════════════════════════════════════════
 app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
     try {
-        const { planType, isFirstTime, returnUrl } = req.body;
+        const { planType, isFirstTime, returnUrl, useSandbox } = req.body;
         if (!planType) return res.status(400).json({ error: 'Plan type is required' });
 
         const lowerPlan = planType.toLowerCase();
@@ -964,7 +964,15 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
         const orderId = `order_vibexpert_${req.user.id.slice(-8)}_${Date.now()}`;
         const customerName = req.user.username || req.user.email.split('@')[0];
 
-        const isProduction = CASHFREE_SECRET_KEY && CASHFREE_SECRET_KEY.includes('prod');
+        // Determine active keys based on request parameter
+        const activeAppId = useSandbox
+            ? (process.env.APP_ID || CASHFREE_APP_ID)
+            : CASHFREE_APP_ID;
+        const activeSecretKey = useSandbox
+            ? (process.env.SECRET_KEY || CASHFREE_SECRET_KEY)
+            : CASHFREE_SECRET_KEY;
+
+        const isProduction = activeSecretKey && activeSecretKey.includes('prod');
         const cashfreeApiUrl = isProduction
             ? 'https://api.cashfree.com/pg/orders'
             : 'https://sandbox.cashfree.com/pg/orders';
@@ -991,8 +999,8 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
             {
                 headers: {
                     'x-api-version': '2023-08-01',
-                    'x-client-id': CASHFREE_APP_ID,
-                    'x-client-secret': CASHFREE_SECRET_KEY,
+                    'x-client-id': activeAppId,
+                    'x-client-secret': activeSecretKey,
                     'Content-Type': 'application/json'
                 }
             }
@@ -1010,7 +1018,7 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
             orderId: orderId,
             payment_session_id: paymentSessionId,
             amount,
-            environment: (CASHFREE_SECRET_KEY && CASHFREE_SECRET_KEY.includes('prod')) ? 'production' : 'sandbox'
+            environment: isProduction ? 'production' : 'sandbox'
         });
     } catch (error) {
         console.error('❌ Create Cashfree order error:', error.response?.data || error.message);
@@ -1020,14 +1028,21 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
 
 app.post('/api/payment/verify', authenticateToken, async (req, res) => {
     try {
-        const { order_id, planType } = req.body;
+        const { order_id, planType, useSandbox } = req.body;
 
         if (!order_id) {
             return res.status(400).json({ success: false, error: 'Order ID is required' });
         }
 
-        // Contact Cashfree to verify actual payment status of this order
-        const isProduction = CASHFREE_SECRET_KEY && CASHFREE_SECRET_KEY.includes('prod');
+        // Determine active keys based on request parameter
+        const activeAppId = useSandbox
+            ? (process.env.APP_ID || CASHFREE_APP_ID)
+            : CASHFREE_APP_ID;
+        const activeSecretKey = useSandbox
+            ? (process.env.SECRET_KEY || CASHFREE_SECRET_KEY)
+            : CASHFREE_SECRET_KEY;
+
+        const isProduction = activeSecretKey && activeSecretKey.includes('prod');
         const cashfreeVerifyUrl = isProduction
             ? `https://api.cashfree.com/pg/orders/${order_id}`
             : `https://sandbox.cashfree.com/pg/orders/${order_id}`;
@@ -1038,8 +1053,8 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
                 {
                     headers: {
                         'x-api-version': '2023-08-01',
-                        'x-client-id': CASHFREE_APP_ID,
-                        'x-client-secret': CASHFREE_SECRET_KEY
+                        'x-client-id': activeAppId,
+                        'x-client-secret': activeSecretKey
                     }
                 }
             );
