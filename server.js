@@ -964,9 +964,14 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
         const orderId = `order_vibexpert_${req.user.id.slice(-8)}_${Date.now()}`;
         const customerName = req.user.username || req.user.email.split('@')[0];
 
+        const isProduction = CASHFREE_SECRET_KEY && CASHFREE_SECRET_KEY.includes('prod');
+        const cashfreeApiUrl = isProduction
+            ? 'https://api.cashfree.com/pg/orders'
+            : 'https://sandbox.cashfree.com/pg/orders';
+
         // Create Cashfree order via API
         const cashfreeResponse = await axios.post(
-            'https://api.cashfree.com/pg/orders',
+            cashfreeApiUrl,
             {
                 order_id: orderId,
                 order_amount: amount,
@@ -1004,7 +1009,8 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
             success: true,
             orderId: orderId,
             payment_session_id: paymentSessionId,
-            amount
+            amount,
+            environment: (CASHFREE_SECRET_KEY && CASHFREE_SECRET_KEY.includes('prod')) ? 'production' : 'sandbox'
         });
     } catch (error) {
         console.error('❌ Create Cashfree order error:', error.response?.data || error.message);
@@ -1021,9 +1027,14 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
         }
 
         // Contact Cashfree to verify actual payment status of this order
+        const isProduction = CASHFREE_SECRET_KEY && CASHFREE_SECRET_KEY.includes('prod');
+        const cashfreeVerifyUrl = isProduction
+            ? `https://api.cashfree.com/pg/orders/${order_id}`
+            : `https://sandbox.cashfree.com/pg/orders/${order_id}`;
+
         try {
             const verifyRes = await axios.get(
-                `https://api.cashfree.com/pg/orders/${order_id}`,
+                cashfreeVerifyUrl,
                 {
                     headers: {
                         'x-api-version': '2023-08-01',
