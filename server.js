@@ -1713,6 +1713,50 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
     }
 });
 
+// Report a post
+app.post('/api/posts/:postId/report', authenticateToken, async (req, res) => {
+    try {
+        const { reason } = req.body;
+        if (!reason || !reason.trim()) return res.status(400).json({ error: 'Reason for report is required' });
+        const report = await Complaint.create({
+            userId: req.user.id,
+            email: req.user.email,
+            name: req.user.username || 'User',
+            type: 'report_post',
+            subject: 'Post Report',
+            message: `Post ID: ${req.params.postId}\nReason: ${reason.trim()}`,
+            source: 'app',
+            status: 'open'
+        });
+        res.json({ success: true, report, message: 'Post reported successfully!' });
+    } catch (error) {
+        console.error('❌ Post report error:', error.message);
+        res.status(500).json({ error: 'Failed to report post' });
+    }
+});
+
+// Report a user
+app.post('/api/users/:userId/report', authenticateToken, async (req, res) => {
+    try {
+        const { reason } = req.body;
+        if (!reason || !reason.trim()) return res.status(400).json({ error: 'Reason for report is required' });
+        const report = await Complaint.create({
+            userId: req.user.id,
+            email: req.user.email,
+            name: req.user.username || 'User',
+            type: 'report_user',
+            subject: 'User Report',
+            message: `Reported User ID: ${req.params.userId}\nReason: ${reason.trim()}`,
+            source: 'app',
+            status: 'open'
+        });
+        res.json({ success: true, report, message: 'User reported successfully!' });
+    } catch (error) {
+        console.error('❌ User report error:', error.message);
+        res.status(500).json({ error: 'Failed to report user' });
+    }
+});
+
 // Admin: Get all complaints & feedback
 app.get('/api/admin/complaints', authenticateToken, async (req, res) => {
     try {
