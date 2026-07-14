@@ -121,39 +121,57 @@ function releaseGhostName(userId, collegeName) {
     }
 }
 
+function getCommunityRoom(collegeField) {
+    if (!collegeField || typeof collegeField !== 'string') return collegeField;
+    if (collegeField.toLowerCase().includes('role:alumni')) {
+        const matchRegion = collegeField.match(/REGION:(.*?)(?:\||$)/);
+        if (matchRegion && matchRegion[1].trim()) {
+            return `alumni_region:${matchRegion[1].trim()}`;
+        }
+    }
+    return collegeField;
+}
+
 io.on('connection', (socket) => {
     console.log('⚡ User connected:', socket.id);
 
     socket.on('join_college', (collegeName) => {
         if (collegeName && typeof collegeName === 'string') {
+            const roomName = getCommunityRoom(collegeName);
             [...socket.rooms].forEach(room => { if (room !== socket.id) socket.leave(room); });
-            socket.join(collegeName);
-            socket.data.college = collegeName;
-            const roomSize = io.sockets.adapter.rooms.get(collegeName)?.size || 0;
-            io.to(collegeName).emit('online_count', roomSize);
+            socket.join(roomName);
+            socket.data.college = roomName;
+            const roomSize = io.sockets.adapter.rooms.get(roomName)?.size || 0;
+            io.to(roomName).emit('online_count', roomSize);
         }
     });
 
     socket.on('register_ghost_name', ({ userId, collegeName, ghostName }) => {
         if (!userId || !collegeName || !ghostName) return;
-        const result = registerGhostName(userId, collegeName, ghostName);
+        const roomName = getCommunityRoom(collegeName);
+        const result = registerGhostName(userId, roomName, ghostName);
         socket.emit('ghost_name_result', result);
     });
 
     socket.on('typing', (data) => {
-        if (data.collegeName && data.username)
-            socket.to(data.collegeName).emit('user_typing', { username: data.username });
+        if (data.collegeName && data.username) {
+            const roomName = getCommunityRoom(data.collegeName);
+            socket.to(roomName).emit('user_typing', { username: data.username });
+        }
     });
 
     socket.on('stop_typing', (data) => {
-        if (data.collegeName && data.username)
-            socket.to(data.collegeName).emit('user_stop_typing', { username: data.username });
+        if (data.collegeName && data.username) {
+            const roomName = getCommunityRoom(data.collegeName);
+            socket.to(roomName).emit('user_stop_typing', { username: data.username });
+        }
     });
 
     socket.on('mark_seen', (data) => {
         if (data.collegeName && data.username && data.lastMsgId) {
+            const roomName = getCommunityRoom(data.collegeName);
             socket.data.username = data.username;
-            socket.to(data.collegeName).emit('messages_seen', {
+            socket.to(roomName).emit('messages_seen', {
                 username: data.username, avatar: data.avatar || '👤', lastMsgId: data.lastMsgId
             });
         }
@@ -187,36 +205,47 @@ io.on('connection', (socket) => {
 
     socket.on('join_executive', (collegeName) => {
         if (collegeName && typeof collegeName === 'string') {
-            socket.join(`exec_${collegeName}`);
-            socket.data.execCollege = collegeName;
+            const roomName = getCommunityRoom(collegeName);
+            socket.join(`exec_${roomName}`);
+            socket.data.execCollege = roomName;
         }
     });
 
     socket.on('exec_typing', (data) => {
-        if (data.collegeName && data.username)
-            socket.to(`exec_${data.collegeName}`).emit('exec_user_typing', { username: data.username, avatar: data.avatar || null });
+        if (data.collegeName && data.username) {
+            const roomName = getCommunityRoom(data.collegeName);
+            socket.to(`exec_${roomName}`).emit('exec_user_typing', { username: data.username, avatar: data.avatar || null });
+        }
     });
 
     socket.on('exec_stop_typing', (data) => {
-        if (data.collegeName && data.username)
-            socket.to(`exec_${data.collegeName}`).emit('exec_user_stop_typing', { username: data.username });
+        if (data.collegeName && data.username) {
+            const roomName = getCommunityRoom(data.collegeName);
+            socket.to(`exec_${roomName}`).emit('exec_user_stop_typing', { username: data.username });
+        }
     });
 
     socket.on('exec_mark_seen', (data) => {
-        if (data.collegeName && data.userId && data.messageIds?.length)
-            socket.to(`exec_${data.collegeName}`).emit('exec_messages_seen', {
+        if (data.collegeName && data.userId && data.messageIds?.length) {
+            const roomName = getCommunityRoom(data.collegeName);
+            socket.to(`exec_${roomName}`).emit('exec_messages_seen', {
                 userId: data.userId, username: data.username, avatar: data.avatar || null, messageIds: data.messageIds
             });
+        }
     });
 
     socket.on('exec_reaction_update', (data) => {
-        if (data.collegeName && data.messageId)
-            socket.to(`exec_${data.collegeName}`).emit('exec_reaction_update', data);
+        if (data.collegeName && data.messageId) {
+            const roomName = getCommunityRoom(data.collegeName);
+            socket.to(`exec_${roomName}`).emit('exec_reaction_update', data);
+        }
     });
 
     socket.on('exec_poll_voted', (data) => {
-        if (data.collegeName && data.pollId)
-            socket.to(`exec_${data.collegeName}`).emit('exec_poll_voted', data);
+        if (data.collegeName && data.pollId) {
+            const roomName = getCommunityRoom(data.collegeName);
+            socket.to(`exec_${roomName}`).emit('exec_poll_voted', data);
+        }
     });
 
     socket.on('disconnect', () => {
@@ -328,7 +357,10 @@ app.get('/api/colleges/:category', (req, res) => {
 });
 
 app.use((req, res, next) => {
-    console.log(`📡 ${req.method} ${req.path} - ${req.get('user-agent')}`);
+    console.log(`📡 Incoming: ${req.method} ${req.originalUrl}`);
+    res.on('finish', () => {
+        console.log(`📡 Response: ${req.method} ${req.originalUrl} -> Status ${res.statusCode}`);
+    });
     next();
 });
 
@@ -592,6 +624,11 @@ const authenticateToken = async (req, res, next) => {
         const { data: user, error } = await supabase.from('users').select('*').eq('id', decoded.userId).single();
         if (error || !user) return res.status(403).json({ error: 'Invalid token' });
         req.user = user;
+        // ── Alumni / Admin bypass: they always have community access ──
+        const collegeStr = (req.user.college || '').toString();
+        if (isAdminUser(req.user) || collegeStr.includes('ROLE:Alumni') || collegeStr.includes('ROLE:Admin')) {
+            req.user.community_joined = true;
+        }
         next();
     } catch {
         return res.status(403).json({ error: 'Invalid or expired token' });
@@ -609,6 +646,13 @@ const authenticateTokenOptional = async (req, res, next) => {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         const { data: user } = await supabase.from('users').select('*').eq('id', decoded.userId).single();
         req.user = user || null;
+        // ── Alumni / Admin bypass ──
+        if (req.user) {
+            const collegeStr = (req.user.college || '').toString();
+            if (isAdminUser(req.user) || collegeStr.includes('ROLE:Alumni') || collegeStr.includes('ROLE:Admin')) {
+                req.user.community_joined = true;
+            }
+        }
     } catch {
         req.user = null;
     }
@@ -1392,16 +1436,32 @@ app.get('/api/shop/orders', authenticateToken, async (req, res) => {
                     try {
                         const productId = item.productId || item.id;
                         if (productId) {
-                            const product = await ClientProduct.findById(productId).select('name images').lean();
+                            const product = await ClientProduct.findById(productId).select('name images clientId').lean();
                             if (product) {
                                 const imageUrl = (product.images && product.images.length > 0) ? product.images[0].url : '';
+                                let sellerName = 'VibExpert';
+                                let sellerPic = '';
+                                if (product.clientId) {
+                                    try {
+                                        const { data: seller } = await supabase.from('users').select('username,profile_pic').eq('id', product.clientId).single();
+                                        if (seller) {
+                                            sellerName = seller.username;
+                                            sellerPic = seller.profile_pic || '';
+                                        }
+                                    } catch (err) {
+                                        console.warn("Failed to fetch seller:", err.message);
+                                    }
+                                }
                                 return {
                                     ...item,
                                     productName: product.name,
                                     productImage: imageUrl,
                                     // Add these as fallbacks too
                                     name: product.name,
-                                    image: imageUrl
+                                    image: imageUrl,
+                                    sellerId: product.clientId || '',
+                                    sellerName,
+                                    sellerPic
                                 };
                             }
                         }
@@ -1691,6 +1751,7 @@ app.post('/api/admin/notifications', authenticateToken, async (req, res) => {
             createdBy: req.user.id
         });
 
+        // 1. Socket broadcast for real-time in-app delivery
         if (target === 'specific' && targetUserId) {
             const targetSocketId = userSockets.get(targetUserId);
             if (targetSocketId) {
@@ -1698,6 +1759,73 @@ app.post('/api/admin/notifications', authenticateToken, async (req, res) => {
             }
         } else {
             io.emit('new_platform_notification', notif);
+        }
+
+        // 2. FCM push notification for out-of-app delivery
+        if (firebaseAdmin) {
+            try {
+                const fcmPayload = {
+                    notification: {
+                        title: title || 'VIBEXPERT',
+                        body: message || 'New platform update',
+                    },
+                    data: {
+                        type: 'platform',
+                        click_action: 'FLUTTER_NOTIFICATION_CLICK',
+                        message: (message || '').toString(),
+                        from: 'VIBEXPERT',
+                        fromUsername: 'VIBEXPERT',
+                        fromPic: '',
+                        postId: '',
+                        vibeId: '',
+                        payloadDetails: JSON.stringify({ type: 'platform', title, message })
+                    }
+                };
+
+                if (target === 'specific' && targetUserId) {
+                    // Send to specific user's FCM tokens
+                    const registeredTokens = await FcmToken.find({ userId: targetUserId.toString() });
+                    if (registeredTokens && registeredTokens.length > 0) {
+                        const tokens = registeredTokens.map(t => t.token);
+                        const response = await firebaseAdmin.messaging().sendEachForMulticast({
+                            tokens, notification: fcmPayload.notification, data: fcmPayload.data
+                        });
+                        console.log(`📡 FCM platform notification sent to specific user: ${response.successCount} success`);
+                    }
+                } else {
+                    // Broadcast to ALL registered FCM tokens
+                    const allTokenDocs = await FcmToken.find({});
+                    if (allTokenDocs && allTokenDocs.length > 0) {
+                        const allTokens = allTokenDocs.map(t => t.token);
+                        // Firebase sendEachForMulticast supports up to 500 tokens per batch
+                        const batchSize = 500;
+                        for (let i = 0; i < allTokens.length; i += batchSize) {
+                            const batch = allTokens.slice(i, i + batchSize);
+                            try {
+                                const response = await firebaseAdmin.messaging().sendEachForMulticast({
+                                    tokens: batch, notification: fcmPayload.notification, data: fcmPayload.data
+                                });
+                                console.log(`📡 FCM platform broadcast batch ${Math.floor(i / batchSize) + 1}: ${response.successCount}/${batch.length} success`);
+                                // Clean up invalid tokens
+                                if (response.failureCount > 0) {
+                                    response.responses.forEach(async (resp, idx) => {
+                                        if (!resp.success) {
+                                            const errCode = resp.error?.code;
+                                            if (errCode === 'messaging/invalid-registration-token' || errCode === 'messaging/registration-token-not-registered') {
+                                                await FcmToken.deleteOne({ token: batch[idx] });
+                                            }
+                                        }
+                                    });
+                                }
+                            } catch (batchErr) {
+                                console.error(`⚠️ FCM broadcast batch ${Math.floor(i / batchSize) + 1} failed:`, batchErr.message);
+                            }
+                        }
+                    }
+                }
+            } catch (fcmErr) {
+                console.error('⚠️ FCM platform notification failed (non-critical):', fcmErr.message);
+            }
         }
 
         res.json({ success: true, notification: notif });
@@ -3208,9 +3336,15 @@ app.put('/api/profile/update', authenticateToken, async (req, res) => {
             updates.registration_number = registration_number;
         }
 
-        // College field is not updatable via this endpoint (managed by /api/college/verify)
-        // Silently ignore any college change attempt to prevent bypassing verification
-        // ──────────────────────────────────────────────────────────────────────
+        if (college) {
+            if (college.startsWith('ROLE:Alumni') || college.startsWith('ROLE:Admin') || !req.user.college) {
+                updates.college = college;
+                // Alumni and Admin always have community access — persist it so future logins work
+                if (college.startsWith('ROLE:Alumni') || college.startsWith('ROLE:Admin')) {
+                    updates.community_joined = true;
+                }
+            }
+        }
 
         const { data: updatedUser, error } = await supabase.from('users').update(updates).eq('id', req.user.id).select().single();
         if (error) throw error;
@@ -3437,7 +3571,7 @@ app.get('/api/following/:userId', authenticateToken, async (req, res) => {
 
 app.post('/api/register', async (req, res) => {
     try {
-        const { username, email, password, registrationNumber, phoneNumber } = req.body;
+        const { username, email, password, registrationNumber, phoneNumber, college, gender, hobbies } = req.body;
         const regNumber = registrationNumber || phoneNumber || `auto_${Date.now()}`;
         if (!username || !email || !password) return res.status(400).json({ error: 'All fields are required' });
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -3445,7 +3579,15 @@ app.post('/api/register', async (req, res) => {
         const { data: existingUser } = await supabase.from('users').select('email').eq('email', email).maybeSingle();
         if (existingUser) return res.status(400).json({ error: 'Email already registered' });
         const passwordHash = await bcrypt.hash(password, 10);
-        const { data: newUser, error } = await supabase.from('users').insert([{ username, email, password_hash: passwordHash, registration_number: regNumber }]).select().single();
+        const { data: newUser, error } = await supabase.from('users').insert([{
+            username,
+            email,
+            password_hash: passwordHash,
+            registration_number: regNumber,
+            college: college || null,
+            gender: gender || null,
+            hobbies: hobbies || []
+        }]).select().single();
         if (error) {
             if (error.code === '23505') return res.status(400).json({ error: 'User already exists' });
             throw new Error('Failed to create account: ' + error.message);
@@ -3604,6 +3746,18 @@ app.post('/api/login', async (req, res) => {
             ]);
         } catch (_) { }
 
+
+        // ── Auto-repair college field for admins if it's blank ──────
+        if (isAdminEmail && (!user.college || user.college.trim() === '')) {
+            try {
+                await supabase.from('users').update({ college: 'ROLE:Admin', community_joined: true }).eq('id', user.id);
+                user.college = 'ROLE:Admin';
+                user.community_joined = true;
+                console.log(`🔧 Auto-repaired admin college field for: ${user.email}`);
+            } catch (repairErr) {
+                console.warn('⚠️ Auto-repair college failed:', repairErr.message);
+            }
+        }
 
         res.json({ success: true, token, user: { id: user.id, username: user.username, email: user.email, college: user.college, communityJoined: user.community_joined, profilePic: user.profile_pic, profile_pic: user.profile_pic, registrationNumber: user.registration_number, badges: user.badges || [], bio: user.bio || '', isPremium: user.is_premium || false, subscriptionPlan: user.subscription_plan || null, followersCount: followersCount || 0, followingCount: followingCount || 0, postCount } });
     } catch (error) {
@@ -3961,13 +4115,25 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
         // Remove duplicate badge if already present
         const existingBadges = Array.isArray(req.user.badges) ? req.user.badges : [];
         const newBadges = existingBadges.includes('verified_student') ? existingBadges : [...existingBadges, 'verified_student'];
-        const { error: updateError } = await supabase.from('users').update({ college: collegeName, college_email: collegeEmail.trim().toLowerCase(), community_joined: true, badges: newBadges }).eq('id', req.user.id);
+        let updatedCollegeVal = collegeName;
+        if (req.user && req.user.college && req.user.college.includes('ROLE:')) {
+            const rawCollege = req.user.college;
+            const matchRole = rawCollege.match(/ROLE:(.*?)(?:\||$)/);
+            const matchRegion = rawCollege.match(/REGION:(.*?)(?:\||$)/);
+
+            const roleVal = matchRole ? matchRole[1].trim() : 'Student';
+            const regionVal = matchRegion ? matchRegion[1].trim() : '';
+
+            updatedCollegeVal = `ROLE:${roleVal} | COLLEGE:${collegeName} | REGION:${regionVal}`;
+        }
+
+        const { error: updateError } = await supabase.from('users').update({ college: updatedCollegeVal, college_email: collegeEmail.trim().toLowerCase(), community_joined: true, badges: newBadges }).eq('id', req.user.id);
         if (updateError) {
             console.error('❌ users update error:', updateError);
             return res.status(500).json({ error: 'Failed to update profile: ' + updateError.message });
         }
         await supabase.from('codes').delete().eq('id', codeData.id);
-        res.json({ success: true, message: 'College verified! Welcome to ' + collegeName, college: collegeName, collegeEmail, communityJoined: true, badges: newBadges });
+        res.json({ success: true, message: 'College verified! Welcome to ' + collegeName, college: updatedCollegeVal, collegeEmail, communityJoined: true, badges: newBadges });
     } catch (error) {
         console.error('❌ college/verify error:', error);
         res.status(500).json({ error: 'Verification failed: ' + error.message });
@@ -4110,7 +4276,14 @@ app.get('/api/posts/user/:userId', authenticateToken, async (req, res) => {
 // GET community posts
 app.get('/api/posts/community', authenticateToken, async (req, res) => {
     try {
-        if (!req.user.community_joined || !req.user.college)
+        const colString = req.user.college ? req.user.college.toString() : '';
+        const isAlumni = colString.toLowerCase().includes('role:alumni');
+        const isAdmin = isAdminUser(req.user) || colString.toLowerCase().includes('role:admin');
+        const isBypassUser = isAlumni || isAdmin;
+
+        console.log(`🔍 [community] user=${req.user.email}, college='${colString}', isAlumni=${isAlumni}, isAdmin=${isAdmin}, community_joined=${req.user.community_joined}, isBypass=${isBypassUser}`);
+
+        if (!isBypassUser && (!req.user.community_joined || !req.user.college))
             return res.json({ success: false, needsJoinCommunity: true, message: 'Join a college community first' });
 
         const [blockedIds, reported] = await Promise.all([
@@ -4118,7 +4291,11 @@ app.get('/api/posts/community', authenticateToken, async (req, res) => {
             getReportedContent(req.user.id)
         ]);
         const excludedUserIds = [...new Set([...blockedIds, ...reported.userIds])];
-        const query = { postedTo: { $in: ['community', 'both'] }, college: req.user.college };
+
+        const query = { postedTo: { $in: ['community', 'both'] } };
+        if (!isBypassUser) {
+            query.college = req.user.college;
+        }
         if (excludedUserIds.length > 0) query.userId = { $nin: excludedUserIds };
         if (reported.postIds.length > 0) query._id = { $nin: reported.postIds.map(id => new mongoose.Types.ObjectId(id)) };
 
@@ -4810,7 +4987,8 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
             return res.json({ success: false, needsJoinCommunity: true, messages: [] });
         const fiveDaysAgo = new Date();
         fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
-        const { data: messages, error } = await supabase.from('community_messages').select('*').eq('college_name', req.user.college).gte('created_at', fiveDaysAgo.toISOString()).order('created_at', { ascending: true }).limit(500);
+        const resolvedRoom = getCommunityRoom(req.user.college);
+        const { data: messages, error } = await supabase.from('community_messages').select('*').eq('college_name', resolvedRoom).gte('created_at', fiveDaysAgo.toISOString()).order('created_at', { ascending: true }).limit(500);
         if (error) throw error;
 
         const blockedIds = await getBlockedIds(req.user.id);
@@ -4944,11 +5122,12 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
         if (anonName && anonName.length < 2) anonName = null;
         if (!anonName) return res.status(400).json({ error: 'Ghost name is required.' });
 
-        const ghostCheckResult = registerGhostName(req.user.id, req.user.college, anonName);
+        const resolvedRoom = getCommunityRoom(req.user.college);
+        const ghostCheckResult = registerGhostName(req.user.id, resolvedRoom, anonName);
         if (!ghostCheckResult.success) return res.status(409).json({ error: ghostCheckResult.error, code: 'GHOST_NAME_TAKEN' });
 
         const { data: insertedMsg, error: insertError } = await supabase.from('community_messages').insert([{
-            sender_id: req.user.id, college_name: req.user.college, content: content?.trim() || '',
+            sender_id: req.user.id, college_name: resolvedRoom, content: content?.trim() || '',
             media_url: mediaUrl, media_type: mediaType, anon_name: anonName,
             message_type: mediaUrl ? (mediaType === 'video' ? 'video' : mediaType === 'audio' ? 'audio' : mediaType === 'image' ? 'image' : 'document') : 'text',
             media_name: media ? media.originalname : null, media_size: media ? media.size : null,
@@ -4972,8 +5151,8 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
 
         const message = { ...insertedMsg, anon_name: anonName, users: { id: req.user.id, username: anonName, profile_pic: null }, reply_to: replyToData };
         const senderSocketId = userSockets.get(req.user.id);
-        if (senderSocketId) io.to(req.user.college).except(Array.from(senderSocketId)).emit('new_message', message);
-        else io.to(req.user.college).emit('new_message', message);
+        if (senderSocketId) io.to(resolvedRoom).except(Array.from(senderSocketId)).emit('new_message', message);
+        else io.to(resolvedRoom).emit('new_message', message);
         res.json({ success: true, message });
     } catch (error) {
         res.status(500).json({ error: 'Failed to send message', details: error.message });
@@ -5784,9 +5963,12 @@ app.get('/api/realvibes/my-submissions', authenticateToken, async (req, res) => 
 // ══════════════════════════════════════════════════════════════
 app.get('/api/executive/messages', authenticateToken, async (req, res) => {
     try {
-        if (!req.user.community_joined || !req.user.college) return res.json({ success: false, needsJoinCommunity: true, messages: [] });
+        const collegeForMsg = (req.user.college || '').toString();
+        const isPrivileged = isAdminUser(req.user) || collegeForMsg.includes('ROLE:Alumni') || collegeForMsg.includes('ROLE:Admin');
+        if (!isPrivileged && (!req.user.community_joined || !req.user.college)) return res.json({ success: false, needsJoinCommunity: true, messages: [] });
         const fiveDaysAgo = new Date(); fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
-        const { data: messages, error } = await supabase.from('executive_messages').select('*').eq('college_name', req.user.college).eq('is_deleted', false).gte('created_at', fiveDaysAgo.toISOString()).order('created_at', { ascending: true }).limit(500);
+        const resolvedRoom = getCommunityRoom(req.user.college);
+        const { data: messages, error } = await supabase.from('executive_messages').select('*').eq('college_name', resolvedRoom).eq('is_deleted', false).gte('created_at', fiveDaysAgo.toISOString()).order('created_at', { ascending: true }).limit(500);
         if (error) throw error;
         const blockedIds = await getBlockedIds(req.user.id);
         let enriched = (messages || []).filter(m => !blockedIds.includes(m.sender_id));
@@ -5828,7 +6010,9 @@ app.post('/api/executive/messages', authenticateToken, (req, res, next) => {
     else next();
 }, async (req, res) => {
     try {
-        if (!req.user.community_joined || !req.user.college) return res.status(400).json({ error: 'Join a college community first' });
+        const collegeForSend = (req.user.college || '').toString();
+        const isSendPrivileged = isAdminUser(req.user) || collegeForSend.includes('ROLE:Alumni') || collegeForSend.includes('ROLE:Admin');
+        if (!isSendPrivileged && (!req.user.community_joined || !req.user.college)) return res.status(400).json({ error: 'Join a college community first' });
         const { content, reply_to_id, poll_question, poll_options } = req.body;
         const media = req.file;
         if (!content && !media && !poll_question) return res.status(400).json({ error: 'Message content, media, or poll required' });
@@ -5848,8 +6032,9 @@ app.post('/api/executive/messages', authenticateToken, (req, res, next) => {
             } catch (uploadErr) { return res.status(500).json({ error: 'Media upload failed: ' + uploadErr.message }); }
         }
         if (poll_question) msgType = 'poll';
+        const resolvedRoom = getCommunityRoom(req.user.college);
         const { data: inserted, error: insertError } = await supabase.from('executive_messages').insert([{
-            sender_id: req.user.id, college_name: req.user.college, content: content?.trim() || '',
+            sender_id: req.user.id, college_name: resolvedRoom, content: content?.trim() || '',
             message_type: msgType, media_url: mediaUrl, media_type: mediaType,
             media_name: media ? media.originalname : null, media_size: media ? media.size : null,
             reply_to_id: (reply_to_id && reply_to_id !== 'null') ? reply_to_id : null
@@ -5869,7 +6054,7 @@ app.post('/api/executive/messages', authenticateToken, (req, res, next) => {
         }
         const finalMsg = { ...inserted, users: sender || { id: req.user.id, username: req.user.username, profile_pic: null }, reactions: [], read_by: [], reply_to: replyToData, poll: pollData };
         const senderSocketId = userSockets.get(req.user.id);
-        const room = `exec_${req.user.college}`;
+        const room = `exec_${resolvedRoom}`;
         if (senderSocketId) io.to(room).except(Array.from(senderSocketId)).emit('exec_new_message', finalMsg);
         else io.to(room).emit('exec_new_message', finalMsg);
         res.json({ success: true, message: finalMsg });
