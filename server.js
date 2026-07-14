@@ -3312,7 +3312,20 @@ app.put('/api/profile/update', authenticateToken, async (req, res) => {
     try {
         const { username, bio, college, registration_number } = req.body;
         const updates = {};
-        if (username) updates.username = username;
+
+        if (username) {
+            // ── Username uniqueness pre-check ──────────────────────────────────────
+            const { data: existingUsername } = await supabase
+                .from('users')
+                .select('id')
+                .ilike('username', username.trim())
+                .neq('id', req.user.id)
+                .maybeSingle();
+            if (existingUsername) {
+                return res.status(400).json({ success: false, error: `The username "${username.trim()}" is already taken. Please choose a different one.` });
+            }
+            updates.username = username.trim();
+        }
         if (bio !== undefined) updates.bio = bio;
 
         // ── College ID lock ────────────────────────────────────────────────────
@@ -3347,10 +3360,24 @@ app.put('/api/profile/update', authenticateToken, async (req, res) => {
         }
 
         const { data: updatedUser, error } = await supabase.from('users').update(updates).eq('id', req.user.id).select().single();
-        if (error) throw error;
+        if (error) {
+            // Supabase unique constraint violation
+            if (error.code === '23505') {
+                const isUsernameConflict =
+                    (error.message && error.message.includes('username')) ||
+                    (error.details && error.details.includes('username')) ||
+                    (updates.username && !registration_number);
+                if (isUsernameConflict) {
+                    return res.status(400).json({ success: false, error: 'That username is already taken. Please choose a different one.' });
+                }
+                return res.status(400).json({ success: false, error: 'A duplicate entry was detected. Please check your details and try again.' });
+            }
+            throw error;
+        }
         res.json({ success: true, message: 'Profile updated successfully', user: updatedUser });
     } catch (error) {
-        res.status(500).json({ error: 'Failed to update profile' });
+        console.error('Profile update error:', error);
+        res.status(500).json({ success: false, error: error.message || 'Failed to update profile' });
     }
 });
 
@@ -5279,7 +5306,7 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
         }
 
         // Push notification
-        await pushNotification(receiverId, { type: 'new_dm', message: `${req.user.username} sent you a message`, from: req.user.id, fromUsername: req.user.username });
+        await pushNotification(receiverId, { type: 'new_dm', message: `${req.user.username} sent you a message`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null });
 
         res.json({ success: true, dm: payload });
     } catch (error) {
