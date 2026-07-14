@@ -2527,57 +2527,36 @@ app.get('/api/shop/reviews/check/:orderId/:productId', authenticateToken, async 
     }
 });
 
-// Auth: Submit a review (with optional photo uploads)
-app.post('/api/shop/reviews', authenticateToken, upload.array('photos', 3), async (req, res) => {
+// Auth: Submit a review (stars + written feedback; no order required)
+app.post('/api/shop/reviews', authenticateToken, async (req, res) => {
     try {
         const { productId, orderId, rating, title, review } = req.body;
-        if (!productId || !orderId || !rating) {
-            return res.status(400).json({ error: 'Product ID, order ID, and rating are required' });
+        if (!productId || !rating) {
+            return res.status(400).json({ error: 'Product ID and rating are required' });
         }
         const ratingNum = parseInt(rating);
         if (ratingNum < 1 || ratingNum > 5) {
             return res.status(400).json({ error: 'Rating must be between 1 and 5' });
         }
-        // Check if already reviewed
-        const existing = await ProductReview.findOne({ userId: req.user.id, orderId, productId });
+        const product = await ClientProduct.findById(productId);
+        if (!product) {
+            return res.status(404).json({ error: 'Product not found' });
+        }
+        const existing = await ProductReview.findOne({ userId: req.user.id, productId });
         if (existing) {
-            return res.status(400).json({ error: 'You have already reviewed this product for this order' });
-        }
-        // Verify the order belongs to this user and is delivered
-        const { data: order } = await supabase.from('shop_orders')
-            .select('*')
-            .eq('order_id', orderId)
-            .eq('user_id', req.user.id)
-            .single();
-        if (!order) {
-            return res.status(403).json({ error: 'Order not found or does not belong to you' });
-        }
-        if (!['delivered', 'completed'].includes(order.status)) {
-            return res.status(400).json({ error: 'You can only review products after delivery' });
-        }
-        // Upload photos to Cloudinary
-        const photos = [];
-        if (req.files && req.files.length > 0) {
-            for (const file of req.files) {
-                try {
-                    const result = await uploadToCloudinary(file.buffer, file.mimetype, 'vibexpert/shop/reviews');
-                    photos.push({ url: result.secure_url, public_id: result.public_id });
-                } catch (uploadErr) {
-                    console.error('Review photo upload failed:', uploadErr.message);
-                }
-            }
+            return res.status(400).json({ error: 'You have already reviewed this product' });
         }
         const newReview = await ProductReview.create({
             productId,
-            orderId,
+            orderId: orderId || 'general',
             userId: req.user.id,
             username: req.user.username,
             profilePic: req.user.profile_pic || null,
             rating: ratingNum,
             title: title || '',
-            review: review || '',
-            photos,
-            verified: true
+            review: review ? String(review).trim() : '',
+            photos: [],
+            verified: false
         });
         // Update product's aggregate rating
         try {
@@ -2597,7 +2576,7 @@ app.post('/api/shop/reviews', authenticateToken, upload.array('photos', 3), asyn
     } catch (error) {
         console.error('Submit review error:', error);
         if (error.code === 11000) {
-            return res.status(400).json({ error: 'You have already reviewed this product for this order' });
+            return res.status(400).json({ error: 'You have already reviewed this product' });
         }
         res.status(500).json({ error: 'Failed to submit review' });
     }
