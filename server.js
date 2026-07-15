@@ -1236,23 +1236,76 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
     }
 });
 
-// Cashfree Webhook Endpoint (Required for Cashfree Onboarding Checklist)
+// Cashfree Webhook Endpoint — auto-activates subscription on payment success
 app.post('/api/cashfree/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
     try {
-        console.log('🔔 Received Cashfree Webhook!');
-        const signature = req.headers['x-webhook-signature'];
-        const timestamp = req.headers['x-webhook-timestamp'];
+        const payload = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+        console.log('🔔 Received Cashfree Webhook:', JSON.stringify(payload));
 
-        if (!signature || !timestamp) {
-            console.log('⚠️ Missing Cashfree signature headers, returning 200 OK for checklist test.');
+        const orderId = payload?.data?.order?.order_id || payload?.order_id;
+        const orderStatus = payload?.data?.order?.order_status || payload?.order_status;
+
+        if (!orderId) {
+            console.log('⚠️ Webhook missing order_id, acknowledging anyway');
+            return res.status(200).send('Webhook Received');
+        }
+
+        console.log(`📦 Webhook order: ${orderId}, status: ${orderStatus}`);
+
+        if (orderStatus === 'PAID' || orderStatus === 'ACTIVE') {
+            // Look up the order to find the user
+            const { data: orders } = await supabase.from('payment_orders')
+                .select('user_id, plan_type').eq('order_id', orderId).limit(1);
+
+            const order = orders?.[0];
+            if (!order) {
+                console.log(`⚠️ No payment_order record found for ${orderId}`);
+                return res.status(200).send('Webhook Received');
+            }
+
+            const { data: user } = await supabase.from('users')
+                .select('id, email, username').eq('id', order.user_id).single();
+
+            if (!user) {
+                console.log(`⚠️ No user found for ${order.user_id}`);
+                return res.status(200).send('Webhook Received');
+            }
+
+            const plans = {
+                noble: { posters: 3, videos: 1, days: 7 },
+                royal: { posters: 4, videos: 4, days: 10 }
+            };
+            const plan = plans[order.plan_type?.toLowerCase()];
+            if (!plan) {
+                console.log(`⚠️ Invalid plan type: ${order.plan_type}`);
+                return res.status(200).send('Webhook Received');
+            }
+
+            const endDate = new Date(Date.now() + plan.days * 24 * 60 * 60 * 1000);
+
+            await supabase.from('users').update({
+                subscription_plan: order.plan_type.toLowerCase(),
+                subscription_start: new Date(),
+                subscription_end: endDate,
+                is_premium: true,
+                has_subscribed: true,
+                posters_quota: plan.posters,
+                videos_quota: plan.videos
+            }).eq('id', order.user_id);
+
+            await supabase.from('payment_orders').update({
+                status: 'completed', updated_at: new Date()
+            }).eq('order_id', orderId);
+
+            console.log(`✅ Subscription auto-activated via webhook for user ${order.user_id} (${order.plan_type})`);
         } else {
-            console.log(`✅ Webhook signature present.`);
+            console.log(`ℹ️ Order ${orderId} status is ${orderStatus}, no action taken`);
         }
 
         res.status(200).send('Webhook Received');
     } catch (error) {
         console.error('❌ Webhook error:', error.message);
-        res.status(500).send('Error');
+        res.status(200).send('Webhook Received');
     }
 });
 
@@ -5709,27 +5762,16 @@ const enrichVibes = async (vibes, currentUserId) => {
     });
 };
 
-// GET all approved realvibes
+// GET all realvibes — show all non-expired vibes (status no longer matters, auto-approved on creation)
 app.get('/api/realvibes', authenticateToken, async (req, res) => {
     try {
         const blockedIds = await getBlockedIds(req.user.id);
-        // Show approved vibes to everyone + show own pending vibes to the creator
-        const approvedQuery = { status: 'approved', expiresAt: { $gt: new Date() } };
-        if (blockedIds.length > 0) approvedQuery.userId = { $nin: blockedIds };
+        const query = { expiresAt: { $gt: new Date() }, status: { $ne: 'rejected' } };
+        if (blockedIds.length > 0) query.userId = { $nin: blockedIds };
 
-        const pendingQuery = { status: 'pending', userId: req.user.id, expiresAt: { $gt: new Date() } };
+        const vibes = await RealVibe.find(query).sort({ createdAt: -1 }).limit(50);
 
-        const [approvedVibes, myPendingVibes] = await Promise.all([
-            RealVibe.find(approvedQuery).sort({ createdAt: -1 }).limit(50),
-            RealVibe.find(pendingQuery).sort({ createdAt: -1 }).limit(10)
-        ]);
-
-        // Merge: pending own vibes first, then approved (deduplicated)
-        const approvedIds = new Set(approvedVibes.map(v => v._id.toString()));
-        const uniquePending = myPendingVibes.filter(v => !approvedIds.has(v._id.toString()));
-        const allVibes = [...uniquePending, ...approvedVibes];
-
-        const enriched = await enrichVibes(allVibes, req.user.id);
+        const enriched = await enrichVibes(vibes, req.user.id);
         res.json({ success: true, vibes: enriched });
     } catch (error) {
         res.status(500).json({ error: 'Failed to load RealVibes' });
@@ -5762,14 +5804,10 @@ app.post('/api/realvibes', authenticateToken, upload.single('media'), async (req
             mediaUrl: vibeResult.secure_url, mediaPublicId: vibeResult.public_id,
             mediaType: isVideo ? 'video' : 'image', planType: plan, visibility,
             brand_link: brand_link.trim(), brand_link_type,
-            status: 'pending', expiresAt
+            status: 'approved', expiresAt
         });
 
-        // Skip auto-post to Zero Velocity for now, or post as 'pending'? 
-        // User said: "before posting into the website... it will show like admin in processing"
-        // If we want it to show in the "Processing" state on the main site, we should return it with a pending flag.
-
-        res.json({ success: true, vibe, pending: true, message: 'Your RealVibe has been submitted and is currently in processing by admin.' });
+        res.json({ success: true, vibe, message: 'Your RealVibe is now live!' });
     } catch (error) {
         console.error('❌ Create RealVibe error:', error);
         res.status(500).json({ error: 'Failed to create RealVibe: ' + error.message });
@@ -5856,7 +5894,7 @@ app.get('/api/realvibes/:vibeId/comments', authenticateToken, async (req, res) =
         const userMap = {};
         (users || []).forEach(u => { userMap[u.id] = u; });
         const enriched = comments
-            .filter(c => !blockedIds.includes(c.userId)) // hide comments from blocked/blocking users
+            .filter(c => !blockedIds.includes(c.userId))
             .map(c => {
                 const likesUsers = c.likes_users || [];
                 return {
@@ -5869,7 +5907,8 @@ app.get('/api/realvibes/:vibeId/comments', authenticateToken, async (req, res) =
                     likeCount: likesUsers.length,
                     isPinned: c.isPinned || false,
                     pinned: c.isPinned || false,
-                    is_pinned: c.isPinned || false
+                    is_pinned: c.isPinned || false,
+                    replyToId: c.replyToId ? c.replyToId.toString() : null
                 };
             });
         res.json({ success: true, comments: enriched });
@@ -5882,7 +5921,7 @@ app.get('/api/realvibes/:vibeId/comments', authenticateToken, async (req, res) =
 app.post('/api/realvibes/:vibeId/comments', authenticateToken, async (req, res) => {
     try {
         const { vibeId } = req.params;
-        const { content } = req.body;
+        const { content, replyToId } = req.body;
         if (!content?.trim()) return res.status(400).json({ error: 'Comment required' });
 
         // Block check against vibe owner
@@ -5897,7 +5936,9 @@ app.post('/api/realvibes/:vibeId/comments', authenticateToken, async (req, res) 
             if (isAnyBlock) return res.status(403).json({ error: 'Action not available', blocked: true });
         }
 
-        const comment = await RealVibeComment.create({ vibeId, userId: req.user.id, content: content.trim() });
+        const commentData = { vibeId, userId: req.user.id, content: content.trim() };
+        if (replyToId) commentData.replyToId = replyToId;
+        const comment = await RealVibeComment.create(commentData);
         const commentCount = await RealVibeComment.countDocuments({ vibeId });
         io.emit('realvibe_commented', { vibeId, commentCount });
 

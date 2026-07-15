@@ -106,7 +106,8 @@ const realVibeCommentSchema = new mongoose.Schema({
     content: { type: String, required: true },
     likes: { type: Number, default: 0 },
     likes_users: { type: [String], default: [] },
-    isPinned: { type: Boolean, default: false }
+    isPinned: { type: Boolean, default: false },
+    replyToId: { type: mongoose.Schema.Types.ObjectId, default: null }
 }, { timestamps: true });
 
 // Seller Requests
