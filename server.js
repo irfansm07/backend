@@ -418,21 +418,23 @@ const pushNotification = async (userId, notification) => {
     try {
         if (!userId) return;
         const targetUserId = userId.toString();
-        await redis.lpush(`notifications:${targetUserId}`, JSON.stringify({
-            ...notification, id: `notif_${Date.now()}`, timestamp: Date.now(), read: false
-        }));
+        const notifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const stored = { ...notification, id: notifId, timestamp: Date.now(), read: false };
+        await redis.lpush(`notifications:${targetUserId}`, JSON.stringify(stored));
         await redis.ltrim(`notifications:${targetUserId}`, 0, 49);
 
-        // Emit socket event for real-time updates
+        // Emit socket event for real-time updates (include id so clients can dedupe)
         const targetSocketId = userSockets.get(targetUserId);
         if (targetSocketId) {
-            targetSocketId.forEach(sid => io.to(sid).emit('new_notification', { ...notification, timestamp: Date.now(), read: false }));
+            targetSocketId.forEach(sid => io.to(sid).emit('new_notification', stored));
         }
 
         // ── Send Firebase Background Push Notification (FCM) ──
         if (firebaseAdmin) {
             try {
-                // Find all FCM tokens registered for this user (using stringified targetUserId)
+                // Find all FCM tokens registered for this user.
+                // Always query by the stringified userId to avoid ObjectId vs String type-mismatch
+                // that would silently return 0 tokens and skip FCM delivery.
                 const registeredTokens = await FcmToken.find({ userId: targetUserId });
                 if (registeredTokens && registeredTokens.length > 0) {
                     const tokens = registeredTokens.map(t => t.token);
@@ -451,7 +453,8 @@ const pushNotification = async (userId, notification) => {
                             fromPic: (notification.fromPic || '').toString(),
                             postId: (notification.postId || '').toString(),
                             vibeId: (notification.vibeId || '').toString(),
-                            payloadDetails: JSON.stringify(notification)
+                            commentId: (notification.commentId || '').toString(),
+                            payloadDetails: JSON.stringify(stored)
                         }
                     };
 
@@ -495,6 +498,30 @@ const getNotifications = async (userId, limit = 50) => {
             try { return typeof item === 'string' ? JSON.parse(item) : item; } catch { return null; }
         }).filter(Boolean);
     } catch { return []; }
+};
+
+const getPlatformReadIds = async (userId) => {
+    try {
+        const ids = await redis.smembers(`platform_read:${userId}`);
+        return new Set((ids || []).map(id => id.toString()));
+    } catch { return new Set(); }
+};
+
+const markPlatformNotificationsRead = async (userId) => {
+    try {
+        const uid = userId.toString();
+        const globalNotifications = await PlatformNotification.find({
+            $or: [
+                { target: 'all' },
+                { target: 'specific', targetUserId: uid }
+            ]
+        }).select('_id').lean();
+        if (globalNotifications.length > 0) {
+            await redis.sadd(`platform_read:${uid}`, ...globalNotifications.map(n => n._id.toString()));
+        }
+    } catch (err) {
+        console.error('⚠️ Redis platform mark-read failed:', err.message);
+    }
 };
 
 const markNotificationsRead = async (userId) => {
@@ -1714,7 +1741,7 @@ app.post('/api/notifications/register-token', authenticateToken, async (req, res
 
         await FcmToken.findOneAndUpdate(
             { token },
-            { userId: req.user.id, token },
+            { userId: req.user.id.toString(), token },
             { upsert: true, new: true }
         );
 
@@ -4663,7 +4690,7 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
         io.emit('post_liked', { postId, likeCount, liked: true });
         // Push notification to post owner — skip if either side has blocked the other
         const post = await Post.findById(postId);
-        if (post && post.userId !== req.user.id) {
+        if (post && post.userId.toString() !== req.user.id.toString()) {
             const isAnyBlock = await Block.findOne({
                 $or: [
                     { blockerId: req.user.id, blockedId: post.userId },
@@ -4673,9 +4700,6 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
             if (!isAnyBlock) {
                 const likeNotifData = { type: 'post_liked', message: `${req.user.username} liked your post`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId };
                 await pushNotification(post.userId, likeNotifData);
-                // Direct targeted socket emission (bypasses new_notification)
-                const ownerSockets = userSockets.get(post.userId);
-                if (ownerSockets) ownerSockets.forEach(sid => io.to(sid).emit('post_liked_notif', likeNotifData));
             }
         }
         // BUG FIX (BUG-29): Removed self-notification for liking — inflated actor's badge.
@@ -4730,6 +4754,30 @@ app.post('/api/comments/:commentId/like', authenticateToken, async (req, res) =>
         }
 
         await comment.updateOne({ $set: { likes_users: likes, likes: likes.length } });
+
+        // Notify comment author when someone likes their comment (skip self-likes)
+        if (liked && comment.userId && comment.userId.toString() !== req.user.id.toString()) {
+            const isAnyBlock = await Block.findOne({
+                $or: [
+                    { blockerId: req.user.id, blockedId: comment.userId },
+                    { blockerId: comment.userId, blockedId: req.user.id }
+                ]
+            }).lean();
+            if (!isAnyBlock) {
+                const commentNotifData = {
+                    type: 'comment_liked',
+                    message: `${req.user.username} liked your comment`,
+                    from: req.user.id,
+                    fromUsername: req.user.username,
+                    fromPic: req.user.profile_pic || null,
+                    postId: comment.postId?.toString() || '',
+                    vibeId: comment.vibeId?.toString() || '',
+                    commentId: commentId.toString()
+                };
+                await pushNotification(comment.userId, commentNotifData);
+            }
+        }
+
         res.json({ success: true, liked, likeCount: likes.length });
     } catch (error) {
         res.json({ success: true, liked: true, likeCount: 1 }); // graceful fallback error
@@ -4843,12 +4891,9 @@ app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
         const commentCount = await PostComment.countDocuments({ postId });
         io.emit('post_commented', { postId, commentCount });
         // Push notification to post owner (only if not your own post)
-        if (post && post.userId !== req.user.id) {
+        if (post && post.userId.toString() !== req.user.id.toString()) {
             const commentNotifData = { type: 'new_comment', message: `${req.user.username} commented on your post`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId };
             await pushNotification(post.userId, commentNotifData);
-            // Direct targeted socket emission (bypasses new_notification)
-            const ownerSockets = userSockets.get(post.userId);
-            if (ownerSockets) ownerSockets.forEach(sid => io.to(sid).emit('new_comment_notif', commentNotifData));
         }
         // BUG FIX (BUG-29): Removed self-notification for commenting — inflated actor's badge.
         res.json({ success: true, comment: { ...comment.toObject(), id: comment._id.toString() } });
@@ -4915,13 +4960,17 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
             ]
         }).sort({ createdAt: -1 }).limit(10).lean();
 
+        const readPlatformIds = await getPlatformReadIds(userId);
+
         // Convert MongoDB docs to the format expected by the frontend
         const platformNotifications = globalNotifications.map(n => ({
             id: n._id.toString(),
             type: 'platform',
             title: n.title,
             message: n.message,
-            read: true, // We don't track read status for global ones easily, so mark as read to avoid annoying badge
+            fromUsername: 'VIBEXPERT',
+            fromPic: '',
+            read: readPlatformIds.has(n._id.toString()),
             createdAt: n.createdAt,
             timestamp: new Date(n.createdAt).getTime()
         }));
@@ -4947,7 +4996,7 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
         // Limit total to 50
         allNotifications = allNotifications.slice(0, 50);
 
-        const unreadCount = allNotifications.filter(n => n.type !== 'platform' && !n.read).length;
+        const unreadCount = allNotifications.filter(n => !n.read).length;
         res.json({ success: true, notifications: allNotifications, unreadCount });
     } catch (error) {
         console.error('❌ Notifications fetch error:', error);
@@ -4957,7 +5006,7 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
 
 app.get('/api/notifications/count', authenticateToken, async (req, res) => {
     try {
-        const userId = req.user.id;
+        const userId = req.user.id.toString();
         const userRegisterTime = req.user.created_at ? new Date(req.user.created_at).getTime() : 0;
 
         const notifications = await getNotifications(userId, 50);
@@ -4968,7 +5017,22 @@ app.get('/api/notifications/count', authenticateToken, async (req, res) => {
             return notifTime >= userRegisterTime;
         });
 
-        const unreadCount = filteredNotifications.filter(n => !n.read).length;
+        const redisUnread = filteredNotifications.filter(n => !n.read).length;
+
+        const readPlatformIds = await getPlatformReadIds(userId);
+        const globalNotifications = await PlatformNotification.find({
+            $or: [
+                { target: 'all' },
+                { target: 'specific', targetUserId: userId }
+            ]
+        }).sort({ createdAt: -1 }).limit(10).lean();
+
+        const platformUnread = globalNotifications.filter(n => {
+            const notifTime = new Date(n.createdAt).getTime();
+            return notifTime >= userRegisterTime && !readPlatformIds.has(n._id.toString());
+        }).length;
+
+        const unreadCount = redisUnread + platformUnread;
         res.json({ success: true, unreadCount });
     } catch (error) {
         res.status(500).json({ error: 'Failed to get count' });
@@ -4977,7 +5041,9 @@ app.get('/api/notifications/count', authenticateToken, async (req, res) => {
 
 app.post('/api/notifications/read', authenticateToken, async (req, res) => {
     try {
-        await markNotificationsRead(req.user.id);
+        const userId = req.user.id.toString();
+        await markNotificationsRead(userId);
+        await markPlatformNotificationsRead(userId);
         res.json({ success: true, message: 'All notifications marked as read' });
     } catch (error) {
         res.status(500).json({ error: 'Failed to mark as read' });
