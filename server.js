@@ -4755,7 +4755,8 @@ app.delete('/api/posts/:postId', authenticateToken, async (req, res) => {
         if (!post) return res.status(404).json({ error: 'Post not found' });
         // Allow the post owner OR any admin to delete
         const isAdmin = ADMIN_EMAILS_GLOBAL.includes((req.user.email || '').toLowerCase().trim());
-        if (post.userId !== req.user.id && !isAdmin) {
+        const isOwner = post.userId.toString() === req.user.id.toString();
+        if (!isOwner && !isAdmin) {
             return res.status(403).json({ error: 'Not authorized' });
         }
         await Post.deleteOne({ _id: post._id });
