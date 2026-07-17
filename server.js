@@ -3410,10 +3410,16 @@ app.put('/api/profile/update', authenticateToken, async (req, res) => {
 
         if (college) {
             if (college.startsWith('ROLE:Alumni') || college.startsWith('ROLE:Admin') || !req.user.college) {
-                updates.college = college;
-                // Alumni and Admin always have community access — persist it so future logins work
-                if (college.startsWith('ROLE:Alumni') || college.startsWith('ROLE:Admin')) {
-                    updates.community_joined = true;
+                // Never write a Student placeholder to the DB — students verify their
+                // college later via OTP, not at signup. Only Alumni/Admin college strings
+                // and genuinely empty college slots are allowed here.
+                const isStudentPlaceholder = college.includes('ROLE:Student');
+                if (!isStudentPlaceholder) {
+                    updates.college = college;
+                    // Alumni and Admin always have community access — persist it so future logins work
+                    if (college.startsWith('ROLE:Alumni') || college.startsWith('ROLE:Admin')) {
+                        updates.community_joined = true;
+                    }
                 }
             }
         }
@@ -4092,9 +4098,34 @@ app.post('/api/college/request-verification', authenticateToken, async (req, res
     try {
         const { collegeName, collegeEmail } = req.body;
         if (!collegeName || !collegeEmail) return res.status(400).json({ error: 'College name and email required' });
-        // Allow re-verification attempt even if user already has college set in localStorage
-        // Only block if confirmed in DB (req.user comes from DB via authenticateToken)
-        if (req.user.college) return res.status(400).json({ error: 'You are already connected to ' + req.user.college });
+
+        // ── Detect and auto-clear stale Student placeholder from old signup flow ──
+        // Before our fix, signup wrote "ROLE:Student | COLLEGE:<name> | REGION:<x>"
+        // into the DB even though the student had never verified anything. If that
+        // string is present AND community_joined is not true, silently clear it now
+        // so the user isn't blocked by any downstream check.
+        const hasStaleStudentCollege =
+            req.user.college &&
+            req.user.college.includes('ROLE:Student') &&
+            !req.user.community_joined;
+        if (hasStaleStudentCollege) {
+            await supabase.from('users').update({ college: null }).eq('id', req.user.id);
+            req.user.college = null;
+        }
+
+        // Block only if the user has genuinely completed college verification
+        // (community_joined === true in the DB, set only by the /college/verify endpoint).
+        if (req.user.community_joined === true) {
+            // Extract the stored verified college name for comparison
+            const storedCollege = req.user.college || '';
+            const storedCollegeMatch = storedCollege.match(/COLLEGE:(.*?)(?:\||$)/);
+            const storedCollegeName = storedCollegeMatch ? storedCollegeMatch[1].trim() : storedCollege.trim();
+            // Only block if they are already verified at the exact same college
+            if (storedCollegeName.toLowerCase() === collegeName.trim().toLowerCase()) {
+                return res.status(400).json({ error: 'You are already connected to ' + storedCollege });
+            }
+            // Different college — fall through and allow re-verification
+        }
 
         // ── College email uniqueness check ──────────────────────────────────────
         // Ensure this college email is not already linked to another account
