@@ -4269,7 +4269,12 @@ const enrichPosts = async (posts, currentUserId) => {
     const userMap = {};
     (users || []).forEach(u => { userMap[u.id] = u; });
 
-    const postIds = posts.map(p => p._id);
+    // Filter out posts whose author no longer exists in the DB (deleted users).
+    // These show up as "User" with a broken image — we hide them entirely.
+    const validPosts = posts.filter(p => !!userMap[p.userId]);
+    if (validPosts.length === 0) return [];
+
+    const postIds = validPosts.map(p => p._id);
     const [likesData, commentsData, sharesData, myLikes] = await Promise.all([
         PostLike.aggregate([
             { $match: { postId: { $in: postIds } } },
@@ -4297,12 +4302,12 @@ const enrichPosts = async (posts, currentUserId) => {
 
     const myLikesSet = new Set((myLikes || []).map(l => l.postId ? l.postId.toString() : ''));
 
-    return posts.map((post) => {
+    return validPosts.map((post) => {
         const postId = post._id.toString();
         return {
             ...post.toObject(),
             id: postId,
-            users: userMap[post.userId] || { id: post.userId, username: 'User', profile_pic: null, college: null },
+            users: userMap[post.userId],
             like_count: likeMap[postId] || 0,
             comment_count: commentMap[postId] || 0,
             share_count: shareMap[postId] || 0,

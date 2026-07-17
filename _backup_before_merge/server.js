@@ -1957,7 +1957,11 @@ const enrichPosts = async (posts, currentUserId) => {
     const userMap = {};
     (users || []).forEach(u => { userMap[u.id] = u; });
 
-    return await Promise.all(posts.map(async (post) => {
+    // Filter out posts whose author no longer exists (deleted users).
+    const validPosts = posts.filter(p => !!userMap[p.userId]);
+    if (validPosts.length === 0) return [];
+
+    return await Promise.all(validPosts.map(async (post) => {
         const postId = post._id.toString();
         const [likeCount, commentCount, shareCount, isLiked] = await Promise.all([
             PostLike.countDocuments({ postId: post._id }),
@@ -1968,7 +1972,7 @@ const enrichPosts = async (posts, currentUserId) => {
         return {
             ...post.toObject(),
             id: postId,
-            users: userMap[post.userId] || { id: post.userId, username: 'User', profile_pic: null, college: null },
+            users: userMap[post.userId],
             like_count: likeCount,
             comment_count: commentCount,
             share_count: shareCount,
