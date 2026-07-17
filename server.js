@@ -4752,7 +4752,12 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
 app.delete('/api/posts/:postId', authenticateToken, async (req, res) => {
     try {
         const post = await Post.findById(req.params.postId);
-        if (!post || post.userId !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
+        if (!post) return res.status(404).json({ error: 'Post not found' });
+        // Allow the post owner OR any admin to delete
+        const isAdmin = ADMIN_EMAILS_GLOBAL.includes((req.user.email || '').toLowerCase().trim());
+        if (post.userId !== req.user.id && !isAdmin) {
+            return res.status(403).json({ error: 'Not authorized' });
+        }
         await Post.deleteOne({ _id: post._id });
         await PostLike.deleteMany({ postId: post._id });
         await PostComment.deleteMany({ postId: post._id });
