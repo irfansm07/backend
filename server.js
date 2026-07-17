@@ -4302,7 +4302,7 @@ const enrichPosts = async (posts, currentUserId) => {
 
     const myLikesSet = new Set((myLikes || []).map(l => l.postId ? l.postId.toString() : ''));
 
-    const enriched = validPosts.map((post) => {
+    return validPosts.map((post) => {
         const postId = post._id.toString();
         return {
             ...post.toObject(),
@@ -4313,19 +4313,6 @@ const enrichPosts = async (posts, currentUserId) => {
             share_count: shareMap[postId] || 0,
             is_liked: myLikesSet.has(postId)
         };
-    });
-
-    // Filter out posts with no valid media AND no text content.
-    // This removes orphaned posts whose Cloudinary assets were deleted.
-    return enriched.filter(post => {
-        const hasContent = post.content && post.content.trim().length > 0;
-        if (hasContent) return true;
-        const media = Array.isArray(post.media) ? post.media : [];
-        if (media.length === 0) return false;
-        return media.some(m => {
-            const url = typeof m === 'string' ? m : (m && m.url);
-            return url && url.trim().length > 0;
-        });
     });
 };
 
