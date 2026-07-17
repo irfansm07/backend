@@ -770,6 +770,29 @@ const getReportedContent = async (userId) => {
 // ══════════════════════════════════════════════════════════════
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
+// ── Keep-alive self-ping ───────────────────────────────────────────────────────
+// Render free tier spins down after ~15 min of inactivity, causing 30-60s cold
+// starts. This pings /api/health every 10 minutes to keep the server warm.
+// Only runs when the SERVER_URL env var is set (set it in Render dashboard to
+// your service URL, e.g. https://vibexpert-backend-main.onrender.com).
+(function startKeepAlive() {
+    const selfUrl = process.env.SERVER_URL || process.env.RENDER_EXTERNAL_URL;
+    if (!selfUrl) {
+        console.log('ℹ️  Keep-alive disabled: SERVER_URL not set');
+        return;
+    }
+    const pingUrl = `${selfUrl.replace(/\/$/, '')}/api/health`;
+    setInterval(async () => {
+        try {
+            const res = await fetch(pingUrl, { signal: AbortSignal.timeout(10000) });
+            console.log(`🏓 Keep-alive ping: ${res.status}`);
+        } catch (e) {
+            console.warn('⚠️  Keep-alive ping failed:', e.message);
+        }
+    }, 10 * 60 * 1000); // every 10 minutes
+    console.log(`🏓 Keep-alive started → pinging ${pingUrl} every 10 min`);
+})();
+
 // ══════════════════════════════════════════════════════════════
 // BLOCK SYSTEM — Instagram-style, stored in MongoDB
 // ══════════════════════════════════════════════════════════════
