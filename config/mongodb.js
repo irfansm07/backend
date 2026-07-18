@@ -305,6 +305,32 @@ const fcmTokenSchema = new mongoose.Schema({
     token: { type: String, required: true, unique: true }
 }, { timestamps: true });
 
+// ── Contests / Polls / Forms (Admin-created) ─────────────────
+const contestSchema = new mongoose.Schema({
+    createdBy: { type: String, required: true },           // admin userId
+    type: { type: String, enum: ['contest', 'poll', 'form', 'announcement'], default: 'contest' },
+    title: { type: String, required: true },
+    description: { type: String, required: true },
+    coverImage: { type: String, default: null },           // Cloudinary URL
+    isLive: { type: Boolean, default: false, index: true },
+    endsAt: { type: Date, default: null },
+    // Poll options: [{ text: String, votes: [userId] }]
+    pollOptions: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    // Form fields: [{ label, type: 'text'|'email'|'number', required }]
+    formFields: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    // How to participate (for contests)
+    howToParticipate: { type: String, default: '' },
+    prize: { type: String, default: '' },
+    participantCount: { type: Number, default: 0 },
+    // IDs of users who joined/participated
+    participants: { type: [String], default: [] },
+    // Form submissions: [{ userId, answers: {fieldLabel: value}, submittedAt }]
+    formSubmissions: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    notificationSent: { type: Boolean, default: false },
+}, { timestamps: true });
+
+contestSchema.index({ isLive: 1, createdAt: -1 });
+
 // ── Models ────────────────────────────────────────────────────
 const Post = mongoose.models.Post || mongoose.model('Post', postSchema);
 const PostLike = mongoose.models.PostLike || mongoose.model('PostLike', postLikeSchema);
@@ -328,6 +354,7 @@ const CombineRequest = mongoose.models.CombineRequest || mongoose.model('Combine
 const PartnerLink = mongoose.models.PartnerLink || mongoose.model('PartnerLink', partnerLinkSchema);
 const PinnedMessage = mongoose.models.PinnedMessage || mongoose.model('PinnedMessage', pinnedMessageSchema);
 const FcmToken = mongoose.models.FcmToken || mongoose.model('FcmToken', fcmTokenSchema);
+const Contest = mongoose.models.Contest || mongoose.model('Contest', contestSchema);
 
 module.exports = {
     connectMongo,
@@ -352,5 +379,6 @@ module.exports = {
     CombineRequest,
     PartnerLink,
     PinnedMessage,
-    FcmToken
+    FcmToken,
+    Contest
 };

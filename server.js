@@ -34,7 +34,7 @@ const {
     ClientRequest, ClientProduct, OrderMessage,
     Complaint, Coupon, ProductReview, CollegeRequest,
     Block, CombineRequest, PartnerLink, PinnedMessage,
-    FcmToken
+    FcmToken, Contest
 } = require('./config/mongodb');
 const redis = require('./config/redis');
 
@@ -1911,6 +1911,226 @@ app.post('/api/admin/notifications', authenticateToken, async (req, res) => {
         res.json({ success: true, notification: notif });
     } catch (error) {
         res.status(500).json({ error: 'Failed to create notification' });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
+// CONTESTS / POLLS / FORMS / ANNOUNCEMENTS
+// Created by admin, visible to all users.
+// ══════════════════════════════════════════════════════════════
+
+// Helper: broadcast FCM to all users when a contest goes live
+async function broadcastContestNotification(contest) {
+    try {
+        const title = contest.isLive ? `🔴 LIVE: ${contest.title}` : contest.title;
+        const body  = contest.type === 'poll'   ? '📊 New poll — vote now!'
+                    : contest.type === 'form'   ? '📋 New form — fill it out!'
+                    : contest.type === 'contest'? '🏆 New contest — participate & win!'
+                    :                             '📣 New announcement from VibeXpert';
+
+        const fcmPayload = {
+            notification: { title, body },
+            data: {
+                type: 'contest',
+                contestId: contest._id.toString(),
+                contestType: contest.type,
+                click_action: 'FLUTTER_NOTIFICATION_CLICK',
+                message: body,
+                fromUsername: 'VIBEXPERT',
+                from: '',
+                fromPic: '',
+                postId: '',
+                vibeId: '',
+                payloadDetails: JSON.stringify({ type: 'contest', contestId: contest._id.toString(), contestType: contest.type })
+            }
+        };
+
+        // Socket broadcast for real-time in-app delivery
+        io.emit('new_contest', contest);
+
+        // FCM push to all registered devices
+        if (firebaseAdmin) {
+            const allTokenDocs = await FcmToken.find({});
+            if (allTokenDocs.length > 0) {
+                const allTokens = allTokenDocs.map(t => t.token);
+                for (let i = 0; i < allTokens.length; i += 500) {
+                    const batch = allTokens.slice(i, i + 500);
+                    try {
+                        await firebaseAdmin.messaging().sendEachForMulticast({
+                            tokens: batch,
+                            notification: fcmPayload.notification,
+                            data: fcmPayload.data
+                        });
+                    } catch(e) { console.error('⚠️ Contest FCM batch error:', e.message); }
+                }
+            }
+        }
+    } catch(e) { console.error('⚠️ broadcastContestNotification error:', e.message); }
+}
+
+// GET all contests (all users)
+app.get('/api/contests', authenticateToken, async (req, res) => {
+    try {
+        const contests = await Contest.find({})
+            .sort({ createdAt: -1 })
+            .limit(50)
+            .lean();
+        res.json({ success: true, contests });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to load contests' });
+    }
+});
+
+// GET single contest
+app.get('/api/contests/:id', authenticateToken, async (req, res) => {
+    try {
+        const contest = await Contest.findById(req.params.id).lean();
+        if (!contest) return res.status(404).json({ error: 'Contest not found' });
+        res.json({ success: true, contest });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to load contest' });
+    }
+});
+
+// POST create contest (admin only)
+app.post('/api/contests', authenticateToken, async (req, res) => {
+    try {
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Admin only' });
+        const { type, title, description, coverImage, isLive, endsAt,
+                pollOptions, formFields, howToParticipate, prize } = req.body;
+
+        if (!title || !description) return res.status(400).json({ error: 'Title and description required' });
+
+        const contest = await Contest.create({
+            createdBy: req.user.id,
+            type: type || 'contest',
+            title,
+            description,
+            coverImage: coverImage || null,
+            isLive: isLive || false,
+            endsAt: endsAt ? new Date(endsAt) : null,
+            pollOptions: pollOptions || [],
+            formFields: formFields || [],
+            howToParticipate: howToParticipate || '',
+            prize: prize || '',
+        });
+
+        // Broadcast notification if going live immediately
+        if (contest.isLive) {
+            await broadcastContestNotification(contest);
+            await Contest.findByIdAndUpdate(contest._id, { notificationSent: true });
+        } else {
+            io.emit('new_contest', contest);
+        }
+
+        res.json({ success: true, contest });
+    } catch (error) {
+        console.error('❌ Create contest error:', error);
+        res.status(500).json({ error: 'Failed to create contest' });
+    }
+});
+
+// PATCH update contest (admin only) — e.g. toggle isLive
+app.patch('/api/contests/:id', authenticateToken, async (req, res) => {
+    try {
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Admin only' });
+        const prev = await Contest.findById(req.params.id);
+        if (!prev) return res.status(404).json({ error: 'Contest not found' });
+
+        const updates = req.body;
+        const contest = await Contest.findByIdAndUpdate(req.params.id, updates, { new: true });
+
+        // Send live notification when status flips to live
+        if (!prev.isLive && contest.isLive && !contest.notificationSent) {
+            await broadcastContestNotification(contest);
+            await Contest.findByIdAndUpdate(contest._id, { notificationSent: true });
+        } else {
+            io.emit('contest_updated', contest);
+        }
+
+        res.json({ success: true, contest });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to update contest' });
+    }
+});
+
+// DELETE contest (admin only)
+app.delete('/api/contests/:id', authenticateToken, async (req, res) => {
+    try {
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Admin only' });
+        await Contest.findByIdAndDelete(req.params.id);
+        io.emit('contest_deleted', { id: req.params.id });
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to delete contest' });
+    }
+});
+
+// POST participate in contest / vote in poll
+app.post('/api/contests/:id/participate', authenticateToken, async (req, res) => {
+    try {
+        const contest = await Contest.findById(req.params.id);
+        if (!contest) return res.status(404).json({ error: 'Contest not found' });
+
+        const userId = req.user.id.toString();
+
+        if (contest.type === 'poll') {
+            // Vote on a poll option
+            const { optionIndex } = req.body;
+            if (optionIndex === undefined || optionIndex === null)
+                return res.status(400).json({ error: 'optionIndex required for polls' });
+
+            // Remove any existing vote by this user
+            const options = (contest.pollOptions || []).map((opt, i) => ({
+                ...opt,
+                votes: (opt.votes || []).filter(v => v !== userId)
+            }));
+            // Add new vote
+            if (options[optionIndex]) {
+                options[optionIndex].votes = [...(options[optionIndex].votes || []), userId];
+            }
+            const updated = await Contest.findByIdAndUpdate(
+                req.params.id,
+                { pollOptions: options, $addToSet: { participants: userId } },
+                { new: true }
+            );
+            return res.json({ success: true, contest: updated });
+        }
+
+        if (contest.type === 'form') {
+            // Submit form answers
+            const { answers } = req.body; // { fieldLabel: value }
+            if (!answers) return res.status(400).json({ error: 'answers required for forms' });
+
+            // One submission per user
+            const alreadySubmitted = (contest.formSubmissions || []).some(s => s.userId === userId);
+            if (alreadySubmitted) return res.status(400).json({ error: 'Already submitted' });
+
+            const updated = await Contest.findByIdAndUpdate(
+                req.params.id,
+                {
+                    $push: { formSubmissions: { userId, answers, submittedAt: new Date() } },
+                    $addToSet: { participants: userId },
+                    $inc: { participantCount: 1 }
+                },
+                { new: true }
+            );
+            return res.json({ success: true, contest: updated });
+        }
+
+        // contest / announcement — just mark participation
+        if (contest.participants.includes(userId))
+            return res.status(400).json({ error: 'Already participating' });
+
+        const updated = await Contest.findByIdAndUpdate(
+            req.params.id,
+            { $addToSet: { participants: userId }, $inc: { participantCount: 1 } },
+            { new: true }
+        );
+        res.json({ success: true, contest: updated });
+    } catch (error) {
+        console.error('❌ Participate error:', error);
+        res.status(500).json({ error: 'Failed to participate' });
     }
 });
 
