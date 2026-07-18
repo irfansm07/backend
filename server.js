@@ -1687,6 +1687,19 @@ app.put('/api/admin/shop-orders/:orderId/status', authenticateToken, async (req,
 });
 
 // ── Admin: List All Users ─────────────────────────────────────
+// POST /api/admin/upload — upload a poster/banner/cover image (admin only)
+app.post('/api/admin/upload', authenticateToken, upload.single('file'), async (req, res) => {
+    try {
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
+        if (!req.file) return res.status(400).json({ error: 'No file provided' });
+        const result = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/admin');
+        res.json({ success: true, url: result.secure_url, public_id: result.public_id });
+    } catch (error) {
+        console.error('❌ Admin upload error:', error.message);
+        res.status(500).json({ error: 'Upload failed: ' + error.message });
+    }
+});
+
 app.get('/api/admin/users', authenticateToken, async (req, res) => {
     try {
         if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
