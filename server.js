@@ -2033,7 +2033,7 @@ app.post('/api/contests', authenticateToken, async (req, res) => {
         const { type, title, description, coverImage, isLive, endsAt,
                 pollOptions, formFields, howToParticipate, prize } = req.body;
 
-        if (!title || !description) return res.status(400).json({ error: 'Title and description required' });
+        if (!title || (!description && type !== 'poster')) return res.status(400).json({ error: 'Title and description required' });
 
         const contest = await Contest.create({
             createdBy: req.user.id,
