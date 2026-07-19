@@ -5242,7 +5242,7 @@ app.get('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
 app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
     try {
         const { postId } = req.params;
-        const { content } = req.body;
+        const { content, replyToId } = req.body;
         if (!content || !content.trim()) return res.status(400).json({ error: 'Comment content required' });
 
         // Check block status against the post owner
