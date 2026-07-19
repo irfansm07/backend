@@ -307,10 +307,10 @@ const fcmTokenSchema = new mongoose.Schema({
 
 // ── Contests / Polls / Forms (Admin-created) ─────────────────
 const contestSchema = new mongoose.Schema({
-    createdBy: { type: String, required: true },           // admin userId
+    createdBy: { type: String, required: true },
     type: { type: String, enum: ['contest', 'poll', 'form', 'announcement', 'poster'], default: 'contest' },
     title: { type: String, required: true },
-    description: { type: String, required: true },
+    description: { type: String, default: '' },  // optional for poster type
     coverImage: { type: String, default: null },           // Cloudinary URL
     isLive: { type: Boolean, default: false, index: true },
     endsAt: { type: Date, default: null },
