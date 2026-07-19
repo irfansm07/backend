@@ -34,7 +34,7 @@ const postSchema = new mongoose.Schema({
         public_id: String,
         type: { type: String, enum: ['image', 'video', 'audio'] }
     }],
-    postedTo: { type: String, enum: ['profile', 'community'], default: 'profile' },
+    postedTo: { type: String, enum: ['profile', 'community', 'both'], default: 'profile' },
     college: { type: String, default: null },
     music: { type: mongoose.Schema.Types.Mixed, default: null },
     stickers: { type: [mongoose.Schema.Types.Mixed], default: [] },
@@ -59,7 +59,8 @@ const postCommentSchema = new mongoose.Schema({
     userId: { type: String, required: true },
     content: { type: String, required: true },
     likes: { type: Number, default: 0 },
-    likes_users: { type: [String], default: [] }
+    likes_users: { type: [String], default: [] },
+    isPinned: { type: Boolean, default: false }
 }, { timestamps: true });
 
 // Post Shares
@@ -104,7 +105,9 @@ const realVibeCommentSchema = new mongoose.Schema({
     userId: { type: String, required: true },
     content: { type: String, required: true },
     likes: { type: Number, default: 0 },
-    likes_users: { type: [String], default: [] }
+    likes_users: { type: [String], default: [] },
+    isPinned: { type: Boolean, default: false },
+    replyToId: { type: mongoose.Schema.Types.ObjectId, default: null }
 }, { timestamps: true });
 
 // Seller Requests
@@ -189,9 +192,11 @@ const complaintSchema = new mongoose.Schema({
     userId: { type: String, default: null, index: true },
     email: { type: String, required: true },
     name: { type: String, required: true },
-    type: { type: String, enum: ['bug', 'support', 'feedback', 'other'], default: 'support' },
+    type: { type: String, enum: ['bug', 'support', 'feedback', 'other', 'report_post', 'report_user'], default: 'support' },
     subject: { type: String, required: true },
     message: { type: String, required: true },
+    reportedPostId: { type: mongoose.Schema.Types.ObjectId, ref: 'Post', default: null, index: true },
+    reportedUserId: { type: String, default: null, index: true },
     source: { type: String, enum: ['online', 'shop', 'client_portal', 'app'], required: true },
     status: { type: String, enum: ['open', 'resolved', 'closed'], default: 'open', index: true },
     adminResponse: { type: String, default: null },
@@ -278,6 +283,54 @@ const partnerLinkSchema = new mongoose.Schema({
 partnerLinkSchema.index({ user1Id: 1 }, { unique: true });
 partnerLinkSchema.index({ user2Id: 1 }, { unique: true });
 
+// ── Pinned Messages ──────────────────────────────────────────
+const pinnedMessageSchema = new mongoose.Schema({
+    userId: { type: String, required: true, index: true },
+    messageId: { type: String, required: true, index: true },
+    chatType: { type: String, required: true }, // e.g., 'community', 'ghost', 'mutual', 'executive'
+    chatName: { type: String, required: true },
+    messageContent: { type: String, default: '' },
+    mediaUrl: { type: String, default: null },
+    mediaType: { type: String, default: null },
+    senderId: { type: String, required: true },
+    senderName: { type: String, required: true },
+    senderProfilePic: { type: String, default: null }
+}, { timestamps: true });
+
+pinnedMessageSchema.index({ userId: 1, messageId: 1 }, { unique: true });
+
+// ── FCM Tokens ──────────────────────────────────────────
+const fcmTokenSchema = new mongoose.Schema({
+    userId: { type: String, required: true, index: true },
+    token: { type: String, required: true, unique: true }
+}, { timestamps: true });
+
+// ── Contests / Polls / Forms (Admin-created) ─────────────────
+const contestSchema = new mongoose.Schema({
+    createdBy: { type: String, required: true },
+    type: { type: String, enum: ['contest', 'poll', 'form', 'announcement', 'poster'], default: 'contest' },
+    title: { type: String, required: true },
+    description: { type: String, default: '' },  // optional for poster type
+    coverImage: { type: String, default: null },           // Cloudinary URL
+    isLive: { type: Boolean, default: false, index: true },
+    endsAt: { type: Date, default: null },
+    // Poll options: [{ text: String, votes: [userId] }]
+    pollOptions: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    // Form fields: [{ label, type: 'text'|'email'|'number', required }]
+    formFields: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    // How to participate (for contests)
+    howToParticipate: { type: String, default: '' },
+    prize: { type: String, default: '' },
+    participantCount: { type: Number, default: 0 },
+    // IDs of users who joined/participated
+    participants: { type: [String], default: [] },
+    // Form submissions: [{ userId, answers: {fieldLabel: value}, submittedAt }]
+    formSubmissions: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    notificationSent: { type: Boolean, default: false },
+}, { timestamps: true });
+
+contestSchema.index({ isLive: 1, createdAt: -1 });
+
 // ── Models ────────────────────────────────────────────────────
 const Post = mongoose.models.Post || mongoose.model('Post', postSchema);
 const PostLike = mongoose.models.PostLike || mongoose.model('PostLike', postLikeSchema);
@@ -299,6 +352,9 @@ const CollegeRequest = mongoose.models.CollegeRequest || mongoose.model('College
 const Block = mongoose.models.Block || mongoose.model('Block', blockSchema);
 const CombineRequest = mongoose.models.CombineRequest || mongoose.model('CombineRequest', combineRequestSchema);
 const PartnerLink = mongoose.models.PartnerLink || mongoose.model('PartnerLink', partnerLinkSchema);
+const PinnedMessage = mongoose.models.PinnedMessage || mongoose.model('PinnedMessage', pinnedMessageSchema);
+const FcmToken = mongoose.models.FcmToken || mongoose.model('FcmToken', fcmTokenSchema);
+const Contest = mongoose.models.Contest || mongoose.model('Contest', contestSchema);
 
 module.exports = {
     connectMongo,
@@ -321,5 +377,8 @@ module.exports = {
     CollegeRequest,
     Block,
     CombineRequest,
-    PartnerLink
+    PartnerLink,
+    PinnedMessage,
+    FcmToken,
+    Contest
 };

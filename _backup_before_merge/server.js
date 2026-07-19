@@ -1376,7 +1376,9 @@ app.put('/api/profile/update', authenticateToken, async (req, res) => {
         const updates = {};
         if (username) updates.username = username;
         if (bio !== undefined) updates.bio = bio;
-        if (college) updates.college = college;
+        // Never write a Student placeholder college string — students verify
+        // their college later via OTP. Only Alumni/Admin strings are stored here.
+        if (college && !college.includes('ROLE:Student')) updates.college = college;
         if (registration_number) updates.registration_number = registration_number;
         const { data: updatedUser, error } = await supabase.from('users').update(updates).eq('id', req.user.id).select().single();
         if (error) throw error;
@@ -1866,9 +1868,26 @@ app.post('/api/college/request-verification', authenticateToken, async (req, res
     try {
         const { collegeName, collegeEmail } = req.body;
         if (!collegeName || !collegeEmail) return res.status(400).json({ error: 'College name and email required' });
-        // Allow re-verification attempt even if user already has college set in localStorage
-        // Only block if confirmed in DB (req.user comes from DB via authenticateToken)
-        if (req.user.college) return res.status(400).json({ error: 'You are already connected to ' + req.user.college });
+
+        // ── Detect and auto-clear stale Student placeholder from old signup flow ──
+        const hasStaleStudentCollege =
+            req.user.college &&
+            req.user.college.includes('ROLE:Student') &&
+            !req.user.community_joined;
+        if (hasStaleStudentCollege) {
+            await supabase.from('users').update({ college: null }).eq('id', req.user.id);
+            req.user.college = null;
+        }
+
+        // Block only if the user has genuinely completed college verification.
+        if (req.user.community_joined === true) {
+            const storedCollege = req.user.college || '';
+            const storedCollegeMatch = storedCollege.match(/COLLEGE:(.*?)(?:\||$)/);
+            const storedCollegeName = storedCollegeMatch ? storedCollegeMatch[1].trim() : storedCollege.trim();
+            if (storedCollegeName.toLowerCase() === collegeName.trim().toLowerCase()) {
+                return res.status(400).json({ error: 'You are already connected to ' + storedCollege });
+            }
+        }
         const code = generateCode();
         const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
         // Delete any existing pending codes for this user first to avoid duplicates
@@ -1938,7 +1957,11 @@ const enrichPosts = async (posts, currentUserId) => {
     const userMap = {};
     (users || []).forEach(u => { userMap[u.id] = u; });
 
-    return await Promise.all(posts.map(async (post) => {
+    // Filter out posts whose author no longer exists (deleted users).
+    const validPosts = posts.filter(p => !!userMap[p.userId]);
+    if (validPosts.length === 0) return [];
+
+    return await Promise.all(validPosts.map(async (post) => {
         const postId = post._id.toString();
         const [likeCount, commentCount, shareCount, isLiked] = await Promise.all([
             PostLike.countDocuments({ postId: post._id }),
@@ -1949,7 +1972,7 @@ const enrichPosts = async (posts, currentUserId) => {
         return {
             ...post.toObject(),
             id: postId,
-            users: userMap[post.userId] || { id: post.userId, username: 'User', profile_pic: null, college: null },
+            users: userMap[post.userId],
             like_count: likeCount,
             comment_count: commentCount,
             share_count: shareCount,

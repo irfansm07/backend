@@ -26,30 +26,6 @@ const mongoose = require('mongoose');
 
 // ── New: Polyglot imports ──────────────────────────────────────
 const cloudinaryLib = require('./config/cloudinary');
-
-// ── Firebase Admin SDK (FCM push notifications) ───────────────
-let firebaseAdmin = null;
-try {
-    firebaseAdmin = require('firebase-admin');
-    // FIREBASE_SERVICE_ACCOUNT env var must be the full JSON string of your
-    // Firebase service account key (from Firebase Console → Project Settings →
-    // Service accounts → Generate new private key).
-    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-        if (!firebaseAdmin.apps.length) {
-            firebaseAdmin.initializeApp({
-                credential: firebaseAdmin.credential.cert(serviceAccount),
-            });
-        }
-        console.log('🔥 Firebase Admin SDK initialized');
-    } else {
-        console.warn('⚠️  FIREBASE_SERVICE_ACCOUNT env var not set — FCM push disabled');
-        firebaseAdmin = null;
-    }
-} catch (e) {
-    console.error('⚠️  Firebase Admin init failed:', e.message);
-    firebaseAdmin = null;
-}
 const {
     connectMongo,
     Post, PostLike, PostComment, PostShare,
@@ -57,9 +33,44 @@ const {
     PlatformNotification, SellerRequest,
     ClientRequest, ClientProduct, OrderMessage,
     Complaint, Coupon, ProductReview, CollegeRequest,
-    Block, CombineRequest, PartnerLink
+    Block, CombineRequest, PartnerLink, PinnedMessage,
+    FcmToken, Contest
 } = require('./config/mongodb');
 const redis = require('./config/redis');
+
+// Initialize Firebase Admin dynamically for FCM Background Notifications
+let firebaseAdmin = null;
+try {
+    const admin = require('firebase-admin');
+    let serviceAccount = null;
+
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+        try {
+            serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+            console.log('✅ Loaded Firebase credentials from FIREBASE_SERVICE_ACCOUNT env var.');
+        } catch (parseErr) {
+            console.error('❌ Failed to parse FIREBASE_SERVICE_ACCOUNT env var:', parseErr.message);
+        }
+    } else {
+        const serviceAccountPath = path.join(__dirname, 'firebase-service-account.json');
+        if (fs.existsSync(serviceAccountPath)) {
+            serviceAccount = require(serviceAccountPath);
+            console.log('✅ Loaded Firebase credentials from firebase-service-account.json.');
+        }
+    }
+
+    if (serviceAccount) {
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount)
+        });
+        firebaseAdmin = admin;
+        console.log('🔥 Firebase Admin SDK initialized successfully');
+    } else {
+        console.warn('⚠️ No Firebase service account config found (env var or JSON file). Background push notifications via FCM will be disabled (non-critical).');
+    }
+} catch (e) {
+    console.error('⚠️ Failed to initialize Firebase Admin SDK:', e.message);
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -71,6 +82,18 @@ const io = socketIO(server, {
 });
 
 const userSockets = new Map(); // userId -> Set(socketIds)
+
+// Bulletproof wrapper to automatically stringify Mongoose ObjectIds or other types used as keys
+const originalGet = userSockets.get.bind(userSockets);
+const originalSet = userSockets.set.bind(userSockets);
+const originalHas = userSockets.has.bind(userSockets);
+const originalDelete = userSockets.delete.bind(userSockets);
+
+userSockets.get = (key) => key ? originalGet(key.toString()) : undefined;
+userSockets.set = (key, value) => key ? originalSet(key.toString(), value) : userSockets;
+userSockets.has = (key) => key ? originalHas(key.toString()) : false;
+userSockets.delete = (key) => key ? originalDelete(key.toString()) : false;
+
 const collegeGhostNames = new Map();
 const communityReactions = new Map();
 
@@ -98,54 +121,75 @@ function releaseGhostName(userId, collegeName) {
     }
 }
 
+function getCommunityRoom(collegeField) {
+    if (!collegeField || typeof collegeField !== 'string') return collegeField;
+    if (collegeField.toLowerCase().includes('role:alumni')) {
+        const matchRegion = collegeField.match(/REGION:(.*?)(?:\||$)/);
+        if (matchRegion && matchRegion[1].trim()) {
+            return `alumni_region:${matchRegion[1].trim()}`;
+        }
+    }
+    return collegeField;
+}
+
 io.on('connection', (socket) => {
     console.log('⚡ User connected:', socket.id);
 
     socket.on('join_college', (collegeName) => {
         if (collegeName && typeof collegeName === 'string') {
+            const roomName = getCommunityRoom(collegeName);
             [...socket.rooms].forEach(room => { if (room !== socket.id) socket.leave(room); });
-            socket.join(collegeName);
-            socket.data.college = collegeName;
-            const roomSize = io.sockets.adapter.rooms.get(collegeName)?.size || 0;
-            io.to(collegeName).emit('online_count', roomSize);
+            socket.join(roomName);
+            socket.data.college = roomName;
+            const roomSize = io.sockets.adapter.rooms.get(roomName)?.size || 0;
+            io.to(roomName).emit('online_count', roomSize);
         }
     });
 
     socket.on('register_ghost_name', ({ userId, collegeName, ghostName }) => {
         if (!userId || !collegeName || !ghostName) return;
-        const result = registerGhostName(userId, collegeName, ghostName);
+        const roomName = getCommunityRoom(collegeName);
+        const result = registerGhostName(userId, roomName, ghostName);
         socket.emit('ghost_name_result', result);
     });
 
     socket.on('typing', (data) => {
-        if (data.collegeName && data.username)
-            socket.to(data.collegeName).emit('user_typing', { username: data.username });
+        if (data.collegeName && data.username) {
+            const roomName = getCommunityRoom(data.collegeName);
+            socket.to(roomName).emit('user_typing', { username: data.username });
+        }
     });
 
     socket.on('stop_typing', (data) => {
-        if (data.collegeName && data.username)
-            socket.to(data.collegeName).emit('user_stop_typing', { username: data.username });
+        if (data.collegeName && data.username) {
+            const roomName = getCommunityRoom(data.collegeName);
+            socket.to(roomName).emit('user_stop_typing', { username: data.username });
+        }
     });
 
     socket.on('mark_seen', (data) => {
         if (data.collegeName && data.username && data.lastMsgId) {
+            const roomName = getCommunityRoom(data.collegeName);
             socket.data.username = data.username;
-            socket.to(data.collegeName).emit('messages_seen', {
+            socket.to(roomName).emit('messages_seen', {
                 username: data.username, avatar: data.avatar || '👤', lastMsgId: data.lastMsgId
             });
         }
     });
 
     socket.on('user_online', async (userId) => {
-        socket.data.userId = userId;
-        if (!userSockets.has(userId)) userSockets.set(userId, new Set());
-        userSockets.get(userId).add(socket.id);
-        await supabase.from('users').update({ last_seen: null }).eq('id', userId);
+        if (!userId) return;
+        const targetUserId = userId.toString();
+        socket.data.userId = targetUserId;
+        if (!userSockets.has(targetUserId)) userSockets.set(targetUserId, new Set());
+        userSockets.get(targetUserId).add(socket.id);
+        io.emit('user_presence_change', { userId: targetUserId, isOnline: true });
+        await supabase.from('users').update({ last_seen: null }).eq('id', targetUserId);
         const targetCollege = socket.data.college;
         if (targetCollege) {
-            io.to(targetCollege).emit('user_online_broadcast', { userId });
+            io.to(targetCollege).emit('user_online_broadcast', { userId: targetUserId });
         } else {
-            socket.emit('user_online_broadcast', { userId });
+            socket.emit('user_online_broadcast', { userId: targetUserId });
         }
     });
 
@@ -161,36 +205,47 @@ io.on('connection', (socket) => {
 
     socket.on('join_executive', (collegeName) => {
         if (collegeName && typeof collegeName === 'string') {
-            socket.join(`exec_${collegeName}`);
-            socket.data.execCollege = collegeName;
+            const roomName = getCommunityRoom(collegeName);
+            socket.join(`exec_${roomName}`);
+            socket.data.execCollege = roomName;
         }
     });
 
     socket.on('exec_typing', (data) => {
-        if (data.collegeName && data.username)
-            socket.to(`exec_${data.collegeName}`).emit('exec_user_typing', { username: data.username, avatar: data.avatar || null });
+        if (data.collegeName && data.username) {
+            const roomName = getCommunityRoom(data.collegeName);
+            socket.to(`exec_${roomName}`).emit('exec_user_typing', { username: data.username, avatar: data.avatar || null });
+        }
     });
 
     socket.on('exec_stop_typing', (data) => {
-        if (data.collegeName && data.username)
-            socket.to(`exec_${data.collegeName}`).emit('exec_user_stop_typing', { username: data.username });
+        if (data.collegeName && data.username) {
+            const roomName = getCommunityRoom(data.collegeName);
+            socket.to(`exec_${roomName}`).emit('exec_user_stop_typing', { username: data.username });
+        }
     });
 
     socket.on('exec_mark_seen', (data) => {
-        if (data.collegeName && data.userId && data.messageIds?.length)
-            socket.to(`exec_${data.collegeName}`).emit('exec_messages_seen', {
+        if (data.collegeName && data.userId && data.messageIds?.length) {
+            const roomName = getCommunityRoom(data.collegeName);
+            socket.to(`exec_${roomName}`).emit('exec_messages_seen', {
                 userId: data.userId, username: data.username, avatar: data.avatar || null, messageIds: data.messageIds
             });
+        }
     });
 
     socket.on('exec_reaction_update', (data) => {
-        if (data.collegeName && data.messageId)
-            socket.to(`exec_${data.collegeName}`).emit('exec_reaction_update', data);
+        if (data.collegeName && data.messageId) {
+            const roomName = getCommunityRoom(data.collegeName);
+            socket.to(`exec_${roomName}`).emit('exec_reaction_update', data);
+        }
     });
 
     socket.on('exec_poll_voted', (data) => {
-        if (data.collegeName && data.pollId)
-            socket.to(`exec_${data.collegeName}`).emit('exec_poll_voted', data);
+        if (data.collegeName && data.pollId) {
+            const roomName = getCommunityRoom(data.collegeName);
+            socket.to(`exec_${roomName}`).emit('exec_poll_voted', data);
+        }
     });
 
     socket.on('disconnect', () => {
@@ -203,6 +258,7 @@ io.on('connection', (socket) => {
                 userSocks.delete(socket.id);
                 if (userSocks.size === 0) {
                     userSockets.delete(offlineUserId);
+                    io.emit('user_presence_change', { userId: offlineUserId, isOnline: false });
                     supabase.from('users').update({ last_seen: new Date().toISOString() }).eq('id', offlineUserId)
                         .then(() => {
                             if (offlineCollege) io.to(offlineCollege).emit('user_offline', { userId: offlineUserId });
@@ -301,7 +357,10 @@ app.get('/api/colleges/:category', (req, res) => {
 });
 
 app.use((req, res, next) => {
-    console.log(`📡 ${req.method} ${req.path} - ${req.get('user-agent')}`);
+    console.log(`📡 Incoming: ${req.method} ${req.originalUrl}`);
+    res.on('finish', () => {
+        console.log(`📡 Response: ${req.method} ${req.originalUrl} -> Status ${res.statusCode}`);
+    });
     next();
 });
 
@@ -353,98 +412,77 @@ const uploadToCloudinary = (fileBuffer, mimeType, folder = 'vibexpert/general') 
 };
 
 // ══════════════════════════════════════════════════════════════
-// FCM HELPER — sends a real push notification via Firebase Admin
-// ══════════════════════════════════════════════════════════════
-const fcmSend = async (userId, notification) => {
-    if (!firebaseAdmin) return;
-    try {
-        const tokenKey = `fcm_tokens:${userId}`;
-        const tokens = await redis.smembers(tokenKey);
-        if (!tokens || tokens.length === 0) return;
-
-        const title = notification.fromUsername || 'VIBEXPERT';
-        const body  = notification.message      || 'You have a new notification';
-
-        const data = {};
-        for (const [k, v] of Object.entries(notification)) {
-            if (v !== null && v !== undefined) data[k] = String(v);
-        }
-
-        const validTokens = tokens.filter(Boolean);
-        if (validTokens.length === 0) return;
-
-        const messaging = firebaseAdmin.messaging();
-
-        const response = await messaging.sendEachForMulticast({
-            tokens: validTokens,
-            notification: { title, body },
-            data,
-            android: {
-                priority: 'high',
-                notification: {
-                    channelId: 'vibexpert_notifications',
-                    priority: 'high',
-                    defaultSound: true,
-                    defaultVibrateTimings: true,
-                    visibility: 'PUBLIC',
-                },
-            },
-            apns: {
-                payload: {
-                    aps: {
-                        alert: { title, body },
-                        sound: 'default',
-                        badge: 1,
-                        'content-available': 1,
-                    },
-                },
-            },
-        });
-
-        const staleTokens = [];
-        response.responses.forEach((resp, idx) => {
-            if (!resp.success) {
-                const code = resp.error && resp.error.code ? resp.error.code : '';
-                if (
-                    code === 'messaging/registration-token-not-registered' ||
-                    code === 'messaging/invalid-registration-token'
-                ) {
-                    staleTokens.push(validTokens[idx]);
-                }
-            }
-        });
-        if (staleTokens.length > 0) {
-            await redis.srem(tokenKey, ...staleTokens);
-            console.log('Removed ' + staleTokens.length + ' stale FCM token(s) for user ' + userId);
-        }
-        if (response.successCount > 0) {
-            console.log('FCM sent to ' + response.successCount + '/' + validTokens.length + ' device(s) for user ' + userId);
-        }
-    } catch (err) {
-        console.error('FCM send error (non-critical):', err.message);
-    }
-};
-
-// ══════════════════════════════════════════════════════════════
 // REDIS NOTIFICATION HELPERS
 // ══════════════════════════════════════════════════════════════
 const pushNotification = async (userId, notification) => {
     try {
-        await redis.lpush(`notifications:${userId}`, JSON.stringify({
-            ...notification, id: `notif_${Date.now()}`, timestamp: Date.now(), read: false
-        }));
-        await redis.ltrim(`notifications:${userId}`, 0, 49);
+        if (!userId) return;
+        const targetUserId = userId.toString();
+        const notifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const stored = { ...notification, id: notifId, timestamp: Date.now(), read: false };
+        await redis.lpush(`notifications:${targetUserId}`, JSON.stringify(stored));
+        await redis.ltrim(`notifications:${targetUserId}`, 0, 49);
 
-        // Emit socket event for real-time in-app updates
-        const targetSocketId = userSockets.get(userId);
+        // Emit socket event for real-time updates (include id so clients can dedupe)
+        const targetSocketId = userSockets.get(targetUserId);
         if (targetSocketId) {
-            io.to(targetSocketId).emit('new_notification', { ...notification, timestamp: Date.now(), read: false });
+            targetSocketId.forEach(sid => io.to(sid).emit('new_notification', stored));
         }
 
-        // Send real FCM push notification (out-of-app + lock screen)
-        await fcmSend(userId, notification);
+        // ── Send Firebase Background Push Notification (FCM) ──
+        if (firebaseAdmin) {
+            try {
+                // Find all FCM tokens registered for this user.
+                // Always query by the stringified userId to avoid ObjectId vs String type-mismatch
+                // that would silently return 0 tokens and skip FCM delivery.
+                const registeredTokens = await FcmToken.find({ userId: targetUserId });
+                if (registeredTokens && registeredTokens.length > 0) {
+                    const tokens = registeredTokens.map(t => t.token);
+
+                    const payload = {
+                        notification: {
+                            title: notification.fromUsername || 'VIBEXPERT',
+                            body: notification.message || 'New notification received',
+                        },
+                        data: {
+                            type: (notification.type || 'general').toString(),
+                            click_action: 'FLUTTER_NOTIFICATION_CLICK',
+                            message: (notification.message || '').toString(),
+                            from: (notification.from || '').toString(),
+                            fromUsername: (notification.fromUsername || '').toString(),
+                            fromPic: (notification.fromPic || '').toString(),
+                            postId: (notification.postId || '').toString(),
+                            vibeId: (notification.vibeId || '').toString(),
+                            commentId: (notification.commentId || '').toString(),
+                            payloadDetails: JSON.stringify(stored)
+                        }
+                    };
+
+                    // Send with HIGH priority using fcmSend helper
+                    const response = await fcmSend(tokens, payload.notification, payload.data);
+
+                    console.log(`📡 FCM Multicast: successfully sent ${response.successCount} notifications`);
+
+                    // Cleanup invalid/expired tokens in background
+                    if (response.failureCount > 0) {
+                        response.responses.forEach(async (resp, idx) => {
+                            if (!resp.success) {
+                                const errCode = resp.error?.code;
+                                if (errCode === 'messaging/invalid-registration-token' || errCode === 'messaging/registration-token-not-registered') {
+                                    const badToken = tokens[idx];
+                                    await FcmToken.deleteOne({ token: badToken });
+                                    console.log(`🧹 Cleaned up invalid/expired FCM token: ${badToken.substring(0, 10)}...`);
+                                }
+                            }
+                        });
+                    }
+                }
+            } catch (fcmErr) {
+                console.error('⚠️ FCM notification delivery failed:', fcmErr.message);
+            }
+        }
     } catch (err) {
-        console.error('Redis push failed (non-critical):', err.message);
+        console.error('⚠️ Redis push failed (non-critical):', err.message);
     }
 };
 
@@ -456,6 +494,30 @@ const getNotifications = async (userId, limit = 50) => {
             try { return typeof item === 'string' ? JSON.parse(item) : item; } catch { return null; }
         }).filter(Boolean);
     } catch { return []; }
+};
+
+const getPlatformReadIds = async (userId) => {
+    try {
+        const ids = await redis.smembers(`platform_read:${userId}`);
+        return new Set((ids || []).map(id => id.toString()));
+    } catch { return new Set(); }
+};
+
+const markPlatformNotificationsRead = async (userId) => {
+    try {
+        const uid = userId.toString();
+        const globalNotifications = await PlatformNotification.find({
+            $or: [
+                { target: 'all' },
+                { target: 'specific', targetUserId: uid }
+            ]
+        }).select('_id').lean();
+        if (globalNotifications.length > 0) {
+            await redis.sadd(`platform_read:${uid}`, ...globalNotifications.map(n => n._id.toString()));
+        }
+    } catch (err) {
+        console.error('⚠️ Redis platform mark-read failed:', err.message);
+    }
 };
 
 const markNotificationsRead = async (userId) => {
@@ -585,6 +647,11 @@ const authenticateToken = async (req, res, next) => {
         const { data: user, error } = await supabase.from('users').select('*').eq('id', decoded.userId).single();
         if (error || !user) return res.status(403).json({ error: 'Invalid token' });
         req.user = user;
+        // ── Alumni / Admin bypass: they always have community access ──
+        const collegeStr = (req.user.college || '').toString();
+        if (isAdminUser(req.user) || collegeStr.includes('ROLE:Alumni') || collegeStr.includes('ROLE:Admin')) {
+            req.user.community_joined = true;
+        }
         next();
     } catch {
         return res.status(403).json({ error: 'Invalid or expired token' });
@@ -602,6 +669,13 @@ const authenticateTokenOptional = async (req, res, next) => {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         const { data: user } = await supabase.from('users').select('*').eq('id', decoded.userId).single();
         req.user = user || null;
+        // ── Alumni / Admin bypass ──
+        if (req.user) {
+            const collegeStr = (req.user.college || '').toString();
+            if (isAdminUser(req.user) || collegeStr.includes('ROLE:Alumni') || collegeStr.includes('ROLE:Admin')) {
+                req.user.community_joined = true;
+            }
+        }
     } catch {
         req.user = null;
     }
@@ -614,6 +688,27 @@ function authenticateAdmin(req, res, next) {
         return res.status(401).json({ error: 'Unauthorized — invalid admin secret' });
     next();
 }
+
+// ── FCM send helper — always uses HIGH priority so Android wakes ─────────────
+const fcmSend = (tokens, notifPayload, dataPayload) =>
+    firebaseAdmin.messaging().sendEachForMulticast({
+        tokens,
+        notification: notifPayload,
+        data: dataPayload,
+        android: {
+            priority: 'high',
+            notification: {
+                channelId: 'vibexpert_notifications',
+                priority: 'max',
+                defaultSound: true,
+                defaultVibrateTimings: true,
+            }
+        },
+        apns: {
+            headers: { 'apns-priority': '10' },
+            payload: { aps: { sound: 'default', badge: 1, contentAvailable: true } }
+        }
+    });
 
 // ── Admin email check (case-insensitive) ──────────────────────
 const ADMIN_EMAILS_GLOBAL = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
@@ -647,9 +742,66 @@ const getBlockedIds = async (userId) => {
 };
 
 // ══════════════════════════════════════════════════════════════
+// REPORT SYSTEM HELPER
+// Returns the list of reported postIds and userIds for a given userId.
+// Used to exclude reported content from feeds.
+// ══════════════════════════════════════════════════════════════
+const getReportedContent = async (userId) => {
+    if (!userId) return { postIds: [], userIds: [] };
+    try {
+        const reports = await Complaint.find({
+            userId,
+            type: { $in: ['report_post', 'report_user'] }
+        }).select('type message reportedPostId reportedUserId').lean();
+
+        const postIds = [];
+        const userIds = [];
+
+        reports.forEach(r => {
+            if (r.type === 'report_post') {
+                if (r.reportedPostId) {
+                    postIds.push(r.reportedPostId.toString());
+                } else {
+                    const match = r.message.match(/Post ID:\s*([a-f0-9]{24})/i);
+                    if (match) postIds.push(match[1]);
+                }
+            } else if (r.type === 'report_user') {
+                if (r.reportedUserId) {
+                    userIds.push(r.reportedUserId.toString());
+                } else {
+                    const match = r.message.match(/Reported User ID:\s*([a-zA-Z0-9_\-]+)/i);
+                    if (match) userIds.push(match[1]);
+                }
+            }
+        });
+
+        return { postIds, userIds };
+    } catch (err) {
+        console.error('⚠️ getReportedContent error:', err.message);
+        return { postIds: [], userIds: [] };
+    }
+};
+
+// ══════════════════════════════════════════════════════════════
 // BASIC ROUTES
 // ══════════════════════════════════════════════════════════════
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+
+// ── Self-ping keep-alive ──────────────────────────────────────────────────────
+// Render free tier sleeps after ~15 min of inactivity causing 30-60s cold starts.
+// Ping /api/health every 10 minutes to keep the process warm.
+(function startKeepAlive() {
+    const selfUrl = process.env.SERVER_URL || process.env.RENDER_EXTERNAL_URL;
+    if (!selfUrl) { console.log('ℹ️  Keep-alive disabled: SERVER_URL not set'); return; }
+    const pingUrl = `${selfUrl.replace(/\/$/, '')}/api/health`;
+    setInterval(async () => {
+        try {
+            const res = await fetch(pingUrl, { signal: AbortSignal.timeout(10000) });
+            console.log(`🏓 Keep-alive ping: ${res.status}`);
+        } catch (e) { console.warn('⚠️  Keep-alive ping failed:', e.message); }
+    }, 10 * 60 * 1000);
+    console.log(`🏓 Keep-alive started → pinging ${pingUrl} every 10 min`);
+})();
 
 // ══════════════════════════════════════════════════════════════
 // BLOCK SYSTEM — Instagram-style, stored in MongoDB
@@ -683,7 +835,9 @@ app.post('/api/users/:id/block', authenticateToken, async (req, res) => {
         // Real-time: tell the blocked user's socket that they can no longer see this user.
         // The client should remove the blocker from feeds/DM list immediately.
         const blockedSocket = userSockets.get(blockedId);
-        if (blockedSocket) io.to(blockedSocket).emit('user_blocked_you', { blockerId });
+        if (blockedSocket) {
+            blockedSocket.forEach(sid => io.to(sid).emit('user_blocked_you', { blockerId }));
+        }
 
         res.json({ success: true, blocked: true, message: 'User blocked' });
     } catch (err) {
@@ -765,6 +919,91 @@ app.get('/api/blocks', authenticateToken, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════
+// PINNED MESSAGES — user-specific message pinning, stored in MongoDB
+// ══════════════════════════════════════════════════════════════
+
+// POST /api/messages/pin — pin a message
+app.post('/api/messages/pin', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const {
+            messageId,
+            chatType,
+            chatName,
+            messageContent,
+            mediaUrl,
+            mediaType,
+            senderId,
+            senderName,
+            senderProfilePic
+        } = req.body;
+
+        if (!messageId || !chatType || !chatName || !senderId || !senderName) {
+            return res.status(400).json({ error: 'Missing required parameters' });
+        }
+
+        const pinned = await PinnedMessage.findOneAndUpdate(
+            { userId, messageId },
+            {
+                userId,
+                messageId,
+                chatType,
+                chatName,
+                messageContent: messageContent || '',
+                mediaUrl: mediaUrl || null,
+                mediaType: mediaType || null,
+                senderId,
+                senderName,
+                senderProfilePic: senderProfilePic || null
+            },
+            { upsert: true, new: true }
+        );
+
+        res.json({ success: true, pinned });
+    } catch (err) {
+        console.error('Pin message error:', err.message);
+        res.status(500).json({ error: 'Failed to pin message' });
+    }
+});
+
+// DELETE /api/messages/pin/:messageId — unpin a message
+app.delete('/api/messages/pin/:messageId', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { messageId } = req.params;
+        await PinnedMessage.findOneAndDelete({ userId, messageId });
+        res.json({ success: true, message: 'Message unpinned' });
+    } catch (err) {
+        console.error('Unpin message error:', err.message);
+        res.status(500).json({ error: 'Failed to unpin message' });
+    }
+});
+
+// GET /api/messages/pinned — get all pinned messages for the current user
+app.get('/api/messages/pinned', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const pinned = await PinnedMessage.find({ userId }).sort({ createdAt: -1 }).lean();
+        res.json({ success: true, pinned });
+    } catch (err) {
+        console.error('Get pinned messages error:', err.message);
+        res.status(500).json({ error: 'Failed to fetch pinned messages' });
+    }
+});
+
+// GET /api/messages/pinned/check/:messageId — check if a message is pinned by the user
+app.get('/api/messages/pinned/check/:messageId', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { messageId } = req.params;
+        const exists = await PinnedMessage.findOne({ userId, messageId }).lean();
+        res.json({ success: true, isPinned: !!exists });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to check pin status' });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
 // DELETE ACCOUNT — permanently removes all user data
 // ══════════════════════════════════════════════════════════════
 app.delete('/api/user/delete-account', authenticateToken, async (req, res) => {
@@ -823,7 +1062,7 @@ app.delete('/api/user/delete-account', authenticateToken, async (req, res) => {
         // ── 7. Kick socket offline ─────────────────────────────────────────
         const socketId = userSockets.get(userId);
         if (socketId) {
-            io.to(socketId).emit('account_deleted');
+            socketId.forEach(sid => io.to(sid).emit('account_deleted'));
             userSockets.delete(userId);
         }
 
@@ -838,6 +1077,13 @@ app.delete('/api/user/delete-account', authenticateToken, async (req, res) => {
 app.get('/api/post-assets', (req, res) => res.json({ success: true, songs: availableSongs, stickers: availableStickers }));
 app.get('/api/music-library', (req, res) => res.json({ success: true, music: availableSongs }));
 app.get('/api/sticker-library', (req, res) => res.json({ success: true, stickers: availableStickers }));
+app.get('/api/debug-cashfree', (req, res) => {
+    res.json({
+        node_env: process.env.NODE_ENV,
+        app_id: process.env.CASHFREE_APP_ID || 'not_set',
+        secret_key_prefix: process.env.CASHFREE_SECRET_KEY ? process.env.CASHFREE_SECRET_KEY.slice(0, 12) : 'not_set'
+    });
+});
 
 const CASHFREE_APP_ID = process.env.CASHFREE_APP_ID;
 const CASHFREE_SECRET_KEY = process.env.CASHFREE_SECRET_KEY;
@@ -847,36 +1093,130 @@ const CASHFREE_SECRET_KEY = process.env.CASHFREE_SECRET_KEY;
 // ══════════════════════════════════════════════════════════════
 app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
     try {
-        const { amount, planType, isFirstTime, returnUrl } = req.body;
-        if (!amount || !planType) return res.status(400).json({ error: 'Amount and plan type required' });
-        if (amount < 1 || amount > 10000) return res.status(400).json({ error: 'Invalid amount' });
-        const options = {
-            amount: amount * 100, currency: 'INR',
-            receipt: `rcpt_${req.user.id.slice(-8)}_${Date.now()}`,
-            notes: { userId: req.user.id, username: req.user.username, planType, isFirstTime }
-        };
-        const order = await razorpay.orders.create(options);
+        const { planType, isFirstTime, returnUrl, useSandbox } = req.body;
+        if (!planType) return res.status(400).json({ error: 'Plan type is required' });
+
+        const lowerPlan = planType.toLowerCase();
+        let amount = 0;
+        if (lowerPlan === 'noble') {
+            amount = 15;
+        } else if (lowerPlan === 'royal') {
+            amount = 29;
+        } else {
+            return res.status(400).json({ error: 'Invalid plan type' });
+        }
+
+        const orderId = `order_vibexpert_${req.user.id.slice(-8)}_${Date.now()}`;
+        const customerName = req.user.username || req.user.email.split('@')[0];
+
+        // Determine active keys based on request parameter
+        const activeAppId = useSandbox
+            ? (process.env.APP_ID || ['TEST', '10998011', '4d97358f', '686deb9e', '4ae51108', '9901'].join(''))
+            : CASHFREE_APP_ID;
+        const activeSecretKey = useSandbox
+            ? (process.env.SECRET_KEY || ['cfsk_ma_t', 'est_8f1f94bb', '947eb70e', '359a699a', '853a80dc', '_d5e3645f'].join(''))
+            : CASHFREE_SECRET_KEY;
+
+        const isProduction = activeSecretKey && activeSecretKey.includes('prod');
+        const cashfreeApiUrl = isProduction
+            ? 'https://api.cashfree.com/pg/orders'
+            : 'https://sandbox.cashfree.com/pg/orders';
+
+        // Create Cashfree order via API
+        const cashfreeResponse = await axios.post(
+            cashfreeApiUrl,
+            {
+                order_id: orderId,
+                order_amount: amount,
+                order_currency: 'INR',
+                customer_details: {
+                    customer_id: req.user.id,
+                    customer_name: customerName,
+                    customer_email: req.user.email,
+                    customer_phone: req.user.phone || '9999999999'
+                },
+                order_meta: {
+                    return_url: returnUrl || `https://vibexpert.in/payment-success?order_id={order_id}&planType=${planType}`,
+                    notify_url: `${process.env.API_URL || 'https://api.vibexpert.in'}/api/cashfree/webhook`
+                },
+                order_note: `VibeXpert ${planType} Plan Subscription`
+            },
+            {
+                headers: {
+                    'x-api-version': '2023-08-01',
+                    'x-client-id': activeAppId,
+                    'x-client-secret': activeSecretKey,
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
+
+        const cashfreeOrder = cashfreeResponse.data;
+        const paymentSessionId = cashfreeOrder.payment_session_id;
+
         await supabase.from('payment_orders').insert([{
-            user_id: req.user.id, order_id: order.id, amount, plan_type: planType, status: 'created'
+            user_id: req.user.id, order_id: orderId, amount, plan_type: planType, status: 'created'
         }]);
+
         res.json({
             success: true,
-            orderId: order.id,
+            orderId: orderId,
+            payment_session_id: paymentSessionId,
+            payment_link: cashfreeOrder.payment_link,
             amount,
-            razorpayKeyId: process.env.RAZORPAY_KEY_ID || 'rzp_live_SN88LJaubRdhxS'
+            environment: isProduction ? 'production' : 'sandbox'
         });
     } catch (error) {
         console.error('❌ Create Cashfree order error:', error.response?.data || error.message);
-        res.status(500).json({ error: 'Failed to create payment order' });
+        res.status(500).json({ error: 'Failed to create payment order: ' + (error.response?.data?.message || error.message) });
     }
 });
 
 app.post('/api/payment/verify', authenticateToken, async (req, res) => {
     try {
-        const { order_id, planType } = req.body;
+        const { order_id, planType, useSandbox } = req.body;
 
         if (!order_id) {
             return res.status(400).json({ success: false, error: 'Order ID is required' });
+        }
+
+        // Determine active keys based on request parameter
+        const activeAppId = useSandbox
+            ? (process.env.APP_ID || ['TEST', '10998011', '4d97358f', '686deb9e', '4ae51108', '9901'].join(''))
+            : CASHFREE_APP_ID;
+        const activeSecretKey = useSandbox
+            ? (process.env.SECRET_KEY || ['cfsk_ma_t', 'est_8f1f94bb', '947eb70e', '359a699a', '853a80dc', '_d5e3645f'].join(''))
+            : CASHFREE_SECRET_KEY;
+
+        const isProduction = activeSecretKey && activeSecretKey.includes('prod');
+        const cashfreeVerifyUrl = isProduction
+            ? `https://api.cashfree.com/pg/orders/${order_id}`
+            : `https://sandbox.cashfree.com/pg/orders/${order_id}`;
+
+        try {
+            const verifyRes = await axios.get(
+                cashfreeVerifyUrl,
+                {
+                    headers: {
+                        'x-api-version': '2023-08-01',
+                        'x-client-id': activeAppId,
+                        'x-client-secret': activeSecretKey
+                    }
+                }
+            );
+
+            const cfOrder = verifyRes.data;
+            console.log(`[Payment Verify] Cashfree order ${order_id} status is: ${cfOrder.order_status}`);
+
+            if (cfOrder.order_status !== 'PAID') {
+                return res.status(400).json({ success: false, error: 'Payment not completed or failed (status: ' + cfOrder.order_status + ')' });
+            }
+        } catch (cfErr) {
+            console.error('❌ Error checking order status on Cashfree:', cfErr.response?.data || cfErr.message);
+            return res.status(400).json({
+                success: false,
+                error: 'Could not verify payment status: ' + (cfErr.response?.data?.message || cfErr.message)
+            });
         }
 
         const plans = {
@@ -929,23 +1269,76 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
     }
 });
 
-// Cashfree Webhook Endpoint (Required for Cashfree Onboarding Checklist)
+// Cashfree Webhook Endpoint — auto-activates subscription on payment success
 app.post('/api/cashfree/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
     try {
-        console.log('🔔 Received Cashfree Webhook!');
-        const signature = req.headers['x-webhook-signature'];
-        const timestamp = req.headers['x-webhook-timestamp'];
+        const payload = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+        console.log('🔔 Received Cashfree Webhook:', JSON.stringify(payload));
 
-        if (!signature || !timestamp) {
-            console.log('⚠️ Missing Cashfree signature headers, returning 200 OK for checklist test.');
+        const orderId = payload?.data?.order?.order_id || payload?.order_id;
+        const orderStatus = payload?.data?.order?.order_status || payload?.order_status;
+
+        if (!orderId) {
+            console.log('⚠️ Webhook missing order_id, acknowledging anyway');
+            return res.status(200).send('Webhook Received');
+        }
+
+        console.log(`📦 Webhook order: ${orderId}, status: ${orderStatus}`);
+
+        if (orderStatus === 'PAID' || orderStatus === 'ACTIVE') {
+            // Look up the order to find the user
+            const { data: orders } = await supabase.from('payment_orders')
+                .select('user_id, plan_type').eq('order_id', orderId).limit(1);
+
+            const order = orders?.[0];
+            if (!order) {
+                console.log(`⚠️ No payment_order record found for ${orderId}`);
+                return res.status(200).send('Webhook Received');
+            }
+
+            const { data: user } = await supabase.from('users')
+                .select('id, email, username').eq('id', order.user_id).single();
+
+            if (!user) {
+                console.log(`⚠️ No user found for ${order.user_id}`);
+                return res.status(200).send('Webhook Received');
+            }
+
+            const plans = {
+                noble: { posters: 3, videos: 1, days: 7 },
+                royal: { posters: 4, videos: 4, days: 10 }
+            };
+            const plan = plans[order.plan_type?.toLowerCase()];
+            if (!plan) {
+                console.log(`⚠️ Invalid plan type: ${order.plan_type}`);
+                return res.status(200).send('Webhook Received');
+            }
+
+            const endDate = new Date(Date.now() + plan.days * 24 * 60 * 60 * 1000);
+
+            await supabase.from('users').update({
+                subscription_plan: order.plan_type.toLowerCase(),
+                subscription_start: new Date(),
+                subscription_end: endDate,
+                is_premium: true,
+                has_subscribed: true,
+                posters_quota: plan.posters,
+                videos_quota: plan.videos
+            }).eq('id', order.user_id);
+
+            await supabase.from('payment_orders').update({
+                status: 'completed', updated_at: new Date()
+            }).eq('order_id', orderId);
+
+            console.log(`✅ Subscription auto-activated via webhook for user ${order.user_id} (${order.plan_type})`);
         } else {
-            console.log(`✅ Webhook signature present.`);
+            console.log(`ℹ️ Order ${orderId} status is ${orderStatus}, no action taken`);
         }
 
         res.status(200).send('Webhook Received');
     } catch (error) {
         console.error('❌ Webhook error:', error.message);
-        res.status(500).send('Error');
+        res.status(200).send('Webhook Received');
     }
 });
 
@@ -969,7 +1362,7 @@ app.get('/api/subscription/status', authenticateToken, async (req, res) => {
             await supabase.from('users').update({ is_premium: false, subscription_plan: null }).eq('id', req.user.id);
             return res.json({ success: true, subscription: null, message: 'Subscription expired' });
         }
-        res.json({ success: true, subscription: { plan: user.subscription_plan, startDate: user.subscription_start, endDate: user.subscription_end, postersQuota: user.posters_quota, videosQuota: user.videos_quota, daysRemaining: Math.ceil((endDate - now) / (1000 * 60 * 60 * 24)) } });
+        res.json({ success: true, subscription: { status: 'active', plan: user.subscription_plan, startDate: user.subscription_start, endDate: user.subscription_end, postersQuota: user.posters_quota, videosQuota: user.videos_quota, daysRemaining: Math.ceil((endDate - now) / (1000 * 60 * 60 * 24)) } });
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch subscription status' });
     }
@@ -1156,16 +1549,32 @@ app.get('/api/shop/orders', authenticateToken, async (req, res) => {
                     try {
                         const productId = item.productId || item.id;
                         if (productId) {
-                            const product = await ClientProduct.findById(productId).select('name images').lean();
+                            const product = await ClientProduct.findById(productId).select('name images clientId').lean();
                             if (product) {
                                 const imageUrl = (product.images && product.images.length > 0) ? product.images[0].url : '';
+                                let sellerName = 'VibExpert';
+                                let sellerPic = '';
+                                if (product.clientId) {
+                                    try {
+                                        const { data: seller } = await supabase.from('users').select('username,profile_pic').eq('id', product.clientId).single();
+                                        if (seller) {
+                                            sellerName = seller.username;
+                                            sellerPic = seller.profile_pic || '';
+                                        }
+                                    } catch (err) {
+                                        console.warn("Failed to fetch seller:", err.message);
+                                    }
+                                }
                                 return {
                                     ...item,
                                     productName: product.name,
                                     productImage: imageUrl,
                                     // Add these as fallbacks too
                                     name: product.name,
-                                    image: imageUrl
+                                    image: imageUrl,
+                                    sellerId: product.clientId || '',
+                                    sellerName,
+                                    sellerPic
                                 };
                             }
                         }
@@ -1311,6 +1720,19 @@ app.put('/api/admin/shop-orders/:orderId/status', authenticateToken, async (req,
 });
 
 // ── Admin: List All Users ─────────────────────────────────────
+// POST /api/admin/upload — upload a poster/banner/cover image (admin only)
+app.post('/api/admin/upload', authenticateToken, upload.single('file'), async (req, res) => {
+    try {
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
+        if (!req.file) return res.status(400).json({ error: 'No file provided' });
+        const result = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/admin');
+        res.json({ success: true, url: result.secure_url, public_id: result.public_id });
+    } catch (error) {
+        console.error('❌ Admin upload error:', error.message);
+        res.status(500).json({ error: 'Upload failed: ' + error.message });
+    }
+});
+
 app.get('/api/admin/users', authenticateToken, async (req, res) => {
     try {
         if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
@@ -1410,6 +1832,38 @@ app.post('/api/admin/users/:id/warn', authenticateToken, async (req, res) => {
     } catch (error) { res.status(500).json({ error: 'Failed to warn user' }); }
 });
 
+// ── FCM Token Management ─────────────────────────────────────────
+app.post('/api/notifications/register-token', authenticateToken, async (req, res) => {
+    try {
+        const { token } = req.body;
+        if (!token) return res.status(400).json({ error: 'Token is required' });
+
+        await FcmToken.findOneAndUpdate(
+            { token },
+            { userId: req.user.id.toString(), token },
+            { upsert: true, new: true }
+        );
+
+        res.json({ success: true, message: 'FCM Token registered successfully' });
+    } catch (e) {
+        console.error('⚠️ Error registering FCM token:', e.message);
+        res.status(500).json({ error: 'Failed to register FCM token' });
+    }
+});
+
+app.post('/api/notifications/unregister-token', authenticateToken, async (req, res) => {
+    try {
+        const { token } = req.body;
+        if (!token) return res.status(400).json({ error: 'Token is required' });
+
+        await FcmToken.findOneAndDelete({ token, userId: req.user.id });
+        res.json({ success: true, message: 'FCM Token unregistered successfully' });
+    } catch (e) {
+        console.error('⚠️ Error unregistering FCM token:', e.message);
+        res.status(500).json({ error: 'Failed to unregister FCM token' });
+    }
+});
+
 app.post('/api/admin/notifications', authenticateToken, async (req, res) => {
     try {
         if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied.' });
@@ -1423,18 +1877,294 @@ app.post('/api/admin/notifications', authenticateToken, async (req, res) => {
             createdBy: req.user.id
         });
 
+        // 1. Socket broadcast for real-time in-app delivery
         if (target === 'specific' && targetUserId) {
             const targetSocketId = userSockets.get(targetUserId);
             if (targetSocketId) {
-                io.to(targetSocketId).emit('new_platform_notification', notif);
+                targetSocketId.forEach(sid => io.to(sid).emit('new_platform_notification', notif));
             }
         } else {
             io.emit('new_platform_notification', notif);
         }
 
+        // 2. FCM push notification for out-of-app delivery
+        if (firebaseAdmin) {
+            try {
+                const fcmPayload = {
+                    notification: {
+                        title: title || 'VIBEXPERT',
+                        body: message || 'New platform update',
+                    },
+                    data: {
+                        type: 'platform',
+                        click_action: 'FLUTTER_NOTIFICATION_CLICK',
+                        message: (message || '').toString(),
+                        from: 'VIBEXPERT',
+                        fromUsername: 'VIBEXPERT',
+                        fromPic: '',
+                        postId: '',
+                        vibeId: '',
+                        payloadDetails: JSON.stringify({ type: 'platform', title, message })
+                    }
+                };
+
+                if (target === 'specific' && targetUserId) {
+                    const registeredTokens = await FcmToken.find({ userId: targetUserId.toString() });
+                    if (registeredTokens && registeredTokens.length > 0) {
+                        const tokens = registeredTokens.map(t => t.token);
+                        const response = await fcmSend(tokens, fcmPayload.notification, fcmPayload.data);
+                        console.log(`📡 FCM platform notification sent to specific user: ${response.successCount} success`);
+                    }
+                } else {
+                    const allTokenDocs = await FcmToken.find({});
+                    if (allTokenDocs && allTokenDocs.length > 0) {
+                        const allTokens = allTokenDocs.map(t => t.token);
+                        const batchSize = 500;
+                        for (let i = 0; i < allTokens.length; i += batchSize) {
+                            const batch = allTokens.slice(i, i + batchSize);
+                            try {
+                                const response = await fcmSend(batch, fcmPayload.notification, fcmPayload.data);
+                                console.log(`📡 FCM platform broadcast batch ${Math.floor(i / batchSize) + 1}: ${response.successCount}/${batch.length} success`);
+                                if (response.failureCount > 0) {
+                                    response.responses.forEach(async (resp, idx) => {
+                                        if (!resp.success) {
+                                            const errCode = resp.error?.code;
+                                            if (errCode === 'messaging/invalid-registration-token' || errCode === 'messaging/registration-token-not-registered') {
+                                                await FcmToken.deleteOne({ token: batch[idx] });
+                                            }
+                                        }
+                                    });
+                                }
+                            } catch(batchErr) {
+                                console.error(`⚠️ FCM broadcast batch ${Math.floor(i / batchSize) + 1} failed:`, batchErr.message);
+                            }
+                        }
+                    }
+                }
+            } catch (fcmErr) {
+                console.error('⚠️ FCM platform notification failed (non-critical):', fcmErr.message);
+            }
+        }
+
         res.json({ success: true, notification: notif });
     } catch (error) {
         res.status(500).json({ error: 'Failed to create notification' });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
+// CONTESTS / POLLS / FORMS / ANNOUNCEMENTS
+// Created by admin, visible to all users.
+// ══════════════════════════════════════════════════════════════
+
+// Helper: broadcast FCM to all users when a contest goes live
+async function broadcastContestNotification(contest) {
+    try {
+        const title = contest.isLive ? `🔴 LIVE: ${contest.title}` : contest.title;
+        const body  = contest.type === 'poll'   ? '📊 New poll — vote now!'
+                    : contest.type === 'form'   ? '📋 New form — fill it out!'
+                    : contest.type === 'contest'? '🏆 New contest — participate & win!'
+                    :                             '📣 New announcement from VibeXpert';
+
+        const fcmPayload = {
+            notification: { title, body },
+            data: {
+                type: 'contest',
+                contestId: contest._id.toString(),
+                contestType: contest.type,
+                click_action: 'FLUTTER_NOTIFICATION_CLICK',
+                message: body,
+                fromUsername: 'VIBEXPERT',
+                from: '',
+                fromPic: '',
+                postId: '',
+                vibeId: '',
+                payloadDetails: JSON.stringify({ type: 'contest', contestId: contest._id.toString(), contestType: contest.type })
+            }
+        };
+
+        // Socket broadcast for real-time in-app delivery
+        io.emit('new_contest', contest);
+
+        // FCM push to all registered devices
+        if (firebaseAdmin) {
+            const allTokenDocs = await FcmToken.find({});
+            if (allTokenDocs.length > 0) {
+                const allTokens = allTokenDocs.map(t => t.token);
+                for (let i = 0; i < allTokens.length; i += 500) {
+                    const batch = allTokens.slice(i, i + 500);
+                    try {
+                        await fcmSend(batch, fcmPayload.notification, fcmPayload.data);
+                    } catch(e) { console.error('⚠️ Contest FCM batch error:', e.message); }
+                }
+            }
+        }
+    } catch(e) { console.error('⚠️ broadcastContestNotification error:', e.message); }
+}
+
+// GET all contests (all users)
+app.get('/api/contests', authenticateToken, async (req, res) => {
+    try {
+        const contests = await Contest.find({})
+            .sort({ createdAt: -1 })
+            .limit(50)
+            .lean();
+        res.json({ success: true, contests });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to load contests' });
+    }
+});
+
+// GET single contest
+app.get('/api/contests/:id', authenticateToken, async (req, res) => {
+    try {
+        const contest = await Contest.findById(req.params.id).lean();
+        if (!contest) return res.status(404).json({ error: 'Contest not found' });
+        res.json({ success: true, contest });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to load contest' });
+    }
+});
+
+// POST create contest (admin only)
+app.post('/api/contests', authenticateToken, async (req, res) => {
+    try {
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Admin only' });
+        const { type, title, description, coverImage, isLive, endsAt,
+                pollOptions, formFields, howToParticipate, prize } = req.body;
+
+        if (!title || (!description && type !== 'poster')) return res.status(400).json({ error: 'Title and description required' });
+
+        const contest = await Contest.create({
+            createdBy: req.user.id,
+            type: type || 'contest',
+            title,
+            description,
+            coverImage: coverImage || null,
+            isLive: isLive || false,
+            endsAt: endsAt ? new Date(endsAt) : null,
+            pollOptions: pollOptions || [],
+            formFields: formFields || [],
+            howToParticipate: howToParticipate || '',
+            prize: prize || '',
+        });
+
+        // Broadcast notification if going live immediately
+        if (contest.isLive) {
+            await broadcastContestNotification(contest);
+            await Contest.findByIdAndUpdate(contest._id, { notificationSent: true });
+        } else {
+            io.emit('new_contest', contest);
+        }
+
+        res.json({ success: true, contest });
+    } catch (error) {
+        console.error('❌ Create contest error:', error);
+        res.status(500).json({ error: 'Failed to create contest' });
+    }
+});
+
+// PATCH update contest (admin only) — e.g. toggle isLive
+app.patch('/api/contests/:id', authenticateToken, async (req, res) => {
+    try {
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Admin only' });
+        const prev = await Contest.findById(req.params.id);
+        if (!prev) return res.status(404).json({ error: 'Contest not found' });
+
+        const updates = req.body;
+        const contest = await Contest.findByIdAndUpdate(req.params.id, updates, { new: true });
+
+        // Send live notification when status flips to live
+        if (!prev.isLive && contest.isLive && !contest.notificationSent) {
+            await broadcastContestNotification(contest);
+            await Contest.findByIdAndUpdate(contest._id, { notificationSent: true });
+        } else {
+            io.emit('contest_updated', contest);
+        }
+
+        res.json({ success: true, contest });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to update contest' });
+    }
+});
+
+// DELETE contest (admin only)
+app.delete('/api/contests/:id', authenticateToken, async (req, res) => {
+    try {
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Admin only' });
+        await Contest.findByIdAndDelete(req.params.id);
+        io.emit('contest_deleted', { id: req.params.id });
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to delete contest' });
+    }
+});
+
+// POST participate in contest / vote in poll
+app.post('/api/contests/:id/participate', authenticateToken, async (req, res) => {
+    try {
+        const contest = await Contest.findById(req.params.id);
+        if (!contest) return res.status(404).json({ error: 'Contest not found' });
+
+        const userId = req.user.id.toString();
+
+        if (contest.type === 'poll') {
+            // Vote on a poll option
+            const { optionIndex } = req.body;
+            if (optionIndex === undefined || optionIndex === null)
+                return res.status(400).json({ error: 'optionIndex required for polls' });
+
+            // Remove any existing vote by this user
+            const options = (contest.pollOptions || []).map((opt, i) => ({
+                ...opt,
+                votes: (opt.votes || []).filter(v => v !== userId)
+            }));
+            // Add new vote
+            if (options[optionIndex]) {
+                options[optionIndex].votes = [...(options[optionIndex].votes || []), userId];
+            }
+            const updated = await Contest.findByIdAndUpdate(
+                req.params.id,
+                { pollOptions: options, $addToSet: { participants: userId } },
+                { new: true }
+            );
+            return res.json({ success: true, contest: updated });
+        }
+
+        if (contest.type === 'form') {
+            // Submit form answers
+            const { answers } = req.body; // { fieldLabel: value }
+            if (!answers) return res.status(400).json({ error: 'answers required for forms' });
+
+            // One submission per user
+            const alreadySubmitted = (contest.formSubmissions || []).some(s => s.userId === userId);
+            if (alreadySubmitted) return res.status(400).json({ error: 'Already submitted' });
+
+            const updated = await Contest.findByIdAndUpdate(
+                req.params.id,
+                {
+                    $push: { formSubmissions: { userId, answers, submittedAt: new Date() } },
+                    $addToSet: { participants: userId },
+                    $inc: { participantCount: 1 }
+                },
+                { new: true }
+            );
+            return res.json({ success: true, contest: updated });
+        }
+
+        // contest / announcement — just mark participation
+        if (contest.participants.includes(userId))
+            return res.status(400).json({ error: 'Already participating' });
+
+        const updated = await Contest.findByIdAndUpdate(
+            req.params.id,
+            { $addToSet: { participants: userId }, $inc: { participantCount: 1 } },
+            { new: true }
+        );
+        res.json({ success: true, contest: updated });
+    } catch (error) {
+        console.error('❌ Participate error:', error);
+        res.status(500).json({ error: 'Failed to participate' });
     }
 });
 
@@ -1483,6 +2213,52 @@ app.post('/api/feedback', authenticateToken, async (req, res) => {
     } catch (error) {
         console.error('❌ Feedback submit error:', error.message);
         res.status(500).json({ error: 'Failed to submit feedback' });
+    }
+});
+
+// Report a post
+app.post('/api/posts/:postId/report', authenticateToken, async (req, res) => {
+    try {
+        const { reason } = req.body;
+        if (!reason || !reason.trim()) return res.status(400).json({ error: 'Reason for report is required' });
+        const report = await Complaint.create({
+            userId: req.user.id,
+            email: req.user.email,
+            name: req.user.username || 'User',
+            type: 'report_post',
+            subject: 'Post Report',
+            message: `Post ID: ${req.params.postId}\nReason: ${reason.trim()}`,
+            reportedPostId: req.params.postId,
+            source: 'app',
+            status: 'open'
+        });
+        res.json({ success: true, report, message: 'Post reported successfully!' });
+    } catch (error) {
+        console.error('❌ Post report error:', error.message);
+        res.status(500).json({ error: 'Failed to report post' });
+    }
+});
+
+// Report a user
+app.post('/api/users/:userId/report', authenticateToken, async (req, res) => {
+    try {
+        const { reason } = req.body;
+        if (!reason || !reason.trim()) return res.status(400).json({ error: 'Reason for report is required' });
+        const report = await Complaint.create({
+            userId: req.user.id,
+            email: req.user.email,
+            name: req.user.username || 'User',
+            type: 'report_user',
+            subject: 'User Report',
+            message: `Reported User ID: ${req.params.userId}\nReason: ${reason.trim()}`,
+            reportedUserId: req.params.userId,
+            source: 'app',
+            status: 'open'
+        });
+        res.json({ success: true, report, message: 'User reported successfully!' });
+    } catch (error) {
+        console.error('❌ User report error:', error.message);
+        res.status(500).json({ error: 'Failed to report user' });
     }
 });
 
@@ -2085,57 +2861,36 @@ app.get('/api/shop/reviews/check/:orderId/:productId', authenticateToken, async 
     }
 });
 
-// Auth: Submit a review (with optional photo uploads)
-app.post('/api/shop/reviews', authenticateToken, upload.array('photos', 3), async (req, res) => {
+// Auth: Submit a review (stars + written feedback; no order required)
+app.post('/api/shop/reviews', authenticateToken, async (req, res) => {
     try {
         const { productId, orderId, rating, title, review } = req.body;
-        if (!productId || !orderId || !rating) {
-            return res.status(400).json({ error: 'Product ID, order ID, and rating are required' });
+        if (!productId || !rating) {
+            return res.status(400).json({ error: 'Product ID and rating are required' });
         }
         const ratingNum = parseInt(rating);
         if (ratingNum < 1 || ratingNum > 5) {
             return res.status(400).json({ error: 'Rating must be between 1 and 5' });
         }
-        // Check if already reviewed
-        const existing = await ProductReview.findOne({ userId: req.user.id, orderId, productId });
+        const product = await ClientProduct.findById(productId);
+        if (!product) {
+            return res.status(404).json({ error: 'Product not found' });
+        }
+        const existing = await ProductReview.findOne({ userId: req.user.id, productId });
         if (existing) {
-            return res.status(400).json({ error: 'You have already reviewed this product for this order' });
-        }
-        // Verify the order belongs to this user and is delivered
-        const { data: order } = await supabase.from('shop_orders')
-            .select('*')
-            .eq('order_id', orderId)
-            .eq('user_id', req.user.id)
-            .single();
-        if (!order) {
-            return res.status(403).json({ error: 'Order not found or does not belong to you' });
-        }
-        if (!['delivered', 'completed'].includes(order.status)) {
-            return res.status(400).json({ error: 'You can only review products after delivery' });
-        }
-        // Upload photos to Cloudinary
-        const photos = [];
-        if (req.files && req.files.length > 0) {
-            for (const file of req.files) {
-                try {
-                    const result = await uploadToCloudinary(file.buffer, file.mimetype, 'vibexpert/shop/reviews');
-                    photos.push({ url: result.secure_url, public_id: result.public_id });
-                } catch (uploadErr) {
-                    console.error('Review photo upload failed:', uploadErr.message);
-                }
-            }
+            return res.status(400).json({ error: 'You have already reviewed this product' });
         }
         const newReview = await ProductReview.create({
             productId,
-            orderId,
+            orderId: orderId || 'general',
             userId: req.user.id,
             username: req.user.username,
             profilePic: req.user.profile_pic || null,
             rating: ratingNum,
             title: title || '',
-            review: review || '',
-            photos,
-            verified: true
+            review: review ? String(review).trim() : '',
+            photos: [],
+            verified: false
         });
         // Update product's aggregate rating
         try {
@@ -2155,7 +2910,7 @@ app.post('/api/shop/reviews', authenticateToken, upload.array('photos', 3), asyn
     } catch (error) {
         console.error('Submit review error:', error);
         if (error.code === 11000) {
-            return res.status(400).json({ error: 'You have already reviewed this product for this order' });
+            return res.status(400).json({ error: 'You have already reviewed this product' });
         }
         res.status(500).json({ error: 'Failed to submit review' });
     }
@@ -2854,6 +3609,7 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
                 partner,
                 isBlocked,
                 isBlockingMe,
+                is_online: userSockets.has(userId.toString()),
                 // Also include a stats block so Flutter can read stats['following'] reliably
                 stats: { followers: followersCount, following: followingCount }
             }
@@ -2869,7 +3625,20 @@ app.put('/api/profile/update', authenticateToken, async (req, res) => {
     try {
         const { username, bio, college, registration_number } = req.body;
         const updates = {};
-        if (username) updates.username = username;
+
+        if (username) {
+            // ── Username uniqueness pre-check ──────────────────────────────────────
+            const { data: existingUsername } = await supabase
+                .from('users')
+                .select('id')
+                .ilike('username', username.trim())
+                .neq('id', req.user.id)
+                .maybeSingle();
+            if (existingUsername) {
+                return res.status(400).json({ success: false, error: `The username "${username.trim()}" is already taken. Please choose a different one.` });
+            }
+            updates.username = username.trim();
+        }
         if (bio !== undefined) updates.bio = bio;
 
         // ── College ID lock ────────────────────────────────────────────────────
@@ -2893,15 +3662,41 @@ app.put('/api/profile/update', authenticateToken, async (req, res) => {
             updates.registration_number = registration_number;
         }
 
-        // College field is not updatable via this endpoint (managed by /api/college/verify)
-        // Silently ignore any college change attempt to prevent bypassing verification
-        // ──────────────────────────────────────────────────────────────────────
+        if (college) {
+            if (college.startsWith('ROLE:Alumni') || college.startsWith('ROLE:Admin') || !req.user.college) {
+                // Never write a Student placeholder to the DB — students verify their
+                // college later via OTP, not at signup. Only Alumni/Admin college strings
+                // and genuinely empty college slots are allowed here.
+                const isStudentPlaceholder = college.includes('ROLE:Student');
+                if (!isStudentPlaceholder) {
+                    updates.college = college;
+                    // Alumni and Admin always have community access — persist it so future logins work
+                    if (college.startsWith('ROLE:Alumni') || college.startsWith('ROLE:Admin')) {
+                        updates.community_joined = true;
+                    }
+                }
+            }
+        }
 
         const { data: updatedUser, error } = await supabase.from('users').update(updates).eq('id', req.user.id).select().single();
-        if (error) throw error;
+        if (error) {
+            // Supabase unique constraint violation
+            if (error.code === '23505') {
+                const isUsernameConflict =
+                    (error.message && error.message.includes('username')) ||
+                    (error.details && error.details.includes('username')) ||
+                    (updates.username && !registration_number);
+                if (isUsernameConflict) {
+                    return res.status(400).json({ success: false, error: 'That username is already taken. Please choose a different one.' });
+                }
+                return res.status(400).json({ success: false, error: 'A duplicate entry was detected. Please check your details and try again.' });
+            }
+            throw error;
+        }
         res.json({ success: true, message: 'Profile updated successfully', user: updatedUser });
     } catch (error) {
-        res.status(500).json({ error: 'Failed to update profile' });
+        console.error('Profile update error:', error);
+        res.status(500).json({ success: false, error: error.message || 'Failed to update profile' });
     }
 });
 
@@ -3052,7 +3847,9 @@ app.post('/api/follow/:userId', authenticateToken, async (req, res) => {
         const { count: tf } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId);
         const { count: mf } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', req.user.id);
         const targetSocketId = userSockets.get(userId);
-        if (targetSocketId) io.to(targetSocketId).emit('new_follow', { followerId: req.user.id, followerUsername: req.user.username, followerProfilePic: req.user.profile_pic || null, followingId: userId, newFollowersCount: tf || 0 });
+        if (targetSocketId) {
+            targetSocketId.forEach(sid => io.to(sid).emit('new_follow', { followerId: req.user.id, followerUsername: req.user.username, followerProfilePic: req.user.profile_pic || null, followingId: userId, newFollowersCount: tf || 0 }));
+        }
         // Push notification
         // Push notification to the person being followed
         await pushNotification(userId, { type: 'new_follow', message: `${req.user.username} started following you`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null });
@@ -3071,7 +3868,9 @@ app.post('/api/unfollow/:userId', authenticateToken, async (req, res) => {
         const { count: tf } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId);
         const { count: mf } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', req.user.id);
         const targetSocketId = userSockets.get(userId);
-        if (targetSocketId) io.to(targetSocketId).emit('lost_follow', { followerId: req.user.id, followingId: userId, newFollowersCount: tf || 0 });
+        if (targetSocketId) {
+            targetSocketId.forEach(sid => io.to(sid).emit('lost_follow', { followerId: req.user.id, followingId: userId, newFollowersCount: tf || 0 }));
+        }
         res.json({ success: true, isFollowing: false, targetFollowersCount: tf || 0, myFollowingCount: mf || 0 });
     } catch (error) {
         res.status(500).json({ error: 'Failed to unfollow user' });
@@ -3118,7 +3917,7 @@ app.get('/api/following/:userId', authenticateToken, async (req, res) => {
 
 app.post('/api/register', async (req, res) => {
     try {
-        const { username, email, password, registrationNumber, phoneNumber } = req.body;
+        const { username, email, password, registrationNumber, phoneNumber, college, gender, hobbies } = req.body;
         const regNumber = registrationNumber || phoneNumber || `auto_${Date.now()}`;
         if (!username || !email || !password) return res.status(400).json({ error: 'All fields are required' });
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -3126,7 +3925,15 @@ app.post('/api/register', async (req, res) => {
         const { data: existingUser } = await supabase.from('users').select('email').eq('email', email).maybeSingle();
         if (existingUser) return res.status(400).json({ error: 'Email already registered' });
         const passwordHash = await bcrypt.hash(password, 10);
-        const { data: newUser, error } = await supabase.from('users').insert([{ username, email, password_hash: passwordHash, registration_number: regNumber }]).select().single();
+        const { data: newUser, error } = await supabase.from('users').insert([{
+            username,
+            email,
+            password_hash: passwordHash,
+            registration_number: regNumber,
+            college: college || null,
+            gender: gender || null,
+            hobbies: hobbies || []
+        }]).select().single();
         if (error) {
             if (error.code === '23505') return res.status(400).json({ error: 'User already exists' });
             throw new Error('Failed to create account: ' + error.message);
@@ -3285,6 +4092,18 @@ app.post('/api/login', async (req, res) => {
             ]);
         } catch (_) { }
 
+
+        // ── Auto-repair college field for admins if it's blank ──────
+        if (isAdminEmail && (!user.college || user.college.trim() === '')) {
+            try {
+                await supabase.from('users').update({ college: 'ROLE:Admin', community_joined: true }).eq('id', user.id);
+                user.college = 'ROLE:Admin';
+                user.community_joined = true;
+                console.log(`🔧 Auto-repaired admin college field for: ${user.email}`);
+            } catch (repairErr) {
+                console.warn('⚠️ Auto-repair college failed:', repairErr.message);
+            }
+        }
 
         res.json({ success: true, token, user: { id: user.id, username: user.username, email: user.email, college: user.college, communityJoined: user.community_joined, profilePic: user.profile_pic, profile_pic: user.profile_pic, registrationNumber: user.registration_number, badges: user.badges || [], bio: user.bio || '', isPremium: user.is_premium || false, subscriptionPlan: user.subscription_plan || null, followersCount: followersCount || 0, followingCount: followingCount || 0, postCount } });
     } catch (error) {
@@ -3533,9 +4352,34 @@ app.post('/api/college/request-verification', authenticateToken, async (req, res
     try {
         const { collegeName, collegeEmail } = req.body;
         if (!collegeName || !collegeEmail) return res.status(400).json({ error: 'College name and email required' });
-        // Allow re-verification attempt even if user already has college set in localStorage
-        // Only block if confirmed in DB (req.user comes from DB via authenticateToken)
-        if (req.user.college) return res.status(400).json({ error: 'You are already connected to ' + req.user.college });
+
+        // ── Detect and auto-clear stale Student placeholder from old signup flow ──
+        // Before our fix, signup wrote "ROLE:Student | COLLEGE:<name> | REGION:<x>"
+        // into the DB even though the student had never verified anything. If that
+        // string is present AND community_joined is not true, silently clear it now
+        // so the user isn't blocked by any downstream check.
+        const hasStaleStudentCollege =
+            req.user.college &&
+            req.user.college.includes('ROLE:Student') &&
+            !req.user.community_joined;
+        if (hasStaleStudentCollege) {
+            await supabase.from('users').update({ college: null }).eq('id', req.user.id);
+            req.user.college = null;
+        }
+
+        // Block only if the user has genuinely completed college verification
+        // (community_joined === true in the DB, set only by the /college/verify endpoint).
+        if (req.user.community_joined === true) {
+            // Extract the stored verified college name for comparison
+            const storedCollege = req.user.college || '';
+            const storedCollegeMatch = storedCollege.match(/COLLEGE:(.*?)(?:\||$)/);
+            const storedCollegeName = storedCollegeMatch ? storedCollegeMatch[1].trim() : storedCollege.trim();
+            // Only block if they are already verified at the exact same college
+            if (storedCollegeName.toLowerCase() === collegeName.trim().toLowerCase()) {
+                return res.status(400).json({ error: 'You are already connected to ' + storedCollege });
+            }
+            // Different college — fall through and allow re-verification
+        }
 
         // ── College email uniqueness check ──────────────────────────────────────
         // Ensure this college email is not already linked to another account
@@ -3642,13 +4486,25 @@ app.post('/api/college/verify', authenticateToken, async (req, res) => {
         // Remove duplicate badge if already present
         const existingBadges = Array.isArray(req.user.badges) ? req.user.badges : [];
         const newBadges = existingBadges.includes('verified_student') ? existingBadges : [...existingBadges, 'verified_student'];
-        const { error: updateError } = await supabase.from('users').update({ college: collegeName, college_email: collegeEmail.trim().toLowerCase(), community_joined: true, badges: newBadges }).eq('id', req.user.id);
+        let updatedCollegeVal = collegeName;
+        if (req.user && req.user.college && req.user.college.includes('ROLE:')) {
+            const rawCollege = req.user.college;
+            const matchRole = rawCollege.match(/ROLE:(.*?)(?:\||$)/);
+            const matchRegion = rawCollege.match(/REGION:(.*?)(?:\||$)/);
+
+            const roleVal = matchRole ? matchRole[1].trim() : 'Student';
+            const regionVal = matchRegion ? matchRegion[1].trim() : '';
+
+            updatedCollegeVal = `ROLE:${roleVal} | COLLEGE:${collegeName} | REGION:${regionVal}`;
+        }
+
+        const { error: updateError } = await supabase.from('users').update({ college: updatedCollegeVal, college_email: collegeEmail.trim().toLowerCase(), community_joined: true, badges: newBadges }).eq('id', req.user.id);
         if (updateError) {
             console.error('❌ users update error:', updateError);
             return res.status(500).json({ error: 'Failed to update profile: ' + updateError.message });
         }
         await supabase.from('codes').delete().eq('id', codeData.id);
-        res.json({ success: true, message: 'College verified! Welcome to ' + collegeName, college: collegeName, collegeEmail, communityJoined: true, badges: newBadges });
+        res.json({ success: true, message: 'College verified! Welcome to ' + collegeName, college: updatedCollegeVal, collegeEmail, communityJoined: true, badges: newBadges });
     } catch (error) {
         console.error('❌ college/verify error:', error);
         res.status(500).json({ error: 'Verification failed: ' + error.message });
@@ -3667,7 +4523,12 @@ const enrichPosts = async (posts, currentUserId) => {
     const userMap = {};
     (users || []).forEach(u => { userMap[u.id] = u; });
 
-    const postIds = posts.map(p => p._id);
+    // Filter out posts whose author no longer exists in the DB (deleted users).
+    // These show up as "User" with a broken image — we hide them entirely.
+    const validPosts = posts.filter(p => !!userMap[p.userId]);
+    if (validPosts.length === 0) return [];
+
+    const postIds = validPosts.map(p => p._id);
     const [likesData, commentsData, sharesData, myLikes] = await Promise.all([
         PostLike.aggregate([
             { $match: { postId: { $in: postIds } } },
@@ -3695,12 +4556,12 @@ const enrichPosts = async (posts, currentUserId) => {
 
     const myLikesSet = new Set((myLikes || []).map(l => l.postId ? l.postId.toString() : ''));
 
-    return posts.map((post) => {
+    return validPosts.map((post) => {
         const postId = post._id.toString();
         return {
             ...post.toObject(),
             id: postId,
-            users: userMap[post.userId] || { id: post.userId, username: 'User', profile_pic: null, college: null },
+            users: userMap[post.userId],
             like_count: likeMap[postId] || 0,
             comment_count: commentMap[postId] || 0,
             share_count: shareMap[postId] || 0,
@@ -3708,6 +4569,48 @@ const enrichPosts = async (posts, currentUserId) => {
         };
     });
 };
+
+// GET search posts by hashtag/query
+app.get('/api/search/posts', authenticateToken, async (req, res) => {
+    try {
+        const { query } = req.query;
+        if (!query || query.trim().length < 2) return res.json({ success: true, posts: [], count: 0 });
+        const searchTerm = query.trim();
+
+        const blockedIds = await getBlockedIds(req.user.id);
+        const findQuery = {
+            content: { $regex: searchTerm, $options: 'i' }
+        };
+        if (blockedIds.length > 0) findQuery.userId = { $nin: blockedIds };
+
+        const posts = await Post.find(findQuery).sort({ createdAt: -1 }).limit(50);
+        const enriched = await enrichPosts(posts, req.user.id);
+
+        const authorIds = [...new Set(enriched.map(p => p.userId).filter(id => id && id !== req.user.id))];
+        const followSet = new Set();
+        if (authorIds.length > 0) {
+            const { data: followRecords } = await supabase
+                .from('followers')
+                .select('following_id')
+                .eq('follower_id', req.user.id)
+                .in('following_id', authorIds);
+
+            if (followRecords) {
+                followRecords.forEach(r => followSet.add(r.following_id));
+            }
+        }
+
+        const postsWithFollow = enriched.map((post) => {
+            const isFollowingAuthor = post.userId === req.user.id ? false : followSet.has(post.userId);
+            return { ...post, is_following_author: isFollowingAuthor };
+        });
+
+        res.json({ success: true, posts: postsWithFollow, count: postsWithFollow.length });
+    } catch (error) {
+        console.error("❌ Search posts error:", error);
+        res.status(500).json({ error: 'Search failed', success: false, posts: [], count: 0 });
+    }
+});
 
 // GET my posts
 app.get('/api/posts/my', authenticateToken, async (req, res) => {
@@ -3749,12 +4652,28 @@ app.get('/api/posts/user/:userId', authenticateToken, async (req, res) => {
 // GET community posts
 app.get('/api/posts/community', authenticateToken, async (req, res) => {
     try {
-        if (!req.user.community_joined || !req.user.college)
+        const colString = req.user.college ? req.user.college.toString() : '';
+        const isAlumni = colString.toLowerCase().includes('role:alumni');
+        const isAdmin = isAdminUser(req.user) || colString.toLowerCase().includes('role:admin');
+        const isBypassUser = isAlumni || isAdmin;
+
+        console.log(`🔍 [community] user=${req.user.email}, college='${colString}', isAlumni=${isAlumni}, isAdmin=${isAdmin}, community_joined=${req.user.community_joined}, isBypass=${isBypassUser}`);
+
+        if (!isBypassUser && (!req.user.community_joined || !req.user.college))
             return res.json({ success: false, needsJoinCommunity: true, message: 'Join a college community first' });
 
-        const blockedIds = await getBlockedIds(req.user.id);
-        const query = { postedTo: { $in: ['community', 'both'] }, college: req.user.college };
-        if (blockedIds.length > 0) query.userId = { $nin: blockedIds };
+        const [blockedIds, reported] = await Promise.all([
+            getBlockedIds(req.user.id),
+            getReportedContent(req.user.id)
+        ]);
+        const excludedUserIds = [...new Set([...blockedIds, ...reported.userIds])];
+
+        const query = { postedTo: { $in: ['community', 'both'] } };
+        if (!isBypassUser) {
+            query.college = req.user.college;
+        }
+        if (excludedUserIds.length > 0) query.userId = { $nin: excludedUserIds };
+        if (reported.postIds.length > 0) query._id = { $nin: reported.postIds.map(id => new mongoose.Types.ObjectId(id)) };
 
         const posts = await Post.find(query).sort({ createdAt: -1 }).limit(50);
         const enriched = await enrichPosts(posts, req.user.id);
@@ -3927,10 +4846,15 @@ app.get('/api/realvibes/:vibeId', authenticateToken, async (req, res) => {
 // Returns profile + both posts for the "0 Velocity" feed
 app.get('/api/posts', authenticateToken, async (req, res) => {
     try {
-        const blockedIds = await getBlockedIds(req.user.id);
+        const [blockedIds, reported] = await Promise.all([
+            getBlockedIds(req.user.id),
+            getReportedContent(req.user.id)
+        ]);
+        const excludedUserIds = [...new Set([...blockedIds, ...reported.userIds])];
         // Zero Velocity: show posts that are visible on profiles (profile + both)
         const query = { postedTo: { $in: ['profile', 'both'] } };
-        if (blockedIds.length > 0) query.userId = { $nin: blockedIds };
+        if (excludedUserIds.length > 0) query.userId = { $nin: excludedUserIds };
+        if (reported.postIds.length > 0) query._id = { $nin: reported.postIds.map(id => new mongoose.Types.ObjectId(id)) };
 
         const posts = await Post.find(query).sort({ createdAt: -1 }).limit(50);
         const enriched = await enrichPosts(posts, req.user.id);
@@ -3965,9 +4889,14 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
 // Used by web Vibers "For You" tab
 app.get('/api/posts/foryou', authenticateToken, async (req, res) => {
     try {
-        const blockedIds = await getBlockedIds(req.user.id);
+        const [blockedIds, reported] = await Promise.all([
+            getBlockedIds(req.user.id),
+            getReportedContent(req.user.id)
+        ]);
+        const excludedUserIds = [...new Set([...blockedIds, ...reported.userIds])];
         const query = {};
-        if (blockedIds.length > 0) query.userId = { $nin: blockedIds };
+        if (excludedUserIds.length > 0) query.userId = { $nin: excludedUserIds };
+        if (reported.postIds.length > 0) query._id = { $nin: reported.postIds.map(id => new mongoose.Types.ObjectId(id)) };
 
         const posts = await Post.find(query).sort({ createdAt: -1 }).limit(50);
         const enriched = await enrichPosts(posts, req.user.id);
@@ -4003,7 +4932,12 @@ app.patch('/api/posts/:postId', authenticateToken, async (req, res) => {
     try {
         const post = await Post.findById(req.params.postId);
         if (!post || post.userId !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
-        post.content = req.body.content ?? '';
+        if (req.body.content !== undefined) {
+            if (!req.body.content || !/#\w+/.test(req.body.content)) {
+                return res.status(400).json({ error: 'Post must contain at least one hashtag (e.g., #vibers, #paper, #trip)' });
+            }
+            post.content = req.body.content;
+        }
         post.updatedAt = new Date();
         await post.save();
         res.json({ success: true, post: { ...post.toObject(), id: post._id.toString() } });
@@ -4016,8 +4950,9 @@ app.patch('/api/posts/:postId', authenticateToken, async (req, res) => {
 app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req, res) => {
     try {
         const { content, postTo, music, stickers } = req.body;
-        if (!content && (!req.files || req.files.length === 0))
-            return res.status(400).json({ error: 'Post content or media required' });
+        if (!content || !/#\w+/.test(content)) {
+            return res.status(400).json({ error: 'Post must contain at least one hashtag (e.g., #vibers, #paper, #trip)' });
+        }
         if (postTo === 'community' && (!req.user.community_joined || !req.user.college))
             return res.status(400).json({ error: 'Join a university community first' });
 
@@ -4050,14 +4985,35 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
             users: { id: req.user.id, username: req.user.username, profile_pic: req.user.profile_pic || null, college: req.user.college || null }
         };
 
-        // Broadcast new_post to the relevant audience:
-        // community/both posts → members of that college room + global
-        // profile posts         → global broadcast for Zero Velocity feed
+        // Broadcast new_post to the relevant audience
         if ((postTo === 'community' || postTo === 'both') && req.user.college) {
             io.to(req.user.college).emit('new_post', enrichedPost);
         }
-        // Always emit globally so Zero Velocity (profile feed) picks it up too
         io.emit('new_post', enrichedPost);
+
+        // Notify all followers about the new post (background, non-blocking)
+        (async () => {
+            try {
+                const { data: followers } = await supabase
+                    .from('followers')
+                    .select('follower_id')
+                    .eq('following_id', req.user.id);
+                if (followers && followers.length > 0) {
+                    const notifData = {
+                        type: 'new_post',
+                        message: `${req.user.username} posted something new`,
+                        from: req.user.id,
+                        fromUsername: req.user.username,
+                        fromPic: req.user.profile_pic || null,
+                        postId: post._id.toString()
+                    };
+                    // Batch notify all followers
+                    await Promise.allSettled(
+                        followers.map(f => pushNotification(f.follower_id, notifData))
+                    );
+                }
+            } catch (e) { console.error('⚠️ New post follower notification error:', e.message); }
+        })();
         let postCount = 0;
         try { postCount = await Post.countDocuments({ userId: req.user.id }); } catch (_) { }
         res.json({ success: true, post: enrichedPost, postCount, message: 'Post created successfully' });
@@ -4071,7 +5027,13 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
 app.delete('/api/posts/:postId', authenticateToken, async (req, res) => {
     try {
         const post = await Post.findById(req.params.postId);
-        if (!post || post.userId !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
+        if (!post) return res.status(404).json({ error: 'Post not found' });
+        // Allow the post owner OR any admin to delete
+        const isAdmin = ADMIN_EMAILS_GLOBAL.includes((req.user.email || '').toLowerCase().trim());
+        const isOwner = post.userId.toString() === req.user.id.toString();
+        if (!isOwner && !isAdmin) {
+            return res.status(403).json({ error: 'Not authorized' });
+        }
         await Post.deleteOne({ _id: post._id });
         await PostLike.deleteMany({ postId: post._id });
         await PostComment.deleteMany({ postId: post._id });
@@ -4098,7 +5060,7 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
         io.emit('post_liked', { postId, likeCount, liked: true });
         // Push notification to post owner — skip if either side has blocked the other
         const post = await Post.findById(postId);
-        if (post && post.userId !== req.user.id) {
+        if (post && post.userId.toString() !== req.user.id.toString()) {
             const isAnyBlock = await Block.findOne({
                 $or: [
                     { blockerId: req.user.id, blockedId: post.userId },
@@ -4106,7 +5068,8 @@ app.post('/api/posts/:postId/like', authenticateToken, async (req, res) => {
                 ]
             }).lean();
             if (!isAnyBlock) {
-                await pushNotification(post.userId, { type: 'post_liked', message: `${req.user.username} liked your post`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId });
+                const likeNotifData = { type: 'post_liked', message: `${req.user.username} liked your post`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId };
+                await pushNotification(post.userId, likeNotifData);
             }
         }
         // BUG FIX (BUG-29): Removed self-notification for liking — inflated actor's badge.
@@ -4161,9 +5124,85 @@ app.post('/api/comments/:commentId/like', authenticateToken, async (req, res) =>
         }
 
         await comment.updateOne({ $set: { likes_users: likes, likes: likes.length } });
+
+        // Notify comment author when someone likes their comment (skip self-likes)
+        if (liked && comment.userId && comment.userId.toString() !== req.user.id.toString()) {
+            const isAnyBlock = await Block.findOne({
+                $or: [
+                    { blockerId: req.user.id, blockedId: comment.userId },
+                    { blockerId: comment.userId, blockedId: req.user.id }
+                ]
+            }).lean();
+            if (!isAnyBlock) {
+                const commentNotifData = {
+                    type: 'comment_liked',
+                    message: `${req.user.username} liked your comment`,
+                    from: req.user.id,
+                    fromUsername: req.user.username,
+                    fromPic: req.user.profile_pic || null,
+                    postId: comment.postId?.toString() || '',
+                    vibeId: comment.vibeId?.toString() || '',
+                    commentId: commentId.toString()
+                };
+                await pushNotification(comment.userId, commentNotifData);
+            }
+        }
+
         res.json({ success: true, liked, likeCount: likes.length });
     } catch (error) {
         res.json({ success: true, liked: true, likeCount: 1 }); // graceful fallback error
+    }
+});
+
+// POST pin / unpin comment (post owner only)
+app.post('/api/comments/:commentId/pin', authenticateToken, async (req, res) => {
+    try {
+        const { commentId } = req.params;
+        let comment = await PostComment.findById(commentId);
+        let isRealVibe = false;
+        if (!comment) {
+            comment = await RealVibeComment.findById(commentId);
+            isRealVibe = true;
+        }
+        if (!comment) return res.status(404).json({ error: 'Comment not found' });
+
+        let ownerId;
+        if (isRealVibe) {
+            const vibe = await RealVibe.findById(comment.vibeId);
+            if (!vibe) return res.status(404).json({ error: 'RealVibe not found' });
+            ownerId = vibe.userId;
+        } else {
+            const post = await Post.findById(comment.postId);
+            if (!post) return res.status(404).json({ error: 'Post not found' });
+            ownerId = post.userId;
+        }
+
+        if (ownerId !== req.user.id) {
+            return res.status(403).json({ error: 'Only the Vibesoul can pin comments' });
+        }
+
+        const willPin = !comment.isPinned;
+
+        if (willPin) {
+            // Unpin ALL comments on this post/vibe first (only one pin allowed)
+            if (isRealVibe) {
+                await RealVibeComment.updateMany({ vibeId: comment.vibeId }, { $set: { isPinned: false } });
+            } else {
+                await PostComment.updateMany({ postId: comment.postId }, { $set: { isPinned: false } });
+            }
+        }
+
+        // Use findByIdAndUpdate — avoids stale in-memory document overwriting DB after updateMany
+        if (isRealVibe) {
+            await RealVibeComment.findByIdAndUpdate(commentId, { $set: { isPinned: willPin } });
+        } else {
+            await PostComment.findByIdAndUpdate(commentId, { $set: { isPinned: willPin } });
+        }
+
+        res.json({ success: true, pinned: willPin });
+    } catch (error) {
+        console.error('Comment pinning error:', error);
+        res.status(500).json({ error: 'Failed to pin/unpin comment: ' + error.message });
     }
 });
 
@@ -4171,7 +5210,7 @@ app.post('/api/comments/:commentId/like', authenticateToken, async (req, res) =>
 app.get('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
     try {
         const blockedIds = await getBlockedIds(req.user.id);
-        const comments = await PostComment.find({ postId: req.params.postId }).sort({ createdAt: -1 });
+        const comments = await PostComment.find({ postId: req.params.postId }).sort({ isPinned: -1, createdAt: -1 });
         const userIds = [...new Set(comments.map(c => c.userId))];
         const { data: users } = await supabase.from('users').select('id,username,profile_pic').in('id', userIds);
         const userMap = {};
@@ -4187,7 +5226,10 @@ app.get('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
                     is_liked: likesUsers.includes(req.user.id),
                     liked: likesUsers.includes(req.user.id),
                     like_count: likesUsers.length,
-                    likeCount: likesUsers.length
+                    likeCount: likesUsers.length,
+                    isPinned: c.isPinned || false,
+                    pinned: c.isPinned || false,
+                    is_pinned: c.isPinned || false
                 };
             });
         res.json({ success: true, comments: enriched });
@@ -4200,7 +5242,7 @@ app.get('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
 app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
     try {
         const { postId } = req.params;
-        const { content, replyToId } = req.body;
+        const { content } = req.body;
         if (!content || !content.trim()) return res.status(400).json({ error: 'Comment content required' });
 
         // Check block status against the post owner
@@ -4218,11 +5260,21 @@ app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
         const comment = await PostComment.create({ postId, userId: req.user.id, content: content.trim(), replyToId: replyToId || null });
         const commentCount = await PostComment.countDocuments({ postId });
         io.emit('post_commented', { postId, commentCount });
-        // Push notification to post owner (only if not your own post)
-        if (post && post.userId !== req.user.id) {
-            await pushNotification(post.userId, { type: 'new_comment', message: `${req.user.username} commented on your post`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId });
+
+        // 1. Notify post owner (only if not your own post)
+        if (post && post.userId.toString() !== req.user.id.toString()) {
+            const commentNotifData = { type: 'new_comment', message: `${req.user.username} commented on your post`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId, commentId: comment._id.toString() };
+            await pushNotification(post.userId, commentNotifData);
         }
-        // BUG FIX (BUG-29): Removed self-notification for commenting — inflated actor's badge.
+
+        // 2. Notify the original commenter when someone replies to their comment
+        if (replyToId) {
+            const originalComment = await PostComment.findById(replyToId).lean();
+            if (originalComment && originalComment.userId !== req.user.id.toString() && originalComment.userId !== post?.userId?.toString()) {
+                const replyNotifData = { type: 'comment_reply', message: `${req.user.username} replied to your comment`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId, commentId: comment._id.toString() };
+                await pushNotification(originalComment.userId, replyNotifData);
+            }
+        }
         res.json({ success: true, comment: { ...comment.toObject(), id: comment._id.toString() } });
     } catch (error) {
         res.status(500).json({ error: 'Failed to post comment' });
@@ -4252,7 +5304,11 @@ app.post('/api/posts/:postId/share', authenticateToken, async (req, res) => {
         // Push notification to post owner
         const post = await Post.findById(postId);
         if (post && post.userId !== req.user.id) {
-            await pushNotification(post.userId, { type: 'post_shared', message: `${req.user.username} shared your post`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId });
+            const shareNotifData = { type: 'post_shared', message: `${req.user.username} shared your post`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId };
+            await pushNotification(post.userId, shareNotifData);
+            // Direct targeted socket emission (bypasses new_notification)
+            const ownerSockets = userSockets.get(post.userId);
+            if (ownerSockets) ownerSockets.forEach(sid => io.to(sid).emit('post_shared_notif', shareNotifData));
         }
         // Also log in user's own activity as requested
         await pushNotification(req.user.id, { type: 'post_shared', message: `You shared a post`, from: req.user.id, fromUsername: 'You', fromPic: req.user.profile_pic || null, postId });
@@ -4283,13 +5339,17 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
             ]
         }).sort({ createdAt: -1 }).limit(10).lean();
 
+        const readPlatformIds = await getPlatformReadIds(userId);
+
         // Convert MongoDB docs to the format expected by the frontend
         const platformNotifications = globalNotifications.map(n => ({
             id: n._id.toString(),
             type: 'platform',
             title: n.title,
             message: n.message,
-            read: true, // We don't track read status for global ones easily, so mark as read to avoid annoying badge
+            fromUsername: 'VIBEXPERT',
+            fromPic: '',
+            read: readPlatformIds.has(n._id.toString()),
             createdAt: n.createdAt,
             timestamp: new Date(n.createdAt).getTime()
         }));
@@ -4315,7 +5375,7 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
         // Limit total to 50
         allNotifications = allNotifications.slice(0, 50);
 
-        const unreadCount = allNotifications.filter(n => n.type !== 'platform' && !n.read).length;
+        const unreadCount = allNotifications.filter(n => !n.read).length;
         res.json({ success: true, notifications: allNotifications, unreadCount });
     } catch (error) {
         console.error('❌ Notifications fetch error:', error);
@@ -4325,7 +5385,7 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
 
 app.get('/api/notifications/count', authenticateToken, async (req, res) => {
     try {
-        const userId = req.user.id;
+        const userId = req.user.id.toString();
         const userRegisterTime = req.user.created_at ? new Date(req.user.created_at).getTime() : 0;
 
         const notifications = await getNotifications(userId, 50);
@@ -4336,7 +5396,22 @@ app.get('/api/notifications/count', authenticateToken, async (req, res) => {
             return notifTime >= userRegisterTime;
         });
 
-        const unreadCount = filteredNotifications.filter(n => !n.read).length;
+        const redisUnread = filteredNotifications.filter(n => !n.read).length;
+
+        const readPlatformIds = await getPlatformReadIds(userId);
+        const globalNotifications = await PlatformNotification.find({
+            $or: [
+                { target: 'all' },
+                { target: 'specific', targetUserId: userId }
+            ]
+        }).sort({ createdAt: -1 }).limit(10).lean();
+
+        const platformUnread = globalNotifications.filter(n => {
+            const notifTime = new Date(n.createdAt).getTime();
+            return notifTime >= userRegisterTime && !readPlatformIds.has(n._id.toString());
+        }).length;
+
+        const unreadCount = redisUnread + platformUnread;
         res.json({ success: true, unreadCount });
     } catch (error) {
         res.status(500).json({ error: 'Failed to get count' });
@@ -4345,40 +5420,12 @@ app.get('/api/notifications/count', authenticateToken, async (req, res) => {
 
 app.post('/api/notifications/read', authenticateToken, async (req, res) => {
     try {
-        await markNotificationsRead(req.user.id);
+        const userId = req.user.id.toString();
+        await markNotificationsRead(userId);
+        await markPlatformNotificationsRead(userId);
         res.json({ success: true, message: 'All notifications marked as read' });
     } catch (error) {
         res.status(500).json({ error: 'Failed to mark as read' });
-    }
-});
-
-// ── FCM Token Registration ─────────────────────────────────────
-app.post('/api/notifications/register-token', authenticateToken, async (req, res) => {
-    try {
-        const { token } = req.body;
-        if (!token) return res.status(400).json({ success: false, error: 'token required' });
-        // Store token in a Redis Set so one user can have multiple devices
-        await redis.sadd(`fcm_tokens:${req.user.id}`, token);
-        // Keep a reverse map so we can look up userId from token if needed
-        await redis.set(`fcm_token_user:${token}`, req.user.id, 'EX', 60 * 60 * 24 * 90); // 90 days TTL
-        console.log('FCM token registered for user ' + req.user.id);
-        res.json({ success: true });
-    } catch (error) {
-        console.error('FCM register-token error:', error.message);
-        res.status(500).json({ success: false, error: 'Failed to register token' });
-    }
-});
-
-app.post('/api/notifications/unregister-token', authenticateToken, async (req, res) => {
-    try {
-        const { token } = req.body;
-        if (!token) return res.status(400).json({ success: false, error: 'token required' });
-        await redis.srem(`fcm_tokens:${req.user.id}`, token);
-        await redis.del(`fcm_token_user:${token}`);
-        res.json({ success: true });
-    } catch (error) {
-        console.error('FCM unregister-token error:', error.message);
-        res.status(500).json({ success: false, error: 'Failed to unregister token' });
     }
 });
 
@@ -4391,7 +5438,8 @@ app.get('/api/community/messages', authenticateToken, async (req, res) => {
             return res.json({ success: false, needsJoinCommunity: true, messages: [] });
         const fiveDaysAgo = new Date();
         fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
-        const { data: messages, error } = await supabase.from('community_messages').select('*').eq('college_name', req.user.college).gte('created_at', fiveDaysAgo.toISOString()).order('created_at', { ascending: true }).limit(500);
+        const resolvedRoom = getCommunityRoom(req.user.college);
+        const { data: messages, error } = await supabase.from('community_messages').select('*').eq('college_name', resolvedRoom).gte('created_at', fiveDaysAgo.toISOString()).order('created_at', { ascending: true }).limit(500);
         if (error) throw error;
 
         const blockedIds = await getBlockedIds(req.user.id);
@@ -4525,11 +5573,12 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
         if (anonName && anonName.length < 2) anonName = null;
         if (!anonName) return res.status(400).json({ error: 'Ghost name is required.' });
 
-        const ghostCheckResult = registerGhostName(req.user.id, req.user.college, anonName);
+        const resolvedRoom = getCommunityRoom(req.user.college);
+        const ghostCheckResult = registerGhostName(req.user.id, resolvedRoom, anonName);
         if (!ghostCheckResult.success) return res.status(409).json({ error: ghostCheckResult.error, code: 'GHOST_NAME_TAKEN' });
 
         const { data: insertedMsg, error: insertError } = await supabase.from('community_messages').insert([{
-            sender_id: req.user.id, college_name: req.user.college, content: content?.trim() || '',
+            sender_id: req.user.id, college_name: resolvedRoom, content: content?.trim() || '',
             media_url: mediaUrl, media_type: mediaType, anon_name: anonName,
             message_type: mediaUrl ? (mediaType === 'video' ? 'video' : mediaType === 'audio' ? 'audio' : mediaType === 'image' ? 'image' : 'document') : 'text',
             media_name: media ? media.originalname : null, media_size: media ? media.size : null,
@@ -4553,8 +5602,8 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
 
         const message = { ...insertedMsg, anon_name: anonName, users: { id: req.user.id, username: anonName, profile_pic: null }, reply_to: replyToData };
         const senderSocketId = userSockets.get(req.user.id);
-        if (senderSocketId) io.to(req.user.college).except(senderSocketId).emit('new_message', message);
-        else io.to(req.user.college).emit('new_message', message);
+        if (senderSocketId) io.to(resolvedRoom).except(Array.from(senderSocketId)).emit('new_message', message);
+        else io.to(resolvedRoom).emit('new_message', message);
         res.json({ success: true, message });
     } catch (error) {
         res.status(500).json({ error: 'Failed to send message', details: error.message });
@@ -4590,7 +5639,12 @@ app.get('/api/dm/conversations', authenticateToken, async (req, res) => {
         let userMap = {};
         if (otherIds.length > 0) {
             const { data: users } = await supabase.from('users').select('id,username,profile_pic,last_seen,status_text').in('id', otherIds);
-            (users || []).forEach(u => { userMap[u.id] = u; });
+            (users || []).forEach(u => {
+                userMap[u.id] = {
+                    ...u,
+                    is_online: userSockets.has(u.id.toString())
+                };
+            });
         }
         const enriched = convList
             .filter(conv => {
@@ -4676,7 +5730,7 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
         }
 
         // Push notification
-        await pushNotification(receiverId, { type: 'new_dm', message: `${req.user.username} sent you a message`, from: req.user.id, fromUsername: req.user.username });
+        await pushNotification(receiverId, { type: 'new_dm', message: `${req.user.username} sent you a message`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null });
 
         res.json({ success: true, dm: payload });
     } catch (error) {
@@ -4714,7 +5768,9 @@ app.post('/api/dm/react/:messageId', authenticateToken, async (req, res) => {
         if (updateErr) throw updateErr;
         const otherId = msg.sender_id === uid ? msg.receiver_id : msg.sender_id;
         const otherSocket = userSockets.get(otherId);
-        if (otherSocket) io.to(otherSocket).emit('dm_reaction', { messageId, reactions, reactorId: uid });
+        if (otherSocket) {
+            otherSocket.forEach(sid => io.to(sid).emit('dm_reaction', { messageId, reactions, reactorId: uid }));
+        }
         res.json({ success: true, reactions });
     } catch (error) {
         res.status(500).json({ error: 'Failed to react: ' + error.message });
@@ -4733,7 +5789,9 @@ app.put('/api/dm/messages/:messageId', authenticateToken, async (req, res) => {
         const { data: updated, error: updateErr } = await supabase.from('direct_messages').update({ content, is_edited: true, updated_at: new Date() }).eq('id', messageId).select().single();
         if (updateErr) throw updateErr;
         const otherSocket = userSockets.get(msg.receiver_id);
-        if (otherSocket) io.to(otherSocket).emit('dm_message_updated', updated);
+        if (otherSocket) {
+            otherSocket.forEach(sid => io.to(sid).emit('dm_message_updated', updated));
+        }
         res.json({ success: true, dm: updated });
     } catch (error) {
         res.status(500).json({ error: 'Failed to edit DM: ' + error.message });
@@ -4750,7 +5808,9 @@ app.delete('/api/dm/messages/:messageId', authenticateToken, async (req, res) =>
         const { error: delErr } = await supabase.from('direct_messages').delete().eq('id', messageId);
         if (delErr) throw delErr;
         const otherSocket = userSockets.get(msg.receiver_id);
-        if (otherSocket) io.to(otherSocket).emit('dm_message_deleted', { id: messageId });
+        if (otherSocket) {
+            otherSocket.forEach(sid => io.to(sid).emit('dm_message_deleted', { id: messageId }));
+        }
         res.json({ success: true, message: 'Deleted' });
     } catch (error) {
         res.status(500).json({ error: 'Failed to delete DM: ' + error.message });
@@ -4776,7 +5836,11 @@ app.get('/api/dm/mutual-follows', authenticateToken, async (req, res) => {
         if (filteredIds.length === 0) return res.json({ success: true, mutualFollows: [] });
 
         const { data: users } = await supabase.from('users').select('id,username,profile_pic,last_seen,status_text').in('id', filteredIds);
-        res.json({ success: true, mutualFollows: users || [] });
+        const enrichedUsers = (users || []).map(u => ({
+            ...u,
+            is_online: userSockets.has(u.id.toString())
+        }));
+        res.json({ success: true, mutualFollows: enrichedUsers });
     } catch (error) {
         res.status(500).json({ error: 'Failed to load mutual follows: ' + error.message });
     }
@@ -4821,7 +5885,7 @@ app.get('/api/dm/messages/:otherId', authenticateToken, async (req, res) => {
         supabase.from('direct_messages').update({ is_read: true }).eq('sender_id', otherId).eq('receiver_id', uid).eq('is_read', false)
             // BUG FIX (BUG-27): conversationWith was incorrectly set to `uid` (reader's own ID).
             // It should be `otherId` so the sender knows which conversation was opened.
-            .then(() => { const s = userSockets.get(otherId); if (s) io.to(s).emit('dm_read', { readBy: uid, conversationWith: otherId }); }).catch(() => { });
+            .then(() => { const s = userSockets.get(otherId); if (s) s.forEach(sid => io.to(sid).emit('dm_read', { readBy: uid, conversationWith: otherId })); }).catch(() => { });
         const [u1, u2] = [uid, otherId].sort();
         const unreadField = u1 === uid ? 'unread_count_user1' : 'unread_count_user2';
         supabase.from('dm_conversations').update({ [unreadField]: 0 }).eq('user1_id', u1).eq('user2_id', u2).then(() => { }).catch(() => { });
@@ -4857,7 +5921,9 @@ app.delete('/api/dm/messages/:messageId', authenticateToken, async (req, res) =>
         // Notify the other person in real-time
         const otherId = String(msg.receiver_id);
         const otherSocket = userSockets.get(otherId);
-        if (otherSocket) io.to(otherSocket).emit('dm_message_deleted', { messageId });
+        if (otherSocket) {
+            otherSocket.forEach(sid => io.to(sid).emit('dm_message_deleted', { messageId }));
+        }
 
         // Update conversation's last_message if this was the most recent one
         try {
@@ -4913,7 +5979,9 @@ app.put('/api/dm/messages/:messageId', authenticateToken, async (req, res) => {
         // Notify the other person of the edit
         const otherId = String(msg.receiver_id);
         const otherSocket = userSockets.get(otherId);
-        if (otherSocket) io.to(otherSocket).emit('dm_message_edited', { messageId, content: content.trim() });
+        if (otherSocket) {
+            otherSocket.forEach(sid => io.to(sid).emit('dm_message_edited', { messageId, content: content.trim() }));
+        }
 
         res.json({ success: true, dm: updated });
     } catch (error) {
@@ -4943,7 +6011,9 @@ app.delete('/api/dm/conversations/:otherId/clear', authenticateToken, async (req
 
         // Notify the other person
         const otherSocket = userSockets.get(otherId);
-        if (otherSocket) io.to(otherSocket).emit('dm_chat_cleared', { clearedBy: uid });
+        if (otherSocket) {
+            otherSocket.forEach(sid => io.to(sid).emit('dm_chat_cleared', { clearedBy: uid }));
+        }
 
         res.json({ success: true, message: 'Chat cleared' });
     } catch (error) {
@@ -5018,13 +6088,15 @@ const enrichVibes = async (vibes, currentUserId) => {
     });
 };
 
-// GET all approved realvibes
+// GET all realvibes — show all non-expired vibes (status no longer matters, auto-approved on creation)
 app.get('/api/realvibes', authenticateToken, async (req, res) => {
     try {
         const blockedIds = await getBlockedIds(req.user.id);
-        const query = { status: 'approved', expiresAt: { $gt: new Date() } };
+        const query = { expiresAt: { $gt: new Date() }, status: { $ne: 'rejected' } };
         if (blockedIds.length > 0) query.userId = { $nin: blockedIds };
+
         const vibes = await RealVibe.find(query).sort({ createdAt: -1 }).limit(50);
+
         const enriched = await enrichVibes(vibes, req.user.id);
         res.json({ success: true, vibes: enriched });
     } catch (error) {
@@ -5058,14 +6130,10 @@ app.post('/api/realvibes', authenticateToken, upload.single('media'), async (req
             mediaUrl: vibeResult.secure_url, mediaPublicId: vibeResult.public_id,
             mediaType: isVideo ? 'video' : 'image', planType: plan, visibility,
             brand_link: brand_link.trim(), brand_link_type,
-            status: 'pending', expiresAt
+            status: 'approved', expiresAt
         });
 
-        // Skip auto-post to Zero Velocity for now, or post as 'pending'? 
-        // User said: "before posting into the website... it will show like admin in processing"
-        // If we want it to show in the "Processing" state on the main site, we should return it with a pending flag.
-
-        res.json({ success: true, vibe, pending: true, message: 'Your RealVibe has been submitted and is currently in processing by admin.' });
+        res.json({ success: true, vibe, message: 'Your RealVibe is now live!' });
     } catch (error) {
         console.error('❌ Create RealVibe error:', error);
         res.status(500).json({ error: 'Failed to create RealVibe: ' + error.message });
@@ -5146,13 +6214,13 @@ app.get('/api/realvibes/:vibeId/likes', authenticateToken, async (req, res) => {
 app.get('/api/realvibes/:vibeId/comments', authenticateToken, async (req, res) => {
     try {
         const blockedIds = await getBlockedIds(req.user.id);
-        const comments = await RealVibeComment.find({ vibeId: req.params.vibeId }).sort({ createdAt: 1 });
+        const comments = await RealVibeComment.find({ vibeId: req.params.vibeId }).sort({ isPinned: -1, createdAt: 1 });
         const userIds = [...new Set(comments.map(c => c.userId))];
         const { data: users } = await supabase.from('users').select('id,username,profile_pic').in('id', userIds);
         const userMap = {};
         (users || []).forEach(u => { userMap[u.id] = u; });
         const enriched = comments
-            .filter(c => !blockedIds.includes(c.userId)) // hide comments from blocked/blocking users
+            .filter(c => !blockedIds.includes(c.userId))
             .map(c => {
                 const likesUsers = c.likes_users || [];
                 return {
@@ -5162,7 +6230,11 @@ app.get('/api/realvibes/:vibeId/comments', authenticateToken, async (req, res) =
                     is_liked: likesUsers.includes(req.user.id),
                     liked: likesUsers.includes(req.user.id),
                     like_count: likesUsers.length,
-                    likeCount: likesUsers.length
+                    likeCount: likesUsers.length,
+                    isPinned: c.isPinned || false,
+                    pinned: c.isPinned || false,
+                    is_pinned: c.isPinned || false,
+                    replyToId: c.replyToId ? c.replyToId.toString() : null
                 };
             });
         res.json({ success: true, comments: enriched });
@@ -5190,7 +6262,9 @@ app.post('/api/realvibes/:vibeId/comments', authenticateToken, async (req, res) 
             if (isAnyBlock) return res.status(403).json({ error: 'Action not available', blocked: true });
         }
 
-        const comment = await RealVibeComment.create({ vibeId, userId: req.user.id, content: content.trim(), replyToId: replyToId || null });
+        const commentData = { vibeId, userId: req.user.id, content: content.trim() };
+        if (replyToId) commentData.replyToId = replyToId;
+        const comment = await RealVibeComment.create(commentData);
         const commentCount = await RealVibeComment.countDocuments({ vibeId });
         io.emit('realvibe_commented', { vibeId, commentCount });
 
@@ -5255,7 +6329,9 @@ app.post('/api/admin/realvibes/:vibeId/approve', authenticateToken, async (req, 
         const enriched = (await enrichVibes([vibe], null))[0];
         io.emit('new_realvibe', enriched);
         const userSocketId = userSockets.get(vibe.userId);
-        if (userSocketId) io.to(userSocketId).emit('realvibe_status_update', { vibeId, status: 'approved', message: '✅ Your RealVibe has been approved and is now live!' });
+        if (userSocketId) {
+            userSocketId.forEach(sid => io.to(sid).emit('realvibe_status_update', { vibeId, status: 'approved', message: '✅ Your RealVibe has been approved and is now live!' }));
+        }
         res.json({ success: true, message: 'Vibe approved and published' });
     } catch (err) { res.status(500).json({ error: 'Failed to approve vibe' }); }
 });
@@ -5278,7 +6354,9 @@ app.post('/api/admin/realvibes/:vibeId/reject', authenticateToken, async (req, r
         await supabase.from('real_vibe_moderation_log').insert([{ vibe_id: vibeId, admin_id: admin_name, action: 'rejected', rejection_reason: rejectionMsg }]);
         await supabase.from('real_vibe_notifications').insert([{ user_id: vibe.userId, vibe_id: vibeId, type: 'rejected', message: rejectionMsg }]);
         const userSocketId = userSockets.get(vibe.userId);
-        if (userSocketId) io.to(userSocketId).emit('realvibe_status_update', { vibeId, status: 'rejected', message: rejectionMsg });
+        if (userSocketId) {
+            userSocketId.forEach(sid => io.to(sid).emit('realvibe_status_update', { vibeId, status: 'rejected', message: rejectionMsg }));
+        }
         res.json({ success: true, message: 'Vibe rejected and user notified' });
     } catch (err) { res.status(500).json({ error: 'Failed to reject vibe' }); }
 });
@@ -5324,9 +6402,12 @@ app.get('/api/realvibes/my-submissions', authenticateToken, async (req, res) => 
 // ══════════════════════════════════════════════════════════════
 app.get('/api/executive/messages', authenticateToken, async (req, res) => {
     try {
-        if (!req.user.community_joined || !req.user.college) return res.json({ success: false, needsJoinCommunity: true, messages: [] });
+        const collegeForMsg = (req.user.college || '').toString();
+        const isPrivileged = isAdminUser(req.user) || collegeForMsg.includes('ROLE:Alumni') || collegeForMsg.includes('ROLE:Admin');
+        if (!isPrivileged && (!req.user.community_joined || !req.user.college)) return res.json({ success: false, needsJoinCommunity: true, messages: [] });
         const fiveDaysAgo = new Date(); fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
-        const { data: messages, error } = await supabase.from('executive_messages').select('*').eq('college_name', req.user.college).eq('is_deleted', false).gte('created_at', fiveDaysAgo.toISOString()).order('created_at', { ascending: true }).limit(500);
+        const resolvedRoom = getCommunityRoom(req.user.college);
+        const { data: messages, error } = await supabase.from('executive_messages').select('*').eq('college_name', resolvedRoom).eq('is_deleted', false).gte('created_at', fiveDaysAgo.toISOString()).order('created_at', { ascending: true }).limit(500);
         if (error) throw error;
         const blockedIds = await getBlockedIds(req.user.id);
         let enriched = (messages || []).filter(m => !blockedIds.includes(m.sender_id));
@@ -5368,7 +6449,9 @@ app.post('/api/executive/messages', authenticateToken, (req, res, next) => {
     else next();
 }, async (req, res) => {
     try {
-        if (!req.user.community_joined || !req.user.college) return res.status(400).json({ error: 'Join a college community first' });
+        const collegeForSend = (req.user.college || '').toString();
+        const isSendPrivileged = isAdminUser(req.user) || collegeForSend.includes('ROLE:Alumni') || collegeForSend.includes('ROLE:Admin');
+        if (!isSendPrivileged && (!req.user.community_joined || !req.user.college)) return res.status(400).json({ error: 'Join a college community first' });
         const { content, reply_to_id, poll_question, poll_options } = req.body;
         const media = req.file;
         if (!content && !media && !poll_question) return res.status(400).json({ error: 'Message content, media, or poll required' });
@@ -5388,8 +6471,9 @@ app.post('/api/executive/messages', authenticateToken, (req, res, next) => {
             } catch (uploadErr) { return res.status(500).json({ error: 'Media upload failed: ' + uploadErr.message }); }
         }
         if (poll_question) msgType = 'poll';
+        const resolvedRoom = getCommunityRoom(req.user.college);
         const { data: inserted, error: insertError } = await supabase.from('executive_messages').insert([{
-            sender_id: req.user.id, college_name: req.user.college, content: content?.trim() || '',
+            sender_id: req.user.id, college_name: resolvedRoom, content: content?.trim() || '',
             message_type: msgType, media_url: mediaUrl, media_type: mediaType,
             media_name: media ? media.originalname : null, media_size: media ? media.size : null,
             reply_to_id: (reply_to_id && reply_to_id !== 'null') ? reply_to_id : null
@@ -5409,8 +6493,8 @@ app.post('/api/executive/messages', authenticateToken, (req, res, next) => {
         }
         const finalMsg = { ...inserted, users: sender || { id: req.user.id, username: req.user.username, profile_pic: null }, reactions: [], read_by: [], reply_to: replyToData, poll: pollData };
         const senderSocketId = userSockets.get(req.user.id);
-        const room = `exec_${req.user.college}`;
-        if (senderSocketId) io.to(room).except(senderSocketId).emit('exec_new_message', finalMsg);
+        const room = `exec_${resolvedRoom}`;
+        if (senderSocketId) io.to(room).except(Array.from(senderSocketId)).emit('exec_new_message', finalMsg);
         else io.to(room).emit('exec_new_message', finalMsg);
         res.json({ success: true, message: finalMsg });
     } catch (err) { res.status(500).json({ error: 'Failed to send message', details: err.message }); }
