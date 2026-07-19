@@ -458,12 +458,8 @@ const pushNotification = async (userId, notification) => {
                         }
                     };
 
-                    // Send to multiple tokens
-                    const response = await firebaseAdmin.messaging().sendEachForMulticast({
-                        tokens: tokens,
-                        notification: payload.notification,
-                        data: payload.data
-                    });
+                    // Send with HIGH priority using fcmSend helper
+                    const response = await fcmSend(tokens, payload.notification, payload.data);
 
                     console.log(`📡 FCM Multicast: successfully sent ${response.successCount} notifications`);
 
@@ -692,6 +688,27 @@ function authenticateAdmin(req, res, next) {
         return res.status(401).json({ error: 'Unauthorized — invalid admin secret' });
     next();
 }
+
+// ── FCM send helper — always uses HIGH priority so Android wakes ─────────────
+const fcmSend = (tokens, notifPayload, dataPayload) =>
+    firebaseAdmin.messaging().sendEachForMulticast({
+        tokens,
+        notification: notifPayload,
+        data: dataPayload,
+        android: {
+            priority: 'high',
+            notification: {
+                channelId: 'vibexpert_notifications',
+                priority: 'max',
+                defaultSound: true,
+                defaultVibrateTimings: true,
+            }
+        },
+        apns: {
+            headers: { 'apns-priority': '10' },
+            payload: { aps: { sound: 'default', badge: 1, contentAvailable: true } }
+        }
+    });
 
 // ── Admin email check (case-insensitive) ──────────────────────
 const ADMIN_EMAILS_GLOBAL = ['smirfan9247@gmail.com', 'vibexpert06@gmail.com'];
@@ -1892,30 +1909,22 @@ app.post('/api/admin/notifications', authenticateToken, async (req, res) => {
                 };
 
                 if (target === 'specific' && targetUserId) {
-                    // Send to specific user's FCM tokens
                     const registeredTokens = await FcmToken.find({ userId: targetUserId.toString() });
                     if (registeredTokens && registeredTokens.length > 0) {
                         const tokens = registeredTokens.map(t => t.token);
-                        const response = await firebaseAdmin.messaging().sendEachForMulticast({
-                            tokens, notification: fcmPayload.notification, data: fcmPayload.data
-                        });
+                        const response = await fcmSend(tokens, fcmPayload.notification, fcmPayload.data);
                         console.log(`📡 FCM platform notification sent to specific user: ${response.successCount} success`);
                     }
                 } else {
-                    // Broadcast to ALL registered FCM tokens
                     const allTokenDocs = await FcmToken.find({});
                     if (allTokenDocs && allTokenDocs.length > 0) {
                         const allTokens = allTokenDocs.map(t => t.token);
-                        // Firebase sendEachForMulticast supports up to 500 tokens per batch
                         const batchSize = 500;
                         for (let i = 0; i < allTokens.length; i += batchSize) {
                             const batch = allTokens.slice(i, i + batchSize);
                             try {
-                                const response = await firebaseAdmin.messaging().sendEachForMulticast({
-                                    tokens: batch, notification: fcmPayload.notification, data: fcmPayload.data
-                                });
+                                const response = await fcmSend(batch, fcmPayload.notification, fcmPayload.data);
                                 console.log(`📡 FCM platform broadcast batch ${Math.floor(i / batchSize) + 1}: ${response.successCount}/${batch.length} success`);
-                                // Clean up invalid tokens
                                 if (response.failureCount > 0) {
                                     response.responses.forEach(async (resp, idx) => {
                                         if (!resp.success) {
@@ -1926,7 +1935,7 @@ app.post('/api/admin/notifications', authenticateToken, async (req, res) => {
                                         }
                                     });
                                 }
-                            } catch (batchErr) {
+                            } catch(batchErr) {
                                 console.error(`⚠️ FCM broadcast batch ${Math.floor(i / batchSize) + 1} failed:`, batchErr.message);
                             }
                         }
@@ -1985,11 +1994,7 @@ async function broadcastContestNotification(contest) {
                 for (let i = 0; i < allTokens.length; i += 500) {
                     const batch = allTokens.slice(i, i + 500);
                     try {
-                        await firebaseAdmin.messaging().sendEachForMulticast({
-                            tokens: batch,
-                            notification: fcmPayload.notification,
-                            data: fcmPayload.data
-                        });
+                        await fcmSend(batch, fcmPayload.notification, fcmPayload.data);
                     } catch(e) { console.error('⚠️ Contest FCM batch error:', e.message); }
                 }
             }
