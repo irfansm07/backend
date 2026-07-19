@@ -4980,14 +4980,35 @@ app.post('/api/posts', authenticateToken, upload.array('media', 10), async (req,
             users: { id: req.user.id, username: req.user.username, profile_pic: req.user.profile_pic || null, college: req.user.college || null }
         };
 
-        // Broadcast new_post to the relevant audience:
-        // community/both posts → members of that college room + global
-        // profile posts         → global broadcast for Zero Velocity feed
+        // Broadcast new_post to the relevant audience
         if ((postTo === 'community' || postTo === 'both') && req.user.college) {
             io.to(req.user.college).emit('new_post', enrichedPost);
         }
-        // Always emit globally so Zero Velocity (profile feed) picks it up too
         io.emit('new_post', enrichedPost);
+
+        // Notify all followers about the new post (background, non-blocking)
+        (async () => {
+            try {
+                const { data: followers } = await supabase
+                    .from('followers')
+                    .select('follower_id')
+                    .eq('following_id', req.user.id);
+                if (followers && followers.length > 0) {
+                    const notifData = {
+                        type: 'new_post',
+                        message: `${req.user.username} posted something new`,
+                        from: req.user.id,
+                        fromUsername: req.user.username,
+                        fromPic: req.user.profile_pic || null,
+                        postId: post._id.toString()
+                    };
+                    // Batch notify all followers
+                    await Promise.allSettled(
+                        followers.map(f => pushNotification(f.follower_id, notifData))
+                    );
+                }
+            } catch (e) { console.error('⚠️ New post follower notification error:', e.message); }
+        })();
         let postCount = 0;
         try { postCount = await Post.countDocuments({ userId: req.user.id }); } catch (_) { }
         res.json({ success: true, post: enrichedPost, postCount, message: 'Post created successfully' });
@@ -5231,15 +5252,24 @@ app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
             }
         }
 
-        const comment = await PostComment.create({ postId, userId: req.user.id, content: content.trim() });
+        const comment = await PostComment.create({ postId, userId: req.user.id, content: content.trim(), replyToId: replyToId || null });
         const commentCount = await PostComment.countDocuments({ postId });
         io.emit('post_commented', { postId, commentCount });
-        // Push notification to post owner (only if not your own post)
+
+        // 1. Notify post owner (only if not your own post)
         if (post && post.userId.toString() !== req.user.id.toString()) {
-            const commentNotifData = { type: 'new_comment', message: `${req.user.username} commented on your post`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId };
+            const commentNotifData = { type: 'new_comment', message: `${req.user.username} commented on your post`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId, commentId: comment._id.toString() };
             await pushNotification(post.userId, commentNotifData);
         }
-        // BUG FIX (BUG-29): Removed self-notification for commenting — inflated actor's badge.
+
+        // 2. Notify the original commenter when someone replies to their comment
+        if (replyToId) {
+            const originalComment = await PostComment.findById(replyToId).lean();
+            if (originalComment && originalComment.userId !== req.user.id.toString() && originalComment.userId !== post?.userId?.toString()) {
+                const replyNotifData = { type: 'comment_reply', message: `${req.user.username} replied to your comment`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null, postId, commentId: comment._id.toString() };
+                await pushNotification(originalComment.userId, replyNotifData);
+            }
+        }
         res.json({ success: true, comment: { ...comment.toObject(), id: comment._id.toString() } });
     } catch (error) {
         res.status(500).json({ error: 'Failed to post comment' });
