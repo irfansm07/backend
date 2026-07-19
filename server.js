@@ -5777,27 +5777,6 @@ app.post('/api/dm/react/:messageId', authenticateToken, async (req, res) => {
     }
 });
 
-app.put('/api/dm/messages/:messageId', authenticateToken, async (req, res) => {
-    try {
-        const { messageId } = req.params;
-        const { content } = req.body;
-        const uid = req.user.id;
-        if (!content) return res.status(400).json({ error: 'Content required' });
-        const { data: msg, error: fetchErr } = await supabase.from('direct_messages').select('id,sender_id,receiver_id').eq('id', messageId).single();
-        if (fetchErr || !msg) return res.status(404).json({ error: 'Message not found' });
-        if (msg.sender_id !== uid) return res.status(403).json({ error: 'Edit forbidden' });
-        const { data: updated, error: updateErr } = await supabase.from('direct_messages').update({ content, is_edited: true, updated_at: new Date() }).eq('id', messageId).select().single();
-        if (updateErr) throw updateErr;
-        const otherSocket = userSockets.get(msg.receiver_id);
-        if (otherSocket) {
-            otherSocket.forEach(sid => io.to(sid).emit('dm_message_updated', updated));
-        }
-        res.json({ success: true, dm: updated });
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to edit DM: ' + error.message });
-    }
-});
-
 app.delete('/api/dm/messages/:messageId', authenticateToken, async (req, res) => {
     try {
         const { messageId } = req.params;
