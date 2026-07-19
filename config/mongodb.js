@@ -308,7 +308,7 @@ const fcmTokenSchema = new mongoose.Schema({
 // ── Contests / Polls / Forms (Admin-created) ─────────────────
 const contestSchema = new mongoose.Schema({
     createdBy: { type: String, required: true },           // admin userId
-    type: { type: String, enum: ['contest', 'poll', 'form', 'announcement'], default: 'contest' },
+    type: { type: String, enum: ['contest', 'poll', 'form', 'announcement', 'poster'], default: 'contest' },
     title: { type: String, required: true },
     description: { type: String, required: true },
     coverImage: { type: String, default: null },           // Cloudinary URL
