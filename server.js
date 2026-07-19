@@ -26,6 +26,30 @@ const mongoose = require('mongoose');
 
 // ── New: Polyglot imports ──────────────────────────────────────
 const cloudinaryLib = require('./config/cloudinary');
+
+// ── Firebase Admin SDK (FCM push notifications) ───────────────
+let firebaseAdmin = null;
+try {
+    firebaseAdmin = require('firebase-admin');
+    // FIREBASE_SERVICE_ACCOUNT env var must be the full JSON string of your
+    // Firebase service account key (from Firebase Console → Project Settings →
+    // Service accounts → Generate new private key).
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+        if (!firebaseAdmin.apps.length) {
+            firebaseAdmin.initializeApp({
+                credential: firebaseAdmin.credential.cert(serviceAccount),
+            });
+        }
+        console.log('🔥 Firebase Admin SDK initialized');
+    } else {
+        console.warn('⚠️  FIREBASE_SERVICE_ACCOUNT env var not set — FCM push disabled');
+        firebaseAdmin = null;
+    }
+} catch (e) {
+    console.error('⚠️  Firebase Admin init failed:', e.message);
+    firebaseAdmin = null;
+}
 const {
     connectMongo,
     Post, PostLike, PostComment, PostShare,
@@ -329,6 +353,79 @@ const uploadToCloudinary = (fileBuffer, mimeType, folder = 'vibexpert/general') 
 };
 
 // ══════════════════════════════════════════════════════════════
+// FCM HELPER — sends a real push notification via Firebase Admin
+// ══════════════════════════════════════════════════════════════
+const fcmSend = async (userId, notification) => {
+    if (!firebaseAdmin) return;
+    try {
+        const tokenKey = `fcm_tokens:${userId}`;
+        const tokens = await redis.smembers(tokenKey);
+        if (!tokens || tokens.length === 0) return;
+
+        const title = notification.fromUsername || 'VIBEXPERT';
+        const body  = notification.message      || 'You have a new notification';
+
+        const data = {};
+        for (const [k, v] of Object.entries(notification)) {
+            if (v !== null && v !== undefined) data[k] = String(v);
+        }
+
+        const validTokens = tokens.filter(Boolean);
+        if (validTokens.length === 0) return;
+
+        const messaging = firebaseAdmin.messaging();
+
+        const response = await messaging.sendEachForMulticast({
+            tokens: validTokens,
+            notification: { title, body },
+            data,
+            android: {
+                priority: 'high',
+                notification: {
+                    channelId: 'vibexpert_notifications',
+                    priority: 'high',
+                    defaultSound: true,
+                    defaultVibrateTimings: true,
+                    visibility: 'PUBLIC',
+                },
+            },
+            apns: {
+                payload: {
+                    aps: {
+                        alert: { title, body },
+                        sound: 'default',
+                        badge: 1,
+                        'content-available': 1,
+                    },
+                },
+            },
+        });
+
+        const staleTokens = [];
+        response.responses.forEach((resp, idx) => {
+            if (!resp.success) {
+                const code = resp.error && resp.error.code ? resp.error.code : '';
+                if (
+                    code === 'messaging/registration-token-not-registered' ||
+                    code === 'messaging/invalid-registration-token'
+                ) {
+                    staleTokens.push(validTokens[idx]);
+                }
+            }
+        });
+        if (staleTokens.length > 0) {
+            await redis.srem(tokenKey, ...staleTokens);
+            console.log('Removed ' + staleTokens.length + ' stale FCM token(s) for user ' + userId);
+        }
+        if (response.successCount > 0) {
+            console.log('FCM sent to ' + response.successCount + '/' + validTokens.length + ' device(s) for user ' + userId);
+        }
+    } catch (err) {
+        console.error('FCM send error (non-critical):', err.message);
+    }
+};
+
+// ══════════════════════════════════════════════════════════════
 // REDIS NOTIFICATION HELPERS
 // ══════════════════════════════════════════════════════════════
 const pushNotification = async (userId, notification) => {
@@ -338,13 +435,16 @@ const pushNotification = async (userId, notification) => {
         }));
         await redis.ltrim(`notifications:${userId}`, 0, 49);
 
-        // Emit socket event for real-time updates
+        // Emit socket event for real-time in-app updates
         const targetSocketId = userSockets.get(userId);
         if (targetSocketId) {
             io.to(targetSocketId).emit('new_notification', { ...notification, timestamp: Date.now(), read: false });
         }
+
+        // Send real FCM push notification (out-of-app + lock screen)
+        await fcmSend(userId, notification);
     } catch (err) {
-        console.error('⚠️ Redis push failed (non-critical):', err.message);
+        console.error('Redis push failed (non-critical):', err.message);
     }
 };
 
@@ -759,11 +859,11 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
         await supabase.from('payment_orders').insert([{
             user_id: req.user.id, order_id: order.id, amount, plan_type: planType, status: 'created'
         }]);
-        res.json({ 
-            success: true, 
-            orderId: order.id, 
-            amount, 
-            razorpayKeyId: process.env.RAZORPAY_KEY_ID || 'rzp_live_SN88LJaubRdhxS' 
+        res.json({
+            success: true,
+            orderId: order.id,
+            amount,
+            razorpayKeyId: process.env.RAZORPAY_KEY_ID || 'rzp_live_SN88LJaubRdhxS'
         });
     } catch (error) {
         console.error('❌ Create Cashfree order error:', error.response?.data || error.message);
@@ -779,9 +879,9 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
             return res.status(400).json({ success: false, error: 'Order ID is required' });
         }
 
-        const plans = { 
-            noble: { posters: 3, videos: 1, days: 7 }, 
-            royal: { posters: 4, videos: 4, days: 10 } 
+        const plans = {
+            noble: { posters: 3, videos: 1, days: 7 },
+            royal: { posters: 4, videos: 4, days: 10 }
         };
         const plan = plans[planType.toLowerCase()];
         if (!plan) return res.status(400).json({ error: 'Invalid plan type' });
@@ -2696,13 +2796,13 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
         ]);
 
         // Safely extract each result (fulfilled → .value, rejected → null/0 fallback)
-        const userResult      = userRes.status      === 'fulfilled' ? userRes.value      : { data: null, error: true };
-        const followersCount  = followersRes.status  === 'fulfilled' ? (followersRes.value.count  || 0) : 0;
-        const followingCount  = followingRes.status  === 'fulfilled' ? (followingRes.value.count  || 0) : 0;
-        const isFollowingData = isFollowingRes.status === 'fulfilled' ? isFollowingRes.value.data  : null;
-        const isFollowedByData= isFollowedByRes.status=== 'fulfilled' ? isFollowedByRes.value.data : null;
-        const profileLikes    = likeCountRes.status  === 'fulfilled' ? (likeCountRes.value.count  || 0) : 0;
-        const isLikedData     = isLikedRes.status    === 'fulfilled' ? isLikedRes.value.data       : null;
+        const userResult = userRes.status === 'fulfilled' ? userRes.value : { data: null, error: true };
+        const followersCount = followersRes.status === 'fulfilled' ? (followersRes.value.count || 0) : 0;
+        const followingCount = followingRes.status === 'fulfilled' ? (followingRes.value.count || 0) : 0;
+        const isFollowingData = isFollowingRes.status === 'fulfilled' ? isFollowingRes.value.data : null;
+        const isFollowedByData = isFollowedByRes.status === 'fulfilled' ? isFollowedByRes.value.data : null;
+        const profileLikes = likeCountRes.status === 'fulfilled' ? (likeCountRes.value.count || 0) : 0;
+        const isLikedData = isLikedRes.status === 'fulfilled' ? isLikedRes.value.data : null;
 
         const user = userResult.data;
 
@@ -2718,6 +2818,20 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
                 partner = partnerData;
             }
         } catch (_) { /* non-critical — partner linking is optional */ }
+
+        // Check block relationship
+        let isBlocked = false;
+        let isBlockingMe = false;
+        try {
+            const myId = req.user.id;
+            const [iBlockedThem, theyBlockedMe] = await Promise.all([
+                Block.findOne({ blockerId: myId, blockedId: userId }).lean(),
+                Block.findOne({ blockerId: userId, blockedId: myId }).lean()
+            ]);
+            isBlocked = !!iBlockedThem;
+            isBlockingMe = !!theyBlockedMe;
+        } catch (_) { }
+
         if (userResult.error || !user) return res.status(404).json({ error: 'User not found' });
 
         // Get post count from MongoDB — won't crash profile if Mongo is down
@@ -2738,6 +2852,8 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
                 isFollowedBy: !!isFollowedByData,
                 isMutualFollow,
                 partner,
+                isBlocked,
+                isBlockingMe,
                 // Also include a stats block so Flutter can read stats['following'] reliably
                 stats: { followers: followersCount, following: followingCount }
             }
@@ -3075,7 +3191,7 @@ app.post('/api/verify-email', async (req, res) => {
 
         const cached = signupOtpCache.get(email);
         if (!cached) return res.status(400).json({ error: 'No verification pending or code expired' });
-        
+
         if (Date.now() > cached.expiresAt) {
             signupOtpCache.delete(email);
             return res.status(400).json({ error: 'Verification code expired' });
@@ -4084,7 +4200,7 @@ app.get('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
 app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
     try {
         const { postId } = req.params;
-        const { content } = req.body;
+        const { content, replyToId } = req.body;
         if (!content || !content.trim()) return res.status(400).json({ error: 'Comment content required' });
 
         // Check block status against the post owner
@@ -4099,7 +4215,7 @@ app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
             }
         }
 
-        const comment = await PostComment.create({ postId, userId: req.user.id, content: content.trim() });
+        const comment = await PostComment.create({ postId, userId: req.user.id, content: content.trim(), replyToId: replyToId || null });
         const commentCount = await PostComment.countDocuments({ postId });
         io.emit('post_commented', { postId, commentCount });
         // Push notification to post owner (only if not your own post)
@@ -4236,6 +4352,36 @@ app.post('/api/notifications/read', authenticateToken, async (req, res) => {
     }
 });
 
+// ── FCM Token Registration ─────────────────────────────────────
+app.post('/api/notifications/register-token', authenticateToken, async (req, res) => {
+    try {
+        const { token } = req.body;
+        if (!token) return res.status(400).json({ success: false, error: 'token required' });
+        // Store token in a Redis Set so one user can have multiple devices
+        await redis.sadd(`fcm_tokens:${req.user.id}`, token);
+        // Keep a reverse map so we can look up userId from token if needed
+        await redis.set(`fcm_token_user:${token}`, req.user.id, 'EX', 60 * 60 * 24 * 90); // 90 days TTL
+        console.log('FCM token registered for user ' + req.user.id);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('FCM register-token error:', error.message);
+        res.status(500).json({ success: false, error: 'Failed to register token' });
+    }
+});
+
+app.post('/api/notifications/unregister-token', authenticateToken, async (req, res) => {
+    try {
+        const { token } = req.body;
+        if (!token) return res.status(400).json({ success: false, error: 'token required' });
+        await redis.srem(`fcm_tokens:${req.user.id}`, token);
+        await redis.del(`fcm_token_user:${token}`);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('FCM unregister-token error:', error.message);
+        res.status(500).json({ success: false, error: 'Failed to unregister token' });
+    }
+});
+
 // ══════════════════════════════════════════════════════════════
 // COMMUNITY CHAT ENDPOINTS — Supabase + Cloudinary
 // ══════════════════════════════════════════════════════════════
@@ -4320,7 +4466,7 @@ app.post('/api/community/react/:messageId', authenticateToken, async (req, res) 
         if (!emoji) return res.status(400).json({ error: 'emoji required' });
         const { data: message } = await supabase.from('community_messages').select('id,college_name').eq('id', messageId).single();
         if (!message) return res.status(404).json({ error: 'Message not found' });
-        
+
         // Use in-memory reaction map
         const key = messageId.toString();
         const reactions = communityReactions.get(key) || {};
@@ -5029,7 +5175,7 @@ app.get('/api/realvibes/:vibeId/comments', authenticateToken, async (req, res) =
 app.post('/api/realvibes/:vibeId/comments', authenticateToken, async (req, res) => {
     try {
         const { vibeId } = req.params;
-        const { content } = req.body;
+        const { content, replyToId } = req.body;
         if (!content?.trim()) return res.status(400).json({ error: 'Comment required' });
 
         // Block check against vibe owner
@@ -5044,7 +5190,7 @@ app.post('/api/realvibes/:vibeId/comments', authenticateToken, async (req, res) 
             if (isAnyBlock) return res.status(403).json({ error: 'Action not available', blocked: true });
         }
 
-        const comment = await RealVibeComment.create({ vibeId, userId: req.user.id, content: content.trim() });
+        const comment = await RealVibeComment.create({ vibeId, userId: req.user.id, content: content.trim(), replyToId: replyToId || null });
         const commentCount = await RealVibeComment.countDocuments({ vibeId });
         io.emit('realvibe_commented', { vibeId, commentCount });
 
