@@ -6686,7 +6686,10 @@ app.get('/.well-known/assetlinks.json', (req, res) => {
         "target": {
             "namespace": "android_app",
             "package_name": "com.vibexpert.app",
-            "sha256_cert_fingerprints": []
+            "sha256_cert_fingerprints": [
+                "44:8A:92:31:26:0A:4E:3E:CC:26:92:FB:B8:92:5C:23:A4:FC:53:63:E0:B0:87:D0:2F:FE:4E:17:91:44:90:38",
+                "83:72:9E:4A:B1:F6:80:97:72:3A:70:24:CE:C6:67:C6:C5:06:74:F9:C6:5E:14:99:FF:E2:92:13:38:0C:EB:62"
+            ]
         }
     }]);
 });
