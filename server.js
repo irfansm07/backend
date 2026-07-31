@@ -1935,7 +1935,7 @@ app.post('/api/admin/notifications', authenticateToken, async (req, res) => {
                                         }
                                     });
                                 }
-                            } catch(batchErr) {
+                            } catch (batchErr) {
                                 console.error(`⚠️ FCM broadcast batch ${Math.floor(i / batchSize) + 1} failed:`, batchErr.message);
                             }
                         }
@@ -1961,10 +1961,10 @@ app.post('/api/admin/notifications', authenticateToken, async (req, res) => {
 async function broadcastContestNotification(contest) {
     try {
         const title = contest.isLive ? `🔴 LIVE: ${contest.title}` : contest.title;
-        const body  = contest.type === 'poll'   ? '📊 New poll — vote now!'
-                    : contest.type === 'form'   ? '📋 New form — fill it out!'
-                    : contest.type === 'contest'? '🏆 New contest — participate & win!'
-                    :                             '📣 New announcement from VibeXpert';
+        const body = contest.type === 'poll' ? '📊 New poll — vote now!'
+            : contest.type === 'form' ? '📋 New form — fill it out!'
+                : contest.type === 'contest' ? '🏆 New contest — participate & win!'
+                    : '📣 New announcement from VibeXpert';
 
         const fcmPayload = {
             notification: { title, body },
@@ -1995,11 +1995,11 @@ async function broadcastContestNotification(contest) {
                     const batch = allTokens.slice(i, i + 500);
                     try {
                         await fcmSend(batch, fcmPayload.notification, fcmPayload.data);
-                    } catch(e) { console.error('⚠️ Contest FCM batch error:', e.message); }
+                    } catch (e) { console.error('⚠️ Contest FCM batch error:', e.message); }
                 }
             }
         }
-    } catch(e) { console.error('⚠️ broadcastContestNotification error:', e.message); }
+    } catch (e) { console.error('⚠️ broadcastContestNotification error:', e.message); }
 }
 
 // GET all contests (all users)
@@ -2031,7 +2031,7 @@ app.post('/api/contests', authenticateToken, async (req, res) => {
     try {
         if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Admin only' });
         const { type, title, description, coverImage, isLive, endsAt,
-                pollOptions, formFields, howToParticipate, prize } = req.body;
+            pollOptions, formFields, howToParticipate, prize } = req.body;
 
         if (!title || (!description && type !== 'poster')) return res.status(400).json({ error: 'Title and description required' });
 
@@ -6672,6 +6672,220 @@ app.post('/api/admin/college-requests/:id/status', authenticateToken, async (req
         res.json({ success: true, request });
     } catch (err) {
         res.status(500).json({ error: 'Failed to update request' });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
+// DEEP LINKING & SMART REDIRECT ENDPOINTS
+// ══════════════════════════════════════════════════════════════
+
+// Android App Links Digital Asset Links JSON
+app.get('/.well-known/assetlinks.json', (req, res) => {
+    res.json([{
+        "relation": ["delegate_permission/common.handle_all_urls"],
+        "target": {
+            "namespace": "android_app",
+            "package_name": "com.vibexpert.app",
+            "sha256_cert_fingerprints": []
+        }
+    }]);
+});
+
+// GET /post/:postId -> Smart Redirect Page
+app.get('/post/:postId', async (req, res) => {
+    try {
+        const { postId } = req.params;
+        let authorName = 'User';
+        let contentSnippet = 'Check out this vibe on VibeXpert! ⚡';
+        let mediaUrl = 'https://vibexpert.app/assets/logo.png';
+
+        try {
+            const post = await Post.findById(postId);
+            if (post) {
+                if (post.content) contentSnippet = post.content.substring(0, 120);
+                if (post.mediaUrl || post.media_url) mediaUrl = post.mediaUrl || post.media_url;
+                if (post.userId) {
+                    const { data: u } = await supabase.from('users').select('username').eq('id', post.userId).single();
+                    if (u && u.username) authorName = u.username;
+                }
+            }
+        } catch (e) { /* non-fatal */ }
+
+        const playStoreUrl = 'https://play.google.com/store/apps/details?id=com.vibexpert.app';
+        const customSchemeUrl = `vibexpert://post/${postId}`;
+        const androidIntentUrl = `intent://post/${postId}#Intent;scheme=vibexpert;package=com.vibexpert.app;S.browser_fallback_url=${encodeURIComponent(playStoreUrl)};end`;
+
+        const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${authorName} on VibeXpert</title>
+    <meta property="og:title" content="Vibe from @${authorName} on VibeXpert ⚡">
+    <meta property="og:description" content="${contentSnippet.replace(/"/g, '&quot;')}">
+    <meta property="og:image" content="${mediaUrl}">
+    <meta property="og:type" content="article">
+    <meta name="twitter:card" content="summary_large_image">
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: #0d0e15;
+            color: #FFF8D4;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            text-align: center;
+        }
+        .card {
+            background: #181924;
+            border-radius: 20px;
+            padding: 36px 24px;
+            max-width: 420px;
+            width: 100%;
+            box-shadow: 0 12px 32px rgba(0,0,0,0.6);
+            border: 1px solid #2a2c3d;
+        }
+        .logo { font-size: 28px; font-weight: 800; color: #FFF8D4; margin-bottom: 16px; letter-spacing: -0.5px; }
+        .logo span { color: #DE1738; }
+        .caption { color: #ccc; font-size: 15px; line-height: 1.5; margin: 16px 0 24px 0; font-style: italic; }
+        .btn {
+            display: block;
+            width: 100%;
+            padding: 16px 0;
+            margin: 12px 0;
+            border-radius: 12px;
+            font-weight: 700;
+            font-size: 16px;
+            text-decoration: none;
+            cursor: pointer;
+        }
+        .btn-primary { background: #DE1738; color: #ffffff; box-shadow: 0 4px 16px rgba(222,23,56,0.4); }
+        .btn-secondary { background: #252736; color: #FFF8D4; border: 1px solid #3d4057; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="logo">Vibe<span>Xpert</span> ⚡</div>
+        <h2>Check out @${authorName}'s vibe!</h2>
+        <div class="caption">"${contentSnippet.replace(/</g, '&lt;').replace(/>/g, '&gt;')}"</div>
+        <a href="${androidIntentUrl}" class="btn btn-primary">Open in VibeXpert App</a>
+        <a href="${playStoreUrl}" class="btn btn-secondary">Get on Google Play Store</a>
+    </div>
+    <script>
+        (function() {
+            var intentUrl = "${androidIntentUrl}";
+            var schemeUrl = "${customSchemeUrl}";
+            var storeUrl = "${playStoreUrl}";
+            
+            if (/Android/i.test(navigator.userAgent)) {
+                window.location.href = intentUrl;
+            } else {
+                window.location.href = schemeUrl;
+                setTimeout(function() {
+                    window.location.href = storeUrl;
+                }, 2000);
+            }
+        })();
+    </script>
+</body>
+</html>`;
+        res.send(html);
+    } catch (err) {
+        res.redirect('https://play.google.com/store/apps/details?id=com.vibexpert.app');
+    }
+});
+
+// GET /profile/:username -> Smart Redirect Page
+app.get('/profile/:username', async (req, res) => {
+    try {
+        const { username } = req.params;
+        const playStoreUrl = 'https://play.google.com/store/apps/details?id=com.vibexpert.app';
+        const customSchemeUrl = `vibexpert://profile/${username}`;
+        const androidIntentUrl = `intent://profile/${username}#Intent;scheme=vibexpert;package=com.vibexpert.app;S.browser_fallback_url=${encodeURIComponent(playStoreUrl)};end`;
+
+        const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>@${username} on VibeXpert</title>
+    <meta property="og:title" content="Check out @${username} on VibeXpert ⚡">
+    <meta property="og:description" content="View profile and shared vibes.">
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: #0d0e15;
+            color: #FFF8D4;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            text-align: center;
+        }
+        .card {
+            background: #181924;
+            border-radius: 20px;
+            padding: 36px 24px;
+            max-width: 420px;
+            width: 100%;
+            box-shadow: 0 12px 32px rgba(0,0,0,0.6);
+            border: 1px solid #2a2c3d;
+        }
+        .logo { font-size: 28px; font-weight: 800; color: #FFF8D4; margin-bottom: 16px; letter-spacing: -0.5px; }
+        .logo span { color: #DE1738; }
+        .btn {
+            display: block;
+            width: 100%;
+            padding: 16px 0;
+            margin: 12px 0;
+            border-radius: 12px;
+            font-weight: 700;
+            font-size: 16px;
+            text-decoration: none;
+            cursor: pointer;
+        }
+        .btn-primary { background: #DE1738; color: #ffffff; box-shadow: 0 4px 16px rgba(222,23,56,0.4); }
+        .btn-secondary { background: #252736; color: #FFF8D4; border: 1px solid #3d4057; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="logo">Vibe<span>Xpert</span> ⚡</div>
+        <h2>Check out @${username} on VibeXpert!</h2>
+        <p style="color: #ccc; margin-bottom: 24px;">View profile and shared vibes.</p>
+        <a href="${androidIntentUrl}" class="btn btn-primary">View Profile in App</a>
+        <a href="${playStoreUrl}" class="btn btn-secondary">Get on Google Play Store</a>
+    </div>
+    <script>
+        (function() {
+            var intentUrl = "${androidIntentUrl}";
+            var schemeUrl = "${customSchemeUrl}";
+            var storeUrl = "${playStoreUrl}";
+            
+            if (/Android/i.test(navigator.userAgent)) {
+                window.location.href = intentUrl;
+            } else {
+                window.location.href = schemeUrl;
+                setTimeout(function() {
+                    window.location.href = storeUrl;
+                }, 2000);
+            }
+        })();
+    </script>
+</body>
+</html>`;
+        res.send(html);
+    } catch (err) {
+        res.redirect('https://play.google.com/store/apps/details?id=com.vibexpert.app');
     }
 });
 
