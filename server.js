@@ -6680,8 +6680,6 @@ app.post('/api/admin/college-requests/:id/status', authenticateToken, async (req
 // ══════════════════════════════════════════════════════════════
 
 // Android App Links Digital Asset Links JSON
-// ⚠️ IMPORTANT: Replace PLAY_CONSOLE_APP_SIGNING_SHA256 below with the real fingerprint
-//    from Play Console > Setup > App Integrity > App signing key certificate > SHA-256
 app.get('/.well-known/assetlinks.json', (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.json([{
@@ -6690,7 +6688,7 @@ app.get('/.well-known/assetlinks.json', (req, res) => {
             "namespace": "android_app",
             "package_name": "com.vibexpert.app",
             "sha256_cert_fingerprints": [
-                "PLAY_CONSOLE_APP_SIGNING_SHA256",
+                "E3:11:49:86:D4:B3:4B:D6:08:AF:95:83:82:5A:23:0A:67:92:4A:A2:32:52:D8:12:3F:4A:BC:15:65:47:B9:5A",
                 "44:8A:92:31:26:0A:4E:3E:CC:26:92:FB:B8:92:5C:23:A4:FC:53:63:E0:B0:87:D0:2F:FE:4E:17:91:44:90:38",
                 "83:72:9E:4A:B1:F6:80:97:72:3A:70:24:CE:C6:67:C6:C5:06:74:F9:C6:5E:14:99:FF:E2:92:13:38:0C:EB:62"
             ]
