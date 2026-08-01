@@ -6783,23 +6783,32 @@ app.get('/post/:postId', async (req, res) => {
         <div class="logo">Vibe<span>Xpert</span> ⚡</div>
         <h2>Check out @${authorName}'s vibe!</h2>
         <div class="caption">"${contentSnippet.replace(/</g, '&lt;').replace(/>/g, '&gt;')}"</div>
-        <a href="${androidIntentUrl}" class="btn btn-primary">Open in VibeXpert App</a>
+        <a href="${customSchemeUrl}" class="btn btn-primary" onclick="window.location.href='${customSchemeUrl}';">Open in VibeXpert App</a>
         <a href="${playStoreUrl}" class="btn btn-secondary">Get on Google Play Store</a>
     </div>
     <script>
         (function() {
-            var intentUrl = "${androidIntentUrl}";
             var schemeUrl = "${customSchemeUrl}";
+            var intentUrl = "${androidIntentUrl}";
             var storeUrl = "${playStoreUrl}";
-            
-            if (/Android/i.test(navigator.userAgent)) {
-                window.location.href = intentUrl;
-            } else {
-                window.location.href = schemeUrl;
-                setTimeout(function() {
+            var start = Date.now();
+
+            // 1. Try custom scheme first to open installed app directly
+            window.location.href = schemeUrl;
+
+            // 2. Try Android intent after 500ms if custom scheme didn't handle it
+            setTimeout(function() {
+                if (Date.now() - start < 2500) {
+                    window.location.href = intentUrl;
+                }
+            }, 500);
+
+            // 3. Fallback to Play Store after 2s if app is not installed
+            setTimeout(function() {
+                if (Date.now() - start < 3500) {
                     window.location.href = storeUrl;
-                }, 2000);
-            }
+                }
+            }, 2200);
         })();
     </script>
 </body>
@@ -6904,23 +6913,32 @@ app.get('/profile/:username', async (req, res) => {
         <div class="logo">Vibe<span>Xpert</span> ⚡</div>
         <h2>Check out @${username} on VibeXpert!</h2>
         <p style="color: #ccc; margin-bottom: 24px;">View profile and shared vibes.</p>
-        <a href="${androidIntentUrl}" class="btn btn-primary">View Profile in App</a>
+        <a href="${customSchemeUrl}" class="btn btn-primary" onclick="window.location.href='${customSchemeUrl}';">View Profile in App</a>
         <a href="${playStoreUrl}" class="btn btn-secondary">Get on Google Play Store</a>
     </div>
     <script>
         (function() {
-            var intentUrl = "${androidIntentUrl}";
             var schemeUrl = "${customSchemeUrl}";
+            var intentUrl = "${androidIntentUrl}";
             var storeUrl = "${playStoreUrl}";
-            
-            if (/Android/i.test(navigator.userAgent)) {
-                window.location.href = intentUrl;
-            } else {
-                window.location.href = schemeUrl;
-                setTimeout(function() {
+            var start = Date.now();
+
+            // 1. Try custom scheme first to open installed app directly
+            window.location.href = schemeUrl;
+
+            // 2. Try Android intent after 500ms if custom scheme didn't handle it
+            setTimeout(function() {
+                if (Date.now() - start < 2500) {
+                    window.location.href = intentUrl;
+                }
+            }, 500);
+
+            // 3. Fallback to Play Store after 2s if app is not installed
+            setTimeout(function() {
+                if (Date.now() - start < 3500) {
                     window.location.href = storeUrl;
-                }, 2000);
-            }
+                }
+            }, 2200);
         })();
     </script>
 </body>
