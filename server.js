@@ -682,6 +682,56 @@ const authenticateTokenOptional = async (req, res, next) => {
     next();
 };
 
+// GET community members for user's college or specified college
+app.get(['/api/community/members', '/api/community-members'], authenticateTokenOptional, async (req, res) => {
+    try {
+        let collegeParam = req.query.college || (req.user ? req.user.college : '') || '';
+
+        // Extract raw college name if ROLE: is present
+        let targetCollege = collegeParam;
+        if (targetCollege.includes('COLLEGE:')) {
+            const match = /COLLEGE:(.*?)(?:\||$)/.exec(targetCollege);
+            if (match) targetCollege = match[1].trim();
+        }
+        targetCollege = targetCollege.replace(/^ROLE:[^|]+\|?/i, '').replace(/REGION:[^|]+\|?/i, '').trim();
+
+        let query = supabase.from('users').select('id,username,email,profile_pic,bio,college,community_joined,registration_number,created_at');
+
+        if (targetCollege && targetCollege.length > 0) {
+            query = query.or(`college.ilike.%${targetCollege}%,college.ilike.%${collegeParam}%`);
+        }
+
+        const { data: users, error } = await query.order('username', { ascending: true }).limit(200);
+
+        if (error) {
+            console.error('❌ Community members query error:', error.message);
+            return res.status(500).json({ error: error.message });
+        }
+
+        const members = (users || []).map(u => ({
+            id: u.id,
+            username: u.username || 'Member',
+            email: u.email,
+            profile_pic: u.profile_pic || null,
+            bio: u.bio || '',
+            college: u.college,
+            community_joined: u.community_joined,
+            registration_number: u.registration_number,
+            is_online: userSockets.has(u.id.toString())
+        }));
+
+        res.json({
+            success: true,
+            college: targetCollege || 'Community',
+            membersCount: members.length,
+            members
+        });
+    } catch (error) {
+        console.error('❌ Get community members error:', error);
+        res.status(500).json({ error: 'Failed to fetch community members' });
+    }
+});
+
 function authenticateAdmin(req, res, next) {
     const adminKey = req.headers['x-admin-secret'] || req.query.admin_secret;
     if (!adminKey || adminKey !== process.env.ADMIN_SECRET)
@@ -786,56 +836,6 @@ const getReportedContent = async (userId) => {
 // BASIC ROUTES
 // ══════════════════════════════════════════════════════════════
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
-
-// GET community members for user's college or specified college
-app.get(['/api/community/members', '/api/community-members'], authenticateToken, async (req, res) => {
-    try {
-        let collegeParam = req.query.college || req.user.college || '';
-
-        // Extract raw college name if ROLE: is present
-        let targetCollege = collegeParam;
-        if (targetCollege.includes('COLLEGE:')) {
-            const match = /COLLEGE:(.*?)(?:\||$)/.exec(targetCollege);
-            if (match) targetCollege = match[1].trim();
-        }
-        targetCollege = targetCollege.replace(/^ROLE:[^|]+\|?/i, '').replace(/REGION:[^|]+\|?/i, '').trim();
-
-        let query = supabase.from('users').select('id,username,email,profile_pic,bio,college,community_joined,registration_number,created_at');
-
-        if (targetCollege && targetCollege.length > 0) {
-            query = query.or(`college.ilike.%${targetCollege}%,college.ilike.%${collegeParam}%`);
-        }
-
-        const { data: users, error } = await query.order('username', { ascending: true }).limit(200);
-
-        if (error) {
-            console.error('❌ Community members query error:', error.message);
-            return res.status(500).json({ error: error.message });
-        }
-
-        const members = (users || []).map(u => ({
-            id: u.id,
-            username: u.username || 'Member',
-            email: u.email,
-            profile_pic: u.profile_pic || null,
-            bio: u.bio || '',
-            college: u.college,
-            community_joined: u.community_joined,
-            registration_number: u.registration_number,
-            is_online: userSockets.has(u.id.toString())
-        }));
-
-        res.json({
-            success: true,
-            college: targetCollege || 'Community',
-            membersCount: members.length,
-            members
-        });
-    } catch (error) {
-        console.error('❌ Get community members error:', error);
-        res.status(500).json({ error: 'Failed to fetch community members' });
-    }
-});
 
 // ── Self-ping keep-alive ──────────────────────────────────────────────────────
 // Render free tier sleeps after ~15 min of inactivity causing 30-60s cold starts.
