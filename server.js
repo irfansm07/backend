@@ -6680,13 +6680,17 @@ app.post('/api/admin/college-requests/:id/status', authenticateToken, async (req
 // ══════════════════════════════════════════════════════════════
 
 // Android App Links Digital Asset Links JSON
+// ⚠️ IMPORTANT: Replace PLAY_CONSOLE_APP_SIGNING_SHA256 below with the real fingerprint
+//    from Play Console > Setup > App Integrity > App signing key certificate > SHA-256
 app.get('/.well-known/assetlinks.json', (req, res) => {
+    res.setHeader('Content-Type', 'application/json');
     res.json([{
         "relation": ["delegate_permission/common.handle_all_urls"],
         "target": {
             "namespace": "android_app",
             "package_name": "com.vibexpert.app",
             "sha256_cert_fingerprints": [
+                "PLAY_CONSOLE_APP_SIGNING_SHA256",
                 "44:8A:92:31:26:0A:4E:3E:CC:26:92:FB:B8:92:5C:23:A4:FC:53:63:E0:B0:87:D0:2F:FE:4E:17:91:44:90:38",
                 "83:72:9E:4A:B1:F6:80:97:72:3A:70:24:CE:C6:67:C6:C5:06:74:F9:C6:5E:14:99:FF:E2:92:13:38:0C:EB:62"
             ]
@@ -6694,11 +6698,14 @@ app.get('/.well-known/assetlinks.json', (req, res) => {
     }]);
 });
 
-// GET /post/:postId -> Smart Redirect Page
+// ──────────────────────────────────────────────────────────────
+// GET /post/:postId -> Smart Redirect + OG Preview Page
+// ──────────────────────────────────────────────────────────────
 app.get('/post/:postId', async (req, res) => {
     try {
         const { postId } = req.params;
-        let authorName = 'User';
+        const canonicalUrl = `https://vibexpert.app/post/${postId}`;
+        let authorName = 'VibeXpert User';
         let contentSnippet = 'Check out this vibe on VibeXpert! ⚡';
         let mediaUrl = 'https://vibexpert.app/assets/logo.png';
 
@@ -6714,7 +6721,9 @@ app.get('/post/:postId', async (req, res) => {
             }
         } catch (e) { /* non-fatal */ }
 
-        const playStoreUrl = `https://play.google.com/store/apps/details?id=com.vibexpert.app&referrer=deep_link%3Dhttps%253A%252F%252Fvibexpert.app%252Fpost%252F${postId}`;
+        const encodedDeepLink = encodeURIComponent(canonicalUrl);
+        const playStoreUrl = `https://play.google.com/store/apps/details?id=com.vibexpert.app&referrer=deep_link%3D${encodedDeepLink}`;
+        const escapedContent = contentSnippet.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         const customSchemeUrl = `vibexpert://post/${postId}`;
         const androidIntentUrl = `intent://post/${postId}#Intent;scheme=vibexpert;package=com.vibexpert.app;S.browser_fallback_url=${encodeURIComponent(playStoreUrl)};end`;
 
@@ -6803,13 +6812,36 @@ app.get('/post/:postId', async (req, res) => {
     }
 });
 
-// GET /profile/:username -> Smart Redirect Page
+// ──────────────────────────────────────────────────────────────
+// GET /profile/:username -> Smart Redirect + OG Preview Page
+// ──────────────────────────────────────────────────────────────
 app.get('/profile/:username', async (req, res) => {
     try {
         const { username } = req.params;
-        const playStoreUrl = 'https://play.google.com/store/apps/details?id=com.vibexpert.app';
+        const canonicalUrl = `https://vibexpert.app/profile/${username}`;
+        let displayName = username;
+        let bio = 'Check out this profile on VibeXpert!';
+        let avatarUrl = 'https://vibexpert.app/assets/logo.png';
+
+        // Fetch profile data for OG tags
+        try {
+            const { data: user } = await supabase
+                .from('users')
+                .select('username, full_name, bio, profile_image')
+                .eq('username', username)
+                .single();
+            if (user) {
+                if (user.full_name) displayName = user.full_name;
+                if (user.bio) bio = user.bio.substring(0, 200);
+                if (user.profile_image) avatarUrl = user.profile_image;
+            }
+        } catch (e) { /* non-fatal */ }
+
+        const encodedDeepLink = encodeURIComponent(canonicalUrl);
+        const playStoreUrl = `https://play.google.com/store/apps/details?id=com.vibexpert.app&referrer=deep_link%3D${encodedDeepLink}`;
         const customSchemeUrl = `vibexpert://profile/${username}`;
         const androidIntentUrl = `intent://profile/${username}#Intent;scheme=vibexpert;package=com.vibexpert.app;S.browser_fallback_url=${encodeURIComponent(playStoreUrl)};end`;
+        const escapedBio = bio.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
         const html = `<!DOCTYPE html>
 <html lang="en">
@@ -6817,8 +6849,17 @@ app.get('/profile/:username', async (req, res) => {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>@${username} on VibeXpert</title>
-    <meta property="og:title" content="Check out @${username} on VibeXpert ⚡">
-    <meta property="og:description" content="View profile and shared vibes.">
+    <meta property="og:title" content="${displayName} (@${username}) on VibeXpert ⚡">
+    <meta property="og:description" content="${escapedBio}">
+    <meta property="og:image" content="${avatarUrl}">
+    <meta property="og:url" content="${canonicalUrl}">
+    <meta property="og:type" content="profile">
+    <meta property="og:site_name" content="VibeXpert">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="${displayName} (@${username}) on VibeXpert ⚡">
+    <meta name="twitter:description" content="${escapedBio}">
+    <meta name="twitter:image" content="${avatarUrl}">
+    <link rel="canonical" href="${canonicalUrl}">
     <style>
         * { box-sizing: border-box; }
         body {
