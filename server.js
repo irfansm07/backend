@@ -6702,10 +6702,10 @@ app.get('/.well-known/assetlinks.json', (req, res) => {
 app.get('/post/:postId', async (req, res) => {
     try {
         const { postId } = req.params;
-        const canonicalUrl = `https://vibexpert.app/post/${postId}`;
+        const canonicalUrl = `https://link.vibexpert.online/post/${postId}`;
         let authorName = 'VibeXpert User';
         let contentSnippet = 'Check out this vibe on VibeXpert! ⚡';
-        let mediaUrl = 'https://vibexpert.app/assets/logo.png';
+        let mediaUrl = 'https://link.vibexpert.online/assets/logo.png';
 
         try {
             const post = await Post.findById(postId);
@@ -6816,10 +6816,10 @@ app.get('/post/:postId', async (req, res) => {
 app.get('/profile/:username', async (req, res) => {
     try {
         const { username } = req.params;
-        const canonicalUrl = `https://vibexpert.app/profile/${username}`;
+        const canonicalUrl = `https://link.vibexpert.online/profile/${username}`;
         let displayName = username;
         let bio = 'Check out this profile on VibeXpert!';
-        let avatarUrl = 'https://vibexpert.app/assets/logo.png';
+        let avatarUrl = 'https://link.vibexpert.online/assets/logo.png';
 
         // Fetch profile data for OG tags
         try {
