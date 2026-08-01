@@ -6714,7 +6714,7 @@ app.get('/post/:postId', async (req, res) => {
             }
         } catch (e) { /* non-fatal */ }
 
-        const playStoreUrl = 'https://play.google.com/store/apps/details?id=com.vibexpert.app';
+        const playStoreUrl = `https://play.google.com/store/apps/details?id=com.vibexpert.app&referrer=deep_link%3Dhttps%253A%252F%252Fvibexpert.app%252Fpost%252F${postId}`;
         const customSchemeUrl = `vibexpert://post/${postId}`;
         const androidIntentUrl = `intent://post/${postId}#Intent;scheme=vibexpert;package=com.vibexpert.app;S.browser_fallback_url=${encodeURIComponent(playStoreUrl)};end`;
 
