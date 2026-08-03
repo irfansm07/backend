@@ -34,7 +34,7 @@ const {
     ClientRequest, ClientProduct, OrderMessage,
     Complaint, Coupon, ProductReview, CollegeRequest,
     Block, CombineRequest, PartnerLink, PinnedMessage,
-    FcmToken, Contest
+    FcmToken, Contest, FundCampaign, FundDonation
 } = require('./config/mongodb');
 const redis = require('./config/redis');
 
@@ -1441,6 +1441,288 @@ app.get('/api/payment/history', authenticateToken, async (req, res) => {
         res.json({ success: true, payments: payments || [] });
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch payment history' });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
+// HUMANITARIAN FUNDRAISING & DONATION ENDPOINTS
+// ══════════════════════════════════════════════════════════════
+
+// 1. Get Active Fundraiser Campaign & Recent Donors List
+app.get('/api/fundraiser/active', authenticateToken, async (req, res) => {
+    try {
+        let campaign = await FundCampaign.findOne({ isActive: true }).sort({ createdAt: -1 }).lean();
+
+        // If no campaign exists yet, create default initial "Assam Flood Relief Fund"
+        if (!campaign) {
+            campaign = await FundCampaign.create({
+                title: 'Assam Flood Relief Fund 🆘',
+                caption: 'Assam is suffering from severe floods. Thousands of families need emergency food, shelter, and medical aid. Please donate whatever you can for humanity! 🙏',
+                targetAmount: 100000,
+                totalRaised: 0,
+                donorCount: 0,
+                isActive: true,
+                createdBy: req.user.id
+            });
+            campaign = campaign.toObject();
+        }
+
+        // Fetch top 20 recent paid donations
+        const donations = await FundDonation.find({
+            campaignId: campaign._id,
+            paymentStatus: 'PAID'
+        }).sort({ createdAt: -1 }).limit(20).lean();
+
+        const isAdmin = isAdminUser(req.user);
+
+        res.json({
+            success: true,
+            campaign,
+            donations,
+            isAdmin
+        });
+    } catch (error) {
+        console.error('❌ Get active fundraiser error:', error.message);
+        res.status(500).json({ success: false, error: 'Failed to fetch fundraiser details' });
+    }
+});
+
+// 2. Admin Create or Update Fundraiser Campaign
+app.post('/api/fundraiser/create-or-update', authenticateToken, async (req, res) => {
+    try {
+        if (!isAdminUser(req.user)) {
+            return res.status(403).json({ success: false, error: 'Admin access required' });
+        }
+
+        const { title, caption, targetAmount, isActive } = req.body;
+        if (!title || !caption) {
+            return res.status(400).json({ success: false, error: 'Title and caption are required' });
+        }
+
+        // Deactivate old active campaigns if starting an active campaign
+        if (isActive !== false) {
+            await FundCampaign.updateMany({}, { isActive: false });
+        }
+
+        let campaign = await FundCampaign.findOne({ isActive: true });
+        if (campaign) {
+            campaign.title = title;
+            campaign.caption = caption;
+            if (targetAmount !== undefined) campaign.targetAmount = targetAmount;
+            if (isActive !== undefined) campaign.isActive = isActive;
+            await campaign.save();
+        } else {
+            campaign = await FundCampaign.create({
+                title,
+                caption,
+                targetAmount: targetAmount || 0,
+                totalRaised: 0,
+                donorCount: 0,
+                isActive: isActive !== false,
+                createdBy: req.user.id
+            });
+        }
+
+        // Real-time notification to all connected socket clients
+        io.emit('fundraiser_campaign_updated', {
+            campaign: campaign.toObject ? campaign.toObject() : campaign
+        });
+
+        res.json({
+            success: true,
+            campaign,
+            message: 'Fundraiser campaign saved successfully!'
+        });
+    } catch (error) {
+        console.error('❌ Save fundraiser campaign error:', error.message);
+        res.status(500).json({ success: false, error: 'Failed to save fundraiser campaign' });
+    }
+});
+
+// 3. User Donation Order Creation (Razorpay - Custom Amount)
+app.post('/api/fundraiser/donate/create-order', authenticateToken, async (req, res) => {
+    try {
+        const { amount, campaignId } = req.body;
+        const numAmount = parseInt(amount, 10);
+        if (isNaN(numAmount) || numAmount <= 0) {
+            return res.status(400).json({ success: false, error: 'Please enter a valid donation amount in ₹' });
+        }
+
+        const activeCampaign = campaignId
+            ? await FundCampaign.findById(campaignId)
+            : await FundCampaign.findOne({ isActive: true });
+
+        if (!activeCampaign) {
+            return res.status(404).json({ success: false, error: 'No active fundraiser campaign found' });
+        }
+
+        const donorName = req.user.username || req.user.email.split('@')[0];
+
+        // Create Razorpay Order
+        const options = {
+            amount: numAmount * 100, // Amount in paise
+            currency: 'INR',
+            receipt: `rcpt_fund_${req.user.id.slice(-6)}_${Date.now()}`,
+            notes: {
+                campaignId: activeCampaign._id.toString(),
+                userId: req.user.id,
+                donorName
+            }
+        };
+
+        const razorpayOrder = await razorpay.orders.create(options);
+        const orderId = razorpayOrder.id;
+
+        // Record pending donation in MongoDB
+        await FundDonation.create({
+            campaignId: activeCampaign._id,
+            userId: req.user.id,
+            donorName,
+            donorAvatar: req.user.profile_pic || null,
+            amount: numAmount,
+            orderId,
+            paymentStatus: 'created'
+        });
+
+        // Record in Supabase payment_orders
+        await supabase.from('payment_orders').insert([{
+            user_id: req.user.id, order_id: orderId, amount: numAmount, plan_type: 'donation', status: 'created'
+        }]);
+
+        const razorpayKeyId = process.env.RAZORPAY_KEY_ID || 'rzp_live_SN88LJaubRdhxS';
+
+        res.json({
+            success: true,
+            orderId,
+            amount: numAmount,
+            currency: 'INR',
+            razorpayKeyId,
+            donorName,
+            donorEmail: req.user.email,
+            donorPhone: req.user.phone || '9999999999',
+            campaignTitle: activeCampaign.title
+        });
+    } catch (error) {
+        console.error('❌ Create donation order error:', error.message);
+        res.status(500).json({ success: false, error: 'Failed to initiate Razorpay donation payment: ' + error.message });
+    }
+});
+
+// 4. Verify User Donation Payment (Razorpay Signature)
+app.post('/api/fundraiser/donate/verify', authenticateToken, async (req, res) => {
+    try {
+        const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+        if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+            return res.status(400).json({ success: false, error: 'Missing Razorpay payment parameters' });
+        }
+
+        const donation = await FundDonation.findOne({ orderId: razorpay_order_id });
+        if (!donation) {
+            return res.status(404).json({ success: false, error: 'Donation record not found' });
+        }
+
+        if (donation.paymentStatus === 'PAID') {
+            const campaign = await FundCampaign.findById(donation.campaignId).lean();
+            return res.json({ success: true, message: 'Donation already verified!', campaign, donation });
+        }
+
+        // Verify HMAC Signature
+        const secret = process.env.RAZORPAY_KEY_SECRET || '';
+        const generatedSignature = crypto
+            .createHmac('sha256', secret)
+            .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+            .digest('hex');
+
+        // Allow verification if signature matches or in non-strict test mode
+        const isVerified = (generatedSignature === razorpay_signature) || (!secret);
+        if (!isVerified) {
+            console.error('❌ Razorpay signature mismatch:', { generatedSignature, razorpay_signature });
+            return res.status(400).json({ success: false, error: 'Payment signature verification failed' });
+        }
+
+        // Mark donation PAID
+        donation.paymentStatus = 'PAID';
+        donation.paymentId = razorpay_payment_id;
+        await donation.save();
+
+        // Update Fund Campaign totals
+        const updatedCampaign = await FundCampaign.findByIdAndUpdate(
+            donation.campaignId,
+            {
+                $inc: { totalRaised: donation.amount, donorCount: 1 }
+            },
+            { new: true }
+        ).lean();
+
+        // Update Supabase payment_orders
+        await supabase.from('payment_orders').update({
+            status: 'completed', updated_at: new Date()
+        }).eq('order_id', razorpay_order_id);
+
+        // Real-time broadcast popup event to all app users via Socket.IO
+        io.emit('fundraiser_donation', {
+            donorName: donation.donorName,
+            donorAvatar: donation.donorAvatar,
+            amount: donation.amount,
+            campaignTitle: updatedCampaign?.title || 'Humanitarian Relief Fund',
+            campaignId: donation.campaignId,
+            totalRaised: updatedCampaign?.totalRaised || 0,
+            donorCount: updatedCampaign?.donorCount || 0
+        });
+
+        res.json({
+            success: true,
+            message: `Thank you for donating ₹${donation.amount}! 🙏`,
+            campaign: updatedCampaign,
+            donation
+        });
+    } catch (error) {
+        console.error('❌ Verify donation error:', error.message);
+        res.status(500).json({ success: false, error: 'Donation verification failed: ' + error.message });
+    }
+});
+
+// 4b. Admin End Campaign Endpoint
+app.post('/api/fundraiser/end', authenticateToken, async (req, res) => {
+    try {
+        if (!isAdminUser(req.user)) {
+            return res.status(403).json({ success: false, error: 'Admin access required' });
+        }
+        const { campaignId } = req.body;
+        if (campaignId) {
+            await FundCampaign.findByIdAndUpdate(campaignId, { isActive: false });
+        } else {
+            await FundCampaign.updateMany({}, { isActive: false });
+        }
+
+        io.emit('fundraiser_campaign_updated', { campaign: null });
+
+        res.json({ success: true, message: 'Fundraiser campaign ended successfully.' });
+    } catch (error) {
+        console.error('❌ End fundraiser error:', error.message);
+        res.status(500).json({ success: false, error: 'Failed to end fundraiser campaign' });
+    }
+});
+
+// 5. Get All Donations for Transparency List
+app.get('/api/fundraiser/donations', authenticateToken, async (req, res) => {
+    try {
+        const { campaignId } = req.query;
+        const filter = { paymentStatus: 'PAID' };
+        if (campaignId) filter.campaignId = campaignId;
+
+        const donations = await FundDonation.find(filter)
+            .sort({ createdAt: -1 })
+            .limit(50)
+            .lean();
+
+        res.json({
+            success: true,
+            donations
+        });
+    } catch (error) {
+        console.error('❌ Get fundraiser donations error:', error.message);
+        res.status(500).json({ success: false, error: 'Failed to fetch donations' });
     }
 });
 

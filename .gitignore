@@ -3,3 +3,18 @@ node_modules/
 *.log
 diag2.js
 package-lock.json
+
+# Test/debug files
+check_*.js
+copy_*.js
+test_*.js
+print_*.js
+verify_*.js
+get_*.js
+find_*.js
+inspect_*.js
+locate_*.js
+create_test_*.js
+process_icons.py
+*.txt
+firebase-service-account.json

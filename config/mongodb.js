@@ -331,6 +331,30 @@ const contestSchema = new mongoose.Schema({
 
 contestSchema.index({ isLive: 1, createdAt: -1 });
 
+// ── Fund Campaign & Donations (Humanitarian Relief) ─────────────
+const fundCampaignSchema = new mongoose.Schema({
+    title: { type: String, required: true },
+    caption: { type: String, default: '' },
+    bannerUrl: { type: String, default: null },
+    targetAmount: { type: Number, default: 0 },
+    totalRaised: { type: Number, default: 0 },
+    donorCount: { type: Number, default: 0 },
+    isActive: { type: Boolean, default: true, index: true },
+    createdBy: { type: String, required: true }
+}, { timestamps: true });
+
+const fundDonationSchema = new mongoose.Schema({
+    campaignId: { type: mongoose.Schema.Types.ObjectId, ref: 'FundCampaign', required: true, index: true },
+    userId: { type: String, required: true, index: true },
+    donorName: { type: String, required: true },
+    donorAvatar: { type: String, default: null },
+    amount: { type: Number, required: true },
+    orderId: { type: String, required: true, index: true },
+    paymentStatus: { type: String, enum: ['created', 'PAID', 'failed'], default: 'created', index: true }
+}, { timestamps: true });
+
+fundDonationSchema.index({ campaignId: 1, paymentStatus: 1, createdAt: -1 });
+
 // ── Models ────────────────────────────────────────────────────
 const Post = mongoose.models.Post || mongoose.model('Post', postSchema);
 const PostLike = mongoose.models.PostLike || mongoose.model('PostLike', postLikeSchema);
@@ -355,6 +379,8 @@ const PartnerLink = mongoose.models.PartnerLink || mongoose.model('PartnerLink',
 const PinnedMessage = mongoose.models.PinnedMessage || mongoose.model('PinnedMessage', pinnedMessageSchema);
 const FcmToken = mongoose.models.FcmToken || mongoose.model('FcmToken', fcmTokenSchema);
 const Contest = mongoose.models.Contest || mongoose.model('Contest', contestSchema);
+const FundCampaign = mongoose.models.FundCampaign || mongoose.model('FundCampaign', fundCampaignSchema);
+const FundDonation = mongoose.models.FundDonation || mongoose.model('FundDonation', fundDonationSchema);
 
 module.exports = {
     connectMongo,
@@ -380,5 +406,7 @@ module.exports = {
     PartnerLink,
     PinnedMessage,
     FcmToken,
-    Contest
+    Contest,
+    FundCampaign,
+    FundDonation
 };
