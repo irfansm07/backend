@@ -2748,18 +2748,22 @@ app.post('/api/client/apply', async (req, res) => {
 // Helper: Resolve and verify an approved ClientRequest for a user (by userId, email, or admin auto-provision)
 const getApprovedClient = async (user) => {
     if (!user) return null;
-    // 1. Search by userId
-    let clientReq = await ClientRequest.findOne({ userId: user.id, status: 'approved' });
-    if (clientReq) return clientReq;
+    const userIdStr = user.id ? user.id.toString() : null;
 
-    // 2. Search by email (case-insensitive)
-    if (user.email) {
+    // 1. Search by userId (case-insensitive status)
+    if (userIdStr) {
+        let clientReq = await ClientRequest.findOne({ userId: userIdStr, status: { $regex: /^approved$/i } });
+        if (clientReq) return clientReq;
+    }
+
+    // 2. Search by email (case-insensitive email & status)
+    if (user.email && user.email.trim()) {
         const emailRegex = new RegExp('^' + user.email.trim() + '$', 'i');
-        clientReq = await ClientRequest.findOne({ email: emailRegex, status: 'approved' });
+        let clientReq = await ClientRequest.findOne({ email: emailRegex, status: { $regex: /^approved$/i } });
         if (clientReq) {
             // Auto-link userId if missing or mismatched
-            if (!clientReq.userId || clientReq.userId !== user.id) {
-                clientReq.userId = user.id;
+            if (userIdStr && (!clientReq.userId || clientReq.userId.toString() !== userIdStr)) {
+                clientReq.userId = userIdStr;
                 await clientReq.save();
             }
             return clientReq;
@@ -2777,11 +2781,11 @@ const getApprovedClient = async (user) => {
                 ownerName: user.username || 'Admin',
                 phone: '0000000000',
                 status: 'approved',
-                userId: user.id
+                userId: userIdStr
             });
-        } else if (adminReq.status !== 'approved' || adminReq.userId !== user.id) {
+        } else if (adminReq.status !== 'approved' || (userIdStr && adminReq.userId !== userIdStr)) {
             adminReq.status = 'approved';
-            adminReq.userId = user.id;
+            if (userIdStr) adminReq.userId = userIdStr;
             await adminReq.save();
         }
         return adminReq;
