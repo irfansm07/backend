@@ -279,7 +279,7 @@ app.use(cors({
     origin: (origin, callback) => callback(null, true),
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'User-Agent', 'X-Requested-With', 'x-admin-secret'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'User-Agent', 'X-Requested-With', 'x-admin-secret', 'x-client-email', 'X-Client-Email'],
     exposedHeaders: ['Content-Length', 'Content-Type'],
     maxAge: 86400
 }));
@@ -2745,20 +2745,62 @@ app.post('/api/client/apply', async (req, res) => {
     }
 });
 
+// Helper: Resolve and verify an approved ClientRequest for a user (by userId, email, or admin auto-provision)
+const getApprovedClient = async (user) => {
+    if (!user) return null;
+    // 1. Search by userId
+    let clientReq = await ClientRequest.findOne({ userId: user.id, status: 'approved' });
+    if (clientReq) return clientReq;
+
+    // 2. Search by email (case-insensitive)
+    if (user.email) {
+        const emailRegex = new RegExp('^' + user.email.trim() + '$', 'i');
+        clientReq = await ClientRequest.findOne({ email: emailRegex, status: 'approved' });
+        if (clientReq) {
+            // Auto-link userId if missing or mismatched
+            if (!clientReq.userId || clientReq.userId !== user.id) {
+                clientReq.userId = user.id;
+                await clientReq.save();
+            }
+            return clientReq;
+        }
+    }
+
+    // 3. Admin auto-provision: Admins are always authorized sellers
+    if (user.email && isAdminUser(user)) {
+        const emailRegex = new RegExp('^' + user.email.trim() + '$', 'i');
+        let adminReq = await ClientRequest.findOne({ email: emailRegex });
+        if (!adminReq) {
+            adminReq = await ClientRequest.create({
+                email: user.email.trim().toLowerCase(),
+                businessName: 'VibExpert Official Store',
+                ownerName: user.username || 'Admin',
+                phone: '0000000000',
+                status: 'approved',
+                userId: user.id
+            });
+        } else if (adminReq.status !== 'approved' || adminReq.userId !== user.id) {
+            adminReq.status = 'approved';
+            adminReq.userId = user.id;
+            await adminReq.save();
+        }
+        return adminReq;
+    }
+
+    return null;
+};
+
 // Client checks their approval status
 app.get('/api/client/status', authenticateToken, async (req, res) => {
     try {
-        // First search by userId
+        const clientReq = await getApprovedClient(req.user);
+        if (clientReq) {
+            return res.json({ success: true, status: 'approved', request: clientReq });
+        }
         let request = await ClientRequest.findOne({ userId: req.user.id }).sort({ createdAt: -1 });
-        // If not found, search by email (case-insensitive)
         if (!request && req.user.email) {
             const emailRegex = new RegExp('^' + req.user.email.trim() + '$', 'i');
             request = await ClientRequest.findOne({ email: emailRegex }).sort({ createdAt: -1 });
-            // Link userId if missing
-            if (request && !request.userId) {
-                request.userId = req.user.id;
-                await request.save();
-            }
         }
         if (!request) return res.json({ success: true, status: 'none', request: null });
         res.json({ success: true, status: request.status, request });
@@ -3005,8 +3047,8 @@ app.post('/api/client/products', authenticateToken, (req, res, next) => {
     });
 }, async (req, res) => {
     try {
-        // Verify client is approved
-        const clientReq = await ClientRequest.findOne({ userId: req.user.id, status: 'approved' });
+        // Verify client is approved using getApprovedClient helper
+        const clientReq = await getApprovedClient(req.user);
         if (!clientReq) return res.status(403).json({ error: 'You must be an approved client to add products' });
 
         const { name, description, price, originalPrice, category, colors, sizes, badge, stockQuantity, discountPercent, deliveryDays, deliveryNote } = req.body;
@@ -3054,7 +3096,11 @@ app.post('/api/client/products', authenticateToken, (req, res, next) => {
 // Client: Get their products
 app.get('/api/client/products', authenticateToken, async (req, res) => {
     try {
-        const products = await ClientProduct.find({ clientId: req.user.id }).sort({ createdAt: -1 });
+        const clientReq = await getApprovedClient(req.user);
+        if (!clientReq) return res.json({ success: true, products: [] });
+        const products = await ClientProduct.find({
+            $or: [{ clientId: req.user.id }, { clientId: clientReq.userId }]
+        }).sort({ createdAt: -1 });
         res.json({ success: true, products });
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch products' });
@@ -3072,7 +3118,13 @@ app.put('/api/client/products/:id', authenticateToken, (req, res, next) => {
     });
 }, async (req, res) => {
     try {
-        const product = await ClientProduct.findOne({ _id: req.params.id, clientId: req.user.id });
+        const clientReq = await getApprovedClient(req.user);
+        if (!clientReq) return res.status(403).json({ error: 'You must be an approved client to update products' });
+
+        const product = await ClientProduct.findOne({
+            _id: req.params.id,
+            $or: [{ clientId: req.user.id }, { clientId: clientReq.userId }]
+        });
         if (!product) return res.status(404).json({ error: 'Product not found' });
 
         const { name, description, price, originalPrice, category, colors, sizes, badge, inStock, stockQuantity, discountPercent, deliveryDays, deliveryNote } = req.body;
@@ -3119,7 +3171,13 @@ app.put('/api/client/products/:id', authenticateToken, (req, res, next) => {
 // Client: Delete product  
 app.delete('/api/client/products/:id', authenticateToken, async (req, res) => {
     try {
-        const product = await ClientProduct.findOne({ _id: req.params.id, clientId: req.user.id });
+        const clientReq = await getApprovedClient(req.user);
+        if (!clientReq) return res.status(403).json({ error: 'You must be an approved client to delete products' });
+
+        const product = await ClientProduct.findOne({
+            _id: req.params.id,
+            $or: [{ clientId: req.user.id }, { clientId: clientReq.userId }]
+        });
         if (!product) return res.status(404).json({ error: 'Product not found' });
         await ClientProduct.findByIdAndDelete(req.params.id);
         res.json({ success: true, message: 'Product deleted' });
@@ -3315,7 +3373,7 @@ app.post('/api/shop/reviews', authenticateToken, async (req, res) => {
 // Client: Create a coupon
 app.post('/api/client/coupons', authenticateToken, async (req, res) => {
     try {
-        const clientReq = await ClientRequest.findOne({ userId: req.user.id, status: 'approved' });
+        const clientReq = await getApprovedClient(req.user);
         if (!clientReq) return res.status(403).json({ error: 'You must be an approved client to create coupons' });
 
         const { code, discountType, discountValue, minOrderAmount, maxUses, expiryDate } = req.body;
@@ -3323,7 +3381,10 @@ app.post('/api/client/coupons', authenticateToken, async (req, res) => {
             return res.status(400).json({ error: 'Code, discount type, and discount value are required' });
 
         // Check for duplicate code from this client
-        const existing = await Coupon.findOne({ clientId: req.user.id, code: code.toUpperCase() });
+        const existing = await Coupon.findOne({
+            $or: [{ clientId: req.user.id }, { clientId: clientReq.userId }],
+            code: code.toUpperCase()
+        });
         if (existing) return res.status(400).json({ error: 'You already have a coupon with this code' });
 
         const coupon = await Coupon.create({
@@ -3347,7 +3408,11 @@ app.post('/api/client/coupons', authenticateToken, async (req, res) => {
 // Client: Get their coupons
 app.get('/api/client/coupons', authenticateToken, async (req, res) => {
     try {
-        const coupons = await Coupon.find({ clientId: req.user.id }).sort({ createdAt: -1 });
+        const clientReq = await getApprovedClient(req.user);
+        if (!clientReq) return res.json({ success: true, coupons: [] });
+        const coupons = await Coupon.find({
+            $or: [{ clientId: req.user.id }, { clientId: clientReq.userId }]
+        }).sort({ createdAt: -1 });
         res.json({ success: true, coupons });
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch coupons' });
@@ -3357,7 +3422,12 @@ app.get('/api/client/coupons', authenticateToken, async (req, res) => {
 // Client: Delete a coupon
 app.delete('/api/client/coupons/:id', authenticateToken, async (req, res) => {
     try {
-        const coupon = await Coupon.findOne({ _id: req.params.id, clientId: req.user.id });
+        const clientReq = await getApprovedClient(req.user);
+        if (!clientReq) return res.status(403).json({ error: 'You must be an approved client to delete coupons' });
+        const coupon = await Coupon.findOne({
+            _id: req.params.id,
+            $or: [{ clientId: req.user.id }, { clientId: clientReq.userId }]
+        });
         if (!coupon) return res.status(404).json({ error: 'Coupon not found' });
         await Coupon.findByIdAndDelete(req.params.id);
         res.json({ success: true, message: 'Coupon deleted' });
@@ -3369,7 +3439,12 @@ app.delete('/api/client/coupons/:id', authenticateToken, async (req, res) => {
 // Client: Toggle coupon active/inactive
 app.put('/api/client/coupons/:id/toggle', authenticateToken, async (req, res) => {
     try {
-        const coupon = await Coupon.findOne({ _id: req.params.id, clientId: req.user.id });
+        const clientReq = await getApprovedClient(req.user);
+        if (!clientReq) return res.status(403).json({ error: 'You must be an approved client to toggle coupons' });
+        const coupon = await Coupon.findOne({
+            _id: req.params.id,
+            $or: [{ clientId: req.user.id }, { clientId: clientReq.userId }]
+        });
         if (!coupon) return res.status(404).json({ error: 'Coupon not found' });
         coupon.isActive = !coupon.isActive;
         await coupon.save();
@@ -3643,10 +3718,15 @@ app.put('/api/admin/shop-orders/:orderId/tracking', authenticateToken, async (re
 // Client (seller): Update order tracking info
 app.put('/api/client/orders/:orderId/tracking', authenticateToken, async (req, res) => {
     try {
+        const clientReq = await getApprovedClient(req.user);
+        if (!clientReq) return res.status(403).json({ error: 'You must be an approved client to update tracking' });
+
         const { trackingId, trackingUrl, carrier, estimatedDelivery, currentPosition, status } = req.body;
 
         // Verify this client owns a product in this order
-        const clientProducts = await ClientProduct.find({ clientId: req.user.id });
+        const clientProducts = await ClientProduct.find({
+            $or: [{ clientId: req.user.id }, { clientId: clientReq.userId }]
+        });
         const productNames = clientProducts.map(p => p.name);
         const { data: order } = await supabase.from('shop_orders').select('*').eq('order_id', req.params.orderId).single();
         if (!order) return res.status(404).json({ error: 'Order not found' });
@@ -3693,8 +3773,13 @@ app.put('/api/client/orders/:orderId/tracking', authenticateToken, async (req, r
 // Client: Get orders for their products
 app.get('/api/client/orders', authenticateToken, async (req, res) => {
     try {
+        const clientReq = await getApprovedClient(req.user);
+        if (!clientReq) return res.json({ success: true, orders: [] });
+
         // Get all products by this client
-        const clientProducts = await ClientProduct.find({ clientId: req.user.id });
+        const clientProducts = await ClientProduct.find({
+            $or: [{ clientId: req.user.id }, { clientId: clientReq.userId }]
+        });
         const productNames = clientProducts.map(p => p.name);
 
         // Get all shop orders and filter for ones containing this client's products
@@ -3715,40 +3800,8 @@ app.get('/api/client/orders', authenticateToken, async (req, res) => {
     }
 });
 
-// ── Client: List own coupons ─────────────────────────────────
-app.get('/api/client/coupons', authenticateToken, async (req, res) => {
-    try {
-        const coupons = await Coupon.find({ clientId: req.user.id }).sort({ createdAt: -1 });
-        res.json({ success: true, coupons });
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to fetch coupons' });
-    }
-});
-
-// ── Client: Create a coupon ──────────────────────────────────
-app.post('/api/client/coupons', authenticateToken, async (req, res) => {
-    try {
-        const { code, discountType, discountValue, minOrderAmount, maxUses, expiryDate } = req.body;
-        if (!code || !discountValue) return res.status(400).json({ error: 'Code and discount value are required' });
-        const existing = await Coupon.findOne({ code: code.toUpperCase().trim() });
-        if (existing) return res.status(400).json({ error: 'A coupon with this code already exists' });
-        const coupon = await Coupon.create({
-            clientId: req.user.id,
-            code: code.toUpperCase().trim(),
-            discountType: discountType || 'percent',
-            discountValue: Number(discountValue),
-            minOrderAmount: Number(minOrderAmount) || 0,
-            maxUses: Number(maxUses) || 0,
-            expiryDate: expiryDate || null
-        });
-        res.json({ success: true, coupon });
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to create coupon' });
-    }
-});
-
-// DUP FIX (DUP-9): Removed duplicate DELETE /api/client/coupons/:id and
-// PUT /api/client/coupons/:id/toggle. Authoritative versions are defined earlier in this file.
+// DUP FIX (DUP-9): Removed duplicate GET /api/client/coupons, POST /api/client/coupons, DELETE /api/client/coupons/:id,
+// and PUT /api/client/coupons/:id/toggle. Authoritative versions are defined earlier in this file.
 
 // Client: Get user's own seller requests (history)
 app.get('/api/user/seller-requests', authenticateToken, async (req, res) => {
