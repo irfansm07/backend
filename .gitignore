@@ -17,4 +17,5 @@ locate_*.js
 create_test_*.js
 process_icons.py
 *.txt
+!app-ads.txt
 firebase-service-account.json

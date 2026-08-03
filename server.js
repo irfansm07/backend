@@ -288,6 +288,17 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
+// Serve Google AdMob app-ads.txt verification file
+app.get('/app-ads.txt', (req, res) => {
+    res.setHeader('Content-Type', 'text/plain');
+    const adsTxtPath = path.join(__dirname, 'app-ads.txt');
+    if (fs.existsSync(adsTxtPath)) {
+        res.sendFile(adsTxtPath);
+    } else {
+        res.send('google.com, pub-9939655169727863, DIRECT, f08c47fec0942fa0');
+    }
+});
+
 // ══════════════════════════════════════════════════════════════
 // COLLEGES DATA — Serve colleges.json from /data/colleges.json
 // ══════════════════════════════════════════════════════════════
