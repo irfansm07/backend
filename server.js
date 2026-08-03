@@ -1453,31 +1453,37 @@ app.get('/api/fundraiser/active', authenticateToken, async (req, res) => {
     try {
         let campaign = await FundCampaign.findOne({ isActive: true }).sort({ createdAt: -1 }).lean();
 
-        // If no campaign exists yet, create default initial "Assam Flood Relief Fund"
+        // Only auto-create a default campaign if NO campaigns have EVER been created
         if (!campaign) {
-            campaign = await FundCampaign.create({
-                title: 'Assam Flood Relief Fund 🆘',
-                caption: 'Assam is suffering from severe floods. Thousands of families need emergency food, shelter, and medical aid. Please donate whatever you can for humanity! 🙏',
-                targetAmount: 100000,
-                totalRaised: 0,
-                donorCount: 0,
-                isActive: true,
-                createdBy: req.user.id
-            });
-            campaign = campaign.toObject();
+            const totalCampaigns = await FundCampaign.countDocuments();
+            if (totalCampaigns === 0) {
+                campaign = await FundCampaign.create({
+                    title: 'Assam Flood Relief Fund 🆘',
+                    caption: 'Assam is suffering from severe floods. Thousands of families need emergency food, shelter, and medical aid. Please donate whatever you can for humanity! 🙏',
+                    targetAmount: 100000,
+                    totalRaised: 0,
+                    donorCount: 0,
+                    isActive: true,
+                    createdBy: req.user.id
+                });
+                campaign = campaign.toObject();
+            }
         }
 
-        // Fetch top 20 recent paid donations
-        const donations = await FundDonation.find({
-            campaignId: campaign._id,
-            paymentStatus: 'PAID'
-        }).sort({ createdAt: -1 }).limit(20).lean();
+        // Fetch top 20 recent paid donations if campaign exists
+        let donations = [];
+        if (campaign) {
+            donations = await FundDonation.find({
+                campaignId: campaign._id,
+                paymentStatus: 'PAID'
+            }).sort({ createdAt: -1 }).limit(20).lean();
+        }
 
         const isAdmin = isAdminUser(req.user);
 
         res.json({
             success: true,
-            campaign,
+            campaign: campaign || null,
             donations,
             isAdmin
         });
