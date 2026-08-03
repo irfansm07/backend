@@ -377,9 +377,41 @@ const razorpay = new Razorpay({
 });
 
 // ══════════════════════════════════════════════════════════════
-// CLOUDINARY UPLOAD HELPER
 // ══════════════════════════════════════════════════════════════
-const uploadToCloudinary = (fileBuffer, mimeType, folder = 'vibexpert/general') => {
+// MULTI-PROVIDER MEDIA UPLOAD HELPER (Supabase Storage Primary + Cloudinary Fallback)
+// ══════════════════════════════════════════════════════════════
+const uploadToSupabaseStorage = async (fileBuffer, mimeType, folder = 'vibexpert/general') => {
+    if (!fileBuffer || fileBuffer.length === 0) {
+        throw new Error('Empty file buffer — nothing to upload');
+    }
+    const rawExt = (mimeType || 'image/jpeg').split('/')[1] || 'jpg';
+    const ext = rawExt.split('+')[0].replace('quicktime', 'mov');
+    const cleanFolder = folder.replace(/^\/+|\/+$/g, '');
+    const fileName = `${cleanFolder}/${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+
+    const { data, error } = await supabase.storage
+        .from('vibexpert-media')
+        .upload(fileName, fileBuffer, {
+            contentType: mimeType,
+            upsert: true
+        });
+
+    if (error) {
+        throw new Error(`Supabase Storage error: ${error.message}`);
+    }
+
+    const { data: publicUrlData } = supabase.storage
+        .from('vibexpert-media')
+        .getPublicUrl(fileName);
+
+    return {
+        secure_url: publicUrlData.publicUrl,
+        url: publicUrlData.publicUrl,
+        public_id: fileName
+    };
+};
+
+const uploadToCloudinaryDirect = (fileBuffer, mimeType, folder = 'vibexpert/general') => {
     return new Promise((resolve, reject) => {
         if (!fileBuffer || fileBuffer.length === 0) {
             return reject(new Error('Empty file buffer — nothing to upload'));
@@ -402,13 +434,24 @@ const uploadToCloudinary = (fileBuffer, mimeType, folder = 'vibexpert/general') 
             }
         );
 
-        // Pipe the buffer into the upload stream
         const { Readable } = require('stream');
         const readableStream = new Readable();
         readableStream.push(fileBuffer);
         readableStream.push(null);
         readableStream.pipe(uploadStream);
     });
+};
+
+// Primary upload function: Tries Supabase Storage first, falls back to Cloudinary
+const uploadToCloudinary = async (fileBuffer, mimeType, folder = 'vibexpert/general') => {
+    try {
+        const result = await uploadToSupabaseStorage(fileBuffer, mimeType, folder);
+        console.log(`✅ Media successfully uploaded to Supabase Storage [${folder}]: ${result.secure_url}`);
+        return result;
+    } catch (supaErr) {
+        console.warn(`⚠️ Supabase Storage failed (${supaErr.message}). Falling back to Cloudinary...`);
+        return await uploadToCloudinaryDirect(fileBuffer, mimeType, folder);
+    }
 };
 
 // ══════════════════════════════════════════════════════════════
@@ -5328,6 +5371,51 @@ app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
         res.json({ success: true, comment: { ...comment.toObject(), id: comment._id.toString() } });
     } catch (error) {
         res.status(500).json({ error: 'Failed to post comment' });
+    }
+});
+
+// DELETE post (owner or admin only)
+app.delete('/api/posts/:postId', authenticateToken, async (req, res) => {
+    try {
+        const { postId } = req.params;
+        const post = await Post.findById(postId);
+        if (!post) return res.status(404).json({ error: 'Post not found' });
+
+        // Only the post owner or an admin can delete
+        const isOwner = post.userId === req.user.id;
+        const isAdmin = isAdminUser(req.user);
+        if (!isOwner && !isAdmin) {
+            return res.status(403).json({ error: 'Not authorized to delete this post' });
+        }
+
+        // Clean up Cloudinary media if present
+        if (post.media && Array.isArray(post.media)) {
+            for (const m of post.media) {
+                const publicId = m.public_id || m.publicId;
+                if (publicId) {
+                    try {
+                        const resourceType = (m.type === 'video' || m.mediaType === 'video') ? 'video' : 'image';
+                        await cloudinaryLib.uploader.destroy(publicId, { resource_type: resourceType });
+                    } catch (cloudErr) {
+                        console.error('⚠️ Cloudinary cleanup failed for', publicId, cloudErr.message);
+                    }
+                }
+            }
+        }
+
+        // Delete associated data
+        await Promise.all([
+            PostLike.deleteMany({ postId }),
+            PostComment.deleteMany({ postId }),
+            PostShare.deleteMany({ postId }),
+            Post.deleteOne({ _id: postId }),
+        ]);
+
+        console.log(`🗑️ Post ${postId} deleted by user ${req.user.id}`);
+        res.json({ success: true, message: 'Post deleted successfully' });
+    } catch (error) {
+        console.error('❌ Delete post error:', error.message);
+        res.status(500).json({ error: 'Failed to delete post' });
     }
 });
 
