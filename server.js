@@ -4158,9 +4158,30 @@ app.post('/api/combine/disconnect', authenticateToken, async (req, res) => {
 });
 
 
+async function resolveUserId(identifier) {
+    if (!identifier) return null;
+    let clean = identifier.trim();
+    if (clean.startsWith('@')) clean = clean.substring(1).trim();
+    if (!clean) return null;
+
+    const isUuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(clean);
+    if (isUuid) {
+        return clean;
+    }
+
+    try {
+        const { data: u } = await supabase.from('users').select('id').ilike('username', clean).maybeSingle();
+        if (u && u.id) return u.id;
+    } catch (_) { }
+
+    return clean;
+}
+
 app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
     try {
-        const { userId } = req.params;
+        const resolvedId = await resolveUserId(req.params.userId);
+        if (!resolvedId) return res.status(404).json({ error: 'User not found' });
+        const userId = resolvedId;
 
         // Use allSettled so a missing/broken table (e.g. profile_likes) never crashes the whole endpoint
         const [userRes, followersRes, followingRes, isFollowingRes, isFollowedByRes, likeCountRes, isLikedRes] = await Promise.allSettled([
@@ -4540,7 +4561,7 @@ app.get('/api/following/:userId', authenticateToken, async (req, res) => {
 
 app.post('/api/register', async (req, res) => {
     try {
-        const { username, email, password, registrationNumber, phoneNumber, college, gender, hobbies } = req.body;
+        const { username, email, password, registrationNumber, phoneNumber, college, gender, hobbies, referralCode } = req.body;
         const regNumber = registrationNumber || phoneNumber || `auto_${Date.now()}`;
         if (!username || !email || !password) return res.status(400).json({ error: 'All fields are required' });
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -4548,6 +4569,23 @@ app.post('/api/register', async (req, res) => {
         const { data: existingUser } = await supabase.from('users').select('email').eq('email', email).maybeSingle();
         if (existingUser) return res.status(400).json({ error: 'Email already registered' });
         const passwordHash = await bcrypt.hash(password, 10);
+
+        // ── Resolve referral code (optional) ──
+        let referredById = null;
+        let referrerUsername = null;
+        if (referralCode && referralCode.trim()) {
+            const cleanCode = referralCode.trim().replace(/^@/, ''); // strip leading @
+            const { data: referrerUser } = await supabase
+                .from('users')
+                .select('id,username')
+                .ilike('username', cleanCode)
+                .maybeSingle();
+            if (referrerUser) {
+                referredById = referrerUser.id;
+                referrerUsername = referrerUser.username;
+            }
+        }
+
         const { data: newUser, error } = await supabase.from('users').insert([{
             username,
             email,
@@ -4555,16 +4593,56 @@ app.post('/api/register', async (req, res) => {
             registration_number: regNumber,
             college: college || null,
             gender: gender || null,
-            hobbies: hobbies || []
+            hobbies: hobbies || [],
+            referred_by: referredById
         }]).select().single();
         if (error) {
             if (error.code === '23505') return res.status(400).json({ error: 'User already exists' });
             throw new Error('Failed to create account: ' + error.message);
         }
-        sendEmail(email, '🎉 Welcome to VibeXpert!', `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;"><h1 style="color:#4F46E5;">Welcome to VibeXpert, ${username}! 🎉</h1><p>Ready to vibe? Let's go! 🚀</p></div>`).catch(console.error);
-        res.status(201).json({ success: true, message: 'Account created successfully! Please log in.', userId: newUser.id });
+
+        // ── Credit the referrer ──
+        if (referredById) {
+            try {
+                // Increment referral_count on the referrer's row
+                // Using raw SQL via rpc or a simple update:
+                const { data: referrerData } = await supabase
+                    .from('users')
+                    .select('referral_count')
+                    .eq('id', referredById)
+                    .maybeSingle();
+                const currentCount = (referrerData?.referral_count || 0) + 1;
+                await supabase
+                    .from('users')
+                    .update({ referral_count: currentCount })
+                    .eq('id', referredById);
+                console.log(`✅ Referral credited: @${referrerUsername} now has ${currentCount} referral(s) (new user: ${username})`);
+            } catch (refErr) {
+                console.error('⚠️ Referral credit failed (non-critical):', refErr.message);
+            }
+        }
+
+        sendEmail(email, '🎉 Welcome to VibeXpert!', `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;"><h1 style="color:#4F46E5;">Welcome to VibeXpert, ${username}! 🎉</h1><p>Ready to vibe? Let's go! 🚀</p>${referrerUsername ? `<p>You were referred by <b>@${referrerUsername}</b> 🤝</p>` : ''}</div>`).catch(console.error);
+        res.status(201).json({ success: true, message: 'Account created successfully! Please log in.', userId: newUser.id, referredBy: referrerUsername || null });
     } catch (error) {
         res.status(500).json({ error: error.message || 'Registration failed' });
+    }
+});
+
+// ══════════════════════════════════════════════════════════════
+// REFERRAL COUNT (for V-Points mission tracking)
+// ══════════════════════════════════════════════════════════════
+app.get('/api/referral-count', authenticateToken, async (req, res) => {
+    try {
+        const { data: userData } = await supabase
+            .from('users')
+            .select('referral_count')
+            .eq('id', req.user.id)
+            .maybeSingle();
+        res.json({ success: true, referralCount: userData?.referral_count || 0 });
+    } catch (error) {
+        console.error('Referral count error:', error);
+        res.json({ success: true, referralCount: 0 });
     }
 });
 
@@ -4728,7 +4806,15 @@ app.post('/api/login', async (req, res) => {
             }
         }
 
-        res.json({ success: true, token, user: { id: user.id, username: user.username, email: user.email, college: user.college, communityJoined: user.community_joined, profilePic: user.profile_pic, profile_pic: user.profile_pic, registrationNumber: user.registration_number, badges: user.badges || [], bio: user.bio || '', isPremium: user.is_premium || false, subscriptionPlan: user.subscription_plan || null, followersCount: followersCount || 0, followingCount: followingCount || 0, postCount } });
+        let referredByUsername = null;
+        if (user.referred_by) {
+            try {
+                const { data: refUser } = await supabase.from('users').select('username').eq('id', user.referred_by).maybeSingle();
+                if (refUser) referredByUsername = refUser.username;
+            } catch (_) { }
+        }
+
+        res.json({ success: true, token, user: { id: user.id, username: user.username, email: user.email, college: user.college, communityJoined: user.community_joined, profilePic: user.profile_pic, profile_pic: user.profile_pic, registrationNumber: user.registration_number, badges: user.badges || [], bio: user.bio || '', isPremium: user.is_premium || false, subscriptionPlan: user.subscription_plan || null, followersCount: followersCount || 0, followingCount: followingCount || 0, postCount, referredBy: referredByUsername, referred_by: referredByUsername } });
     } catch (error) {
         console.error('Login error:', error);
         res.status(500).json({ error: 'Login failed' });
@@ -5250,7 +5336,9 @@ app.get('/api/posts/my', authenticateToken, async (req, res) => {
 // GET posts by user ID
 app.get('/api/posts/user/:userId', authenticateToken, async (req, res) => {
     try {
-        const { userId } = req.params;
+        const resolvedId = await resolveUserId(req.params.userId);
+        if (!resolvedId) return res.json({ success: true, posts: [] });
+        const userId = resolvedId;
         const myUid = req.user.id;
 
         // Block check: if either side has blocked the other, return empty
