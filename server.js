@@ -295,7 +295,7 @@ app.get('/app-ads.txt', (req, res) => {
     if (fs.existsSync(adsTxtPath)) {
         res.sendFile(adsTxtPath);
     } else {
-        res.send('google.com, pub-9939655169727863, DIRECT, f08c47fec0942fa0');
+        res.send('google.com, pub-4641038956124470, DIRECT, f08c47fec0942fa0');
     }
 });
 
@@ -1448,16 +1448,171 @@ app.post('/api/cashfree/webhook', express.raw({ type: 'application/json' }), asy
 
 app.get('/api/payment/history', authenticateToken, async (req, res) => {
     try {
-        const { data: payments } = await supabase.from('payment_orders').select('*').eq('user_id', req.user.id).order('created_at', { ascending: false });
-        res.json({ success: true, payments: payments || [] });
+        const userId = req.user.id;
+        const allPayments = [];
+        const seenOrderIds = new Set();
+
+        // 1. Fetch Supabase payment_orders
+        try {
+            const { data: sbOrders } = await supabase
+                .from('payment_orders')
+                .select('*')
+                .eq('user_id', userId)
+                .order('created_at', { ascending: false });
+
+            if (sbOrders && sbOrders.length > 0) {
+                for (const item of sbOrders) {
+                    const orderId = item.order_id || item.id;
+                    if (orderId) seenOrderIds.add(orderId);
+
+                    let title = 'Payment';
+                    let type = item.plan_type || 'payment';
+                    if (type === 'donation') {
+                        title = 'Humanitarian Relief Donation';
+                    } else if (['noble', 'royal'].includes(type?.toLowerCase())) {
+                        title = `${type.toUpperCase()} Subscription Plan`;
+                    } else {
+                        title = `${type.toUpperCase()} Payment`;
+                    }
+
+                    let normStatus = 'PENDING';
+                    const rawStatus = (item.status || '').toLowerCase();
+                    if (['completed', 'paid', 'success'].includes(rawStatus)) {
+                        normStatus = 'SUCCESS';
+                    } else if (['failed', 'cancelled'].includes(rawStatus)) {
+                        normStatus = 'FAILED';
+                    } else {
+                        normStatus = 'ATTEMPTED';
+                    }
+
+                    allPayments.push({
+                        orderId: orderId,
+                        type: type,
+                        title: title,
+                        amount: item.amount || 0,
+                        status: normStatus,
+                        rawStatus: item.status,
+                        createdAt: item.created_at || new Date().toISOString()
+                    });
+                }
+            }
+        } catch (sbErr) {
+            console.warn('⚠️ Error fetching payment_orders from Supabase:', sbErr.message);
+        }
+
+        // 2. Fetch FundDonation from MongoDB
+        try {
+            const mongoDonations = await FundDonation.find({ userId }).lean();
+            for (const don of mongoDonations) {
+                const orderId = don.orderId || don._id.toString();
+                let normStatus = 'PENDING';
+                const rawStatus = (don.paymentStatus || '').toUpperCase();
+                if (rawStatus === 'PAID') {
+                    normStatus = 'SUCCESS';
+                } else if (rawStatus === 'FAILED') {
+                    normStatus = 'FAILED';
+                } else {
+                    normStatus = 'ATTEMPTED';
+                }
+
+                const existingIdx = allPayments.findIndex(p => p.orderId === orderId);
+                if (existingIdx !== -1) {
+                    if (normStatus === 'SUCCESS') {
+                        allPayments[existingIdx].status = 'SUCCESS';
+                    }
+                    allPayments[existingIdx].donorName = don.donorName;
+                } else {
+                    seenOrderIds.add(orderId);
+                    allPayments.push({
+                        orderId: orderId,
+                        type: 'donation',
+                        title: 'Humanitarian Relief Donation',
+                        amount: don.amount || 0,
+                        status: normStatus,
+                        rawStatus: don.paymentStatus,
+                        donorName: don.donorName,
+                        createdAt: don.createdAt || new Date().toISOString()
+                    });
+                }
+            }
+        } catch (mongoErr) {
+            console.warn('⚠️ Error fetching FundDonation from MongoDB:', mongoErr.message);
+        }
+
+        // 3. Fetch shop_orders from Supabase
+        try {
+            const { data: shopOrders } = await supabase
+                .from('shop_orders')
+                .select('*')
+                .eq('user_id', userId)
+                .order('created_at', { ascending: false });
+
+            if (shopOrders && shopOrders.length > 0) {
+                for (const shopOrd of shopOrders) {
+                    const orderId = shopOrd.order_id || shopOrd.id;
+                    if (seenOrderIds.has(orderId)) {
+                        const existingIdx = allPayments.findIndex(p => p.orderId === orderId);
+                        if (existingIdx !== -1) {
+                            allPayments[existingIdx].type = 'shop';
+                            allPayments[existingIdx].title = 'VibeShop Order';
+                        }
+                    } else {
+                        seenOrderIds.add(orderId);
+                        let normStatus = 'PENDING';
+                        const rawStatus = (shopOrd.status || '').toLowerCase();
+                        if (['paid', 'completed', 'success'].includes(rawStatus)) {
+                            normStatus = 'SUCCESS';
+                        } else if (['failed', 'cancelled'].includes(rawStatus)) {
+                            normStatus = 'FAILED';
+                        } else {
+                            normStatus = 'ATTEMPTED';
+                        }
+
+                        allPayments.push({
+                            orderId: orderId,
+                            type: 'shop',
+                            title: 'VibeShop Order',
+                            amount: shopOrd.total_amount || 0,
+                            status: normStatus,
+                            rawStatus: shopOrd.status,
+                            createdAt: shopOrd.created_at || new Date().toISOString()
+                        });
+                    }
+                }
+            }
+        } catch (shopErr) {
+            console.warn('⚠️ Error fetching shop_orders from Supabase:', shopErr.message);
+        }
+
+        // Sort all payments by createdAt descending
+        allPayments.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+        res.json({ success: true, payments: allPayments });
     } catch (error) {
-        res.status(500).json({ error: 'Failed to fetch payment history' });
+        console.error('❌ Fetch payment history error:', error.message);
+        res.status(500).json({ success: false, error: 'Failed to fetch payment history' });
     }
 });
 
 // ══════════════════════════════════════════════════════════════
 // HUMANITARIAN FUNDRAISING & DONATION ENDPOINTS
 // ══════════════════════════════════════════════════════════════
+
+// Helper function to resolve donor display name reliably for all users
+function resolveDonorDisplayName(user) {
+    if (!user) return 'Viber Hero';
+    const name = user.username || user.full_name || user.name || user.display_name;
+    if (name && name.toString().trim().length > 0) {
+        return name.toString().trim();
+    }
+    if (user.email && user.email.includes('@')) {
+        const parts = user.email.split('@');
+        if (parts[0] && parts[0].trim().length > 0) {
+            return parts[0].trim();
+        }
+    }
+    return 'Viber Hero';
+}
 
 // 1. Get Active Fundraiser Campaign & Recent Donors List
 app.get('/api/fundraiser/active', authenticateToken, async (req, res) => {
@@ -1481,13 +1636,19 @@ app.get('/api/fundraiser/active', authenticateToken, async (req, res) => {
             }
         }
 
-        // Fetch top 20 recent paid donations if campaign exists
+        // Fetch recent paid donations if campaign exists
         let donations = [];
         if (campaign) {
             donations = await FundDonation.find({
                 campaignId: campaign._id,
                 paymentStatus: 'PAID'
-            }).sort({ createdAt: -1 }).limit(20).lean();
+            }).sort({ createdAt: -1 }).limit(50).lean();
+
+            // Enrich donor names to guarantee every donor is named properly
+            donations = donations.map(d => ({
+                ...d,
+                donorName: (d.donorName && d.donorName.trim().length > 0) ? d.donorName.trim() : 'Viber Hero'
+            }));
         }
 
         const isAdmin = isAdminUser(req.user);
@@ -1556,7 +1717,7 @@ app.post('/api/fundraiser/create-or-update', authenticateToken, async (req, res)
     }
 });
 
-// 3. User Donation Order Creation (Razorpay - Custom Amount)
+// 3. User Donation Order Creation (Razorpay - Custom Amount) - Allowed for ANY user
 app.post('/api/fundraiser/donate/create-order', authenticateToken, async (req, res) => {
     try {
         const { amount, campaignId } = req.body;
@@ -1573,7 +1734,7 @@ app.post('/api/fundraiser/donate/create-order', authenticateToken, async (req, r
             return res.status(404).json({ success: false, error: 'No active fundraiser campaign found' });
         }
 
-        const donorName = req.user.username || req.user.email.split('@')[0];
+        const donorName = resolveDonorDisplayName(req.user);
 
         // Create Razorpay Order
         const options = {
@@ -1657,6 +1818,14 @@ app.post('/api/fundraiser/donate/verify', authenticateToken, async (req, res) =>
             return res.status(400).json({ success: false, error: 'Payment signature verification failed' });
         }
 
+        // Ensure donorName & donorAvatar are set
+        if (!donation.donorName || donation.donorName === 'Anonymous User' || donation.donorName.trim() === '') {
+            donation.donorName = resolveDonorDisplayName(req.user);
+        }
+        if (!donation.donorAvatar) {
+            donation.donorAvatar = req.user.profile_pic || null;
+        }
+
         // Mark donation PAID
         donation.paymentStatus = 'PAID';
         donation.paymentId = razorpay_payment_id;
@@ -1728,10 +1897,15 @@ app.get('/api/fundraiser/donations', authenticateToken, async (req, res) => {
         const filter = { paymentStatus: 'PAID' };
         if (campaignId) filter.campaignId = campaignId;
 
-        const donations = await FundDonation.find(filter)
+        let donations = await FundDonation.find(filter)
             .sort({ createdAt: -1 })
-            .limit(50)
+            .limit(100)
             .lean();
+
+        donations = donations.map(d => ({
+            ...d,
+            donorName: (d.donorName && d.donorName.trim().length > 0) ? d.donorName.trim() : 'Viber Hero'
+        }));
 
         res.json({
             success: true,
