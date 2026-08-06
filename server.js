@@ -7529,7 +7529,7 @@ app.get('/post/:postId', async (req, res) => {
         const playStoreUrl = `https://play.google.com/store/apps/details?id=com.vibexpert.app&referrer=deep_link%3D${encodedDeepLink}`;
         const escapedContent = contentSnippet.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         const customSchemeUrl = `vibexpert://post/${postId}`;
-        const androidIntentUrl = `intent://post/${postId}#Intent;scheme=vibexpert;package=com.vibexpert.app;S.browser_fallback_url=${encodeURIComponent(playStoreUrl)};end`;
+        const androidIntentUrl = `intent://post/${postId}#Intent;scheme=vibexpert;package=com.vibexpert.app;S.browser_fallback_url=${encodeURIComponent(playStoreUrl)};end;`;
 
         const html = `<!DOCTYPE html>
 <html lang="en">
@@ -7589,7 +7589,7 @@ app.get('/post/:postId', async (req, res) => {
         <div class="logo">Vibe<span>Xpert</span> ⚡</div>
         <h2>Check out @${authorName}'s vibe!</h2>
         <div class="caption">"${contentSnippet.replace(/</g, '&lt;').replace(/>/g, '&gt;')}"</div>
-        <a href="${customSchemeUrl}" class="btn btn-primary" onclick="window.location.href='${customSchemeUrl}';">Open in VibeXpert App</a>
+        <a href="${androidIntentUrl}" class="btn btn-primary" onclick="window.location.href='${androidIntentUrl}';">Open in VibeXpert App</a>
         <a href="${playStoreUrl}" class="btn btn-secondary">Get on Google Play Store</a>
     </div>
     <script>
@@ -7597,24 +7597,26 @@ app.get('/post/:postId', async (req, res) => {
             var schemeUrl = "${customSchemeUrl}";
             var intentUrl = "${androidIntentUrl}";
             var storeUrl = "${playStoreUrl}";
-            var start = Date.now();
+            var isPageHidden = false;
 
-            // 1. Try custom scheme first to open installed app directly
-            window.location.href = schemeUrl;
+            function handleVisibility() {
+                if (document.hidden || document.webkitHidden) isPageHidden = true;
+            }
+            document.addEventListener("visibilitychange", handleVisibility);
+            window.addEventListener("blur", function() { isPageHidden = true; });
 
-            // 2. Try Android intent after 500ms if custom scheme didn't handle it
+            var isAndroid = /Android/i.test(navigator.userAgent);
+            if (isAndroid) {
+                window.location.href = intentUrl;
+            } else {
+                window.location.href = schemeUrl;
+            }
+
             setTimeout(function() {
-                if (Date.now() - start < 2500) {
-                    window.location.href = intentUrl;
-                }
-            }, 500);
-
-            // 3. Fallback to Play Store after 2s if app is not installed
-            setTimeout(function() {
-                if (Date.now() - start < 3500) {
+                if (!isPageHidden) {
                     window.location.href = storeUrl;
                 }
-            }, 2200);
+            }, 3000);
         })();
     </script>
 </body>
@@ -7626,24 +7628,27 @@ app.get('/post/:postId', async (req, res) => {
 });
 
 // ──────────────────────────────────────────────────────────────
-// GET /profile/:username -> Smart Redirect + OG Preview Page
+// GET /profile/:username & /invite/:username -> Smart Redirect + OG Preview Page
 // ──────────────────────────────────────────────────────────────
-app.get('/profile/:username', async (req, res) => {
+const renderProfilePage = async (req, res) => {
     try {
         const { username } = req.params;
-        const canonicalUrl = `https://link.vibexpert.online/profile/${username}`;
-        let displayName = username;
+        const cleanUsername = (username || '').trim().replace(/^@/, '');
+        const canonicalUrl = `https://link.vibexpert.online/profile/${cleanUsername}`;
+        let displayName = cleanUsername;
         let bio = 'Check out this profile on VibeXpert!';
         let avatarUrl = 'https://link.vibexpert.online/assets/logo.png';
 
         // Fetch profile data for OG tags
         try {
+            const resolvedId = await resolveUserId(cleanUsername);
             const { data: user } = await supabase
                 .from('users')
                 .select('username, full_name, bio, profile_image')
-                .eq('username', username)
+                .eq('id', resolvedId)
                 .single();
             if (user) {
+                if (user.username) displayName = user.username;
                 if (user.full_name) displayName = user.full_name;
                 if (user.bio) bio = user.bio.substring(0, 200);
                 if (user.profile_image) avatarUrl = user.profile_image;
@@ -7652,8 +7657,8 @@ app.get('/profile/:username', async (req, res) => {
 
         const encodedDeepLink = encodeURIComponent(canonicalUrl);
         const playStoreUrl = `https://play.google.com/store/apps/details?id=com.vibexpert.app&referrer=deep_link%3D${encodedDeepLink}`;
-        const customSchemeUrl = `vibexpert://profile/${username}`;
-        const androidIntentUrl = `intent://profile/${username}#Intent;scheme=vibexpert;package=com.vibexpert.app;S.browser_fallback_url=${encodeURIComponent(playStoreUrl)};end`;
+        const customSchemeUrl = `vibexpert://profile/${cleanUsername}`;
+        const androidIntentUrl = `intent://profile/${cleanUsername}#Intent;scheme=vibexpert;package=com.vibexpert.app;S.browser_fallback_url=${encodeURIComponent(playStoreUrl)};end;`;
         const escapedBio = bio.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
         const html = `<!DOCTYPE html>
@@ -7661,15 +7666,15 @@ app.get('/profile/:username', async (req, res) => {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>@${username} on VibeXpert</title>
-    <meta property="og:title" content="${displayName} (@${username}) on VibeXpert ⚡">
+    <title>@${cleanUsername} on VibeXpert</title>
+    <meta property="og:title" content="${displayName} (@${cleanUsername}) on VibeXpert ⚡">
     <meta property="og:description" content="${escapedBio}">
     <meta property="og:image" content="${avatarUrl}">
     <meta property="og:url" content="${canonicalUrl}">
     <meta property="og:type" content="profile">
     <meta property="og:site_name" content="VibeXpert">
     <meta name="twitter:card" content="summary">
-    <meta name="twitter:title" content="${displayName} (@${username}) on VibeXpert ⚡">
+    <meta name="twitter:title" content="${displayName} (@${cleanUsername}) on VibeXpert ⚡">
     <meta name="twitter:description" content="${escapedBio}">
     <meta name="twitter:image" content="${avatarUrl}">
     <link rel="canonical" href="${canonicalUrl}">
@@ -7717,9 +7722,9 @@ app.get('/profile/:username', async (req, res) => {
 <body>
     <div class="card">
         <div class="logo">Vibe<span>Xpert</span> ⚡</div>
-        <h2>Check out @${username} on VibeXpert!</h2>
+        <h2>Check out @${cleanUsername} on VibeXpert!</h2>
         <p style="color: #ccc; margin-bottom: 24px;">View profile and shared vibes.</p>
-        <a href="${customSchemeUrl}" class="btn btn-primary" onclick="window.location.href='${customSchemeUrl}';">View Profile in App</a>
+        <a href="${androidIntentUrl}" class="btn btn-primary" onclick="window.location.href='${androidIntentUrl}';">View Profile in App</a>
         <a href="${playStoreUrl}" class="btn btn-secondary">Get on Google Play Store</a>
     </div>
     <script>
@@ -7727,24 +7732,26 @@ app.get('/profile/:username', async (req, res) => {
             var schemeUrl = "${customSchemeUrl}";
             var intentUrl = "${androidIntentUrl}";
             var storeUrl = "${playStoreUrl}";
-            var start = Date.now();
+            var isPageHidden = false;
 
-            // 1. Try custom scheme first to open installed app directly
-            window.location.href = schemeUrl;
+            function handleVisibility() {
+                if (document.hidden || document.webkitHidden) isPageHidden = true;
+            }
+            document.addEventListener("visibilitychange", handleVisibility);
+            window.addEventListener("blur", function() { isPageHidden = true; });
 
-            // 2. Try Android intent after 500ms if custom scheme didn't handle it
+            var isAndroid = /Android/i.test(navigator.userAgent);
+            if (isAndroid) {
+                window.location.href = intentUrl;
+            } else {
+                window.location.href = schemeUrl;
+            }
+
             setTimeout(function() {
-                if (Date.now() - start < 2500) {
-                    window.location.href = intentUrl;
-                }
-            }, 500);
-
-            // 3. Fallback to Play Store after 2s if app is not installed
-            setTimeout(function() {
-                if (Date.now() - start < 3500) {
+                if (!isPageHidden) {
                     window.location.href = storeUrl;
                 }
-            }, 2200);
+            }, 3000);
         })();
     </script>
 </body>
@@ -7753,7 +7760,10 @@ app.get('/profile/:username', async (req, res) => {
     } catch (err) {
         res.redirect('https://play.google.com/store/apps/details?id=com.vibexpert.app');
     }
-});
+};
+
+app.get('/profile/:username', renderProfilePage);
+app.get('/invite/:username', renderProfilePage);
 
 // ══════════════════════════════════════════════════════════════
 // ERROR HANDLING
