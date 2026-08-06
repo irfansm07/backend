@@ -1919,6 +1919,10 @@ app.get('/api/fundraiser/donations', authenticateToken, async (req, res) => {
 
 app.get('/api/subscription/status', authenticateToken, async (req, res) => {
     try {
+        // ── Admin bypass: always return active premium status ──
+        if (isAdminUser(req.user)) {
+            return res.json({ success: true, isAdmin: true, subscription: { status: 'active', plan: 'Admin VIP Pass', startDate: new Date().toISOString(), endDate: '2099-12-31T23:59:59.000Z', postersQuota: 999, videosQuota: 999, daysRemaining: 99999 } });
+        }
         const { data: user } = await supabase.from('users')
             .select('subscription_plan,subscription_start,subscription_end,is_premium,posters_quota,videos_quota')
             .eq('id', req.user.id).single();
@@ -6942,16 +6946,18 @@ app.get('/api/realvibes', authenticateToken, async (req, res) => {
 // POST create realvibe — premium only, Cloudinary
 app.post('/api/realvibes', authenticateToken, upload.single('media'), async (req, res) => {
     try {
-        if (!req.user.is_premium || !req.user.subscription_plan) return res.status(403).json({ error: 'Premium subscription required', code: 'PREMIUM_REQUIRED' });
-        if (req.user.subscription_end && new Date(req.user.subscription_end) < new Date()) return res.status(403).json({ error: 'Subscription expired', code: 'SUBSCRIPTION_EXPIRED' });
+        // ── Admin bypass: skip premium/subscription checks ──
+        if (!isAdminUser(req.user)) {
+            if (!req.user.is_premium || !req.user.subscription_plan) return res.status(403).json({ error: 'Premium subscription required', code: 'PREMIUM_REQUIRED' });
+            if (req.user.subscription_end && new Date(req.user.subscription_end) < new Date()) return res.status(403).json({ error: 'Subscription expired', code: 'SUBSCRIPTION_EXPIRED' });
+        }
         if (!req.file) return res.status(400).json({ error: 'Media file required' });
         const { caption = '', visibility = 'public', brand_link = '', brand_link_type = 'website' } = req.body;
-        const plan = req.user.subscription_plan;
+        const plan = isAdminUser(req.user) ? 'royal' : req.user.subscription_plan;
         const isVideo = req.file.mimetype.startsWith('video/');
-        const photoQuota = 5; // noble and royal both allow 5 photos
-        const videoQuota = plan === 'royal' ? 3 : 1;
-        if (isVideo) {
-            const videoQuota = plan === 'royal' ? 4 : 1; // Updated to match app plans
+        // Admin users skip all quota checks
+        if (!isAdminUser(req.user) && isVideo) {
+            const videoQuota = plan === 'royal' ? 4 : 1;
             const videoCount = await RealVibe.countDocuments({ userId: req.user.id, mediaType: 'video', status: { $ne: 'rejected' } });
             if (videoCount >= videoQuota) return res.status(403).json({ error: `Video quota reached (${videoQuota} for ${plan} plan)`, code: 'QUOTA_EXCEEDED' });
         }
@@ -6979,7 +6985,10 @@ app.post('/api/realvibes', authenticateToken, upload.single('media'), async (req
 app.delete('/api/realvibes/:vibeId', authenticateToken, async (req, res) => {
     try {
         const vibe = await RealVibe.findById(req.params.vibeId);
-        if (!vibe || vibe.userId !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
+        if (!vibe) return res.status(404).json({ error: 'RealVibe not found' });
+        // Allow the vibe owner OR any admin to delete
+        const isOwner = vibe.userId.toString() === req.user.id.toString();
+        if (!isOwner && !isAdminUser(req.user)) return res.status(403).json({ error: 'Not authorized' });
         await RealVibe.deleteOne({ _id: vibe._id });
         await RealVibeLike.deleteMany({ vibeId: vibe._id });
         await RealVibeComment.deleteMany({ vibeId: vibe._id });
