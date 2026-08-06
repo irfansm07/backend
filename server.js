@@ -4495,7 +4495,9 @@ app.delete('/api/user/cover-photo', authenticateToken, async (req, res) => {
 
 app.post('/api/follow/:userId', authenticateToken, async (req, res) => {
     try {
-        const { userId } = req.params;
+        const rawUserId = req.params.userId;
+        const userId = await resolveUserId(rawUserId);
+        if (!userId) return res.status(404).json({ error: 'User not found' });
         if (userId === req.user.id) return res.status(400).json({ error: 'Cannot follow yourself' });
         const { error } = await supabase.from('followers').insert([{ follower_id: req.user.id, following_id: userId }]);
         if (error) {
@@ -4512,20 +4514,20 @@ app.post('/api/follow/:userId', authenticateToken, async (req, res) => {
         if (targetSocketId) {
             targetSocketId.forEach(sid => io.to(sid).emit('new_follow', { followerId: req.user.id, followerUsername: req.user.username, followerProfilePic: req.user.profile_pic || null, followingId: userId, newFollowersCount: tf || 0 }));
         }
-        // Push notification
         // Push notification to the person being followed
         await pushNotification(userId, { type: 'new_follow', message: `${req.user.username} started following you`, from: req.user.id, fromUsername: req.user.username, fromPic: req.user.profile_pic || null });
-        // BUG FIX (BUG-29): Removed self-notification that inflated the actor's own unread badge count.
-        // Activity logging should use a separate feed, not the notification inbox.
         res.json({ success: true, isFollowing: true, targetFollowersCount: tf || 0, myFollowingCount: mf || 0 });
     } catch (error) {
+        console.error('Follow error:', error);
         res.status(500).json({ error: 'Failed to follow user' });
     }
 });
 
 app.post('/api/unfollow/:userId', authenticateToken, async (req, res) => {
     try {
-        const { userId } = req.params;
+        const rawUserId = req.params.userId;
+        const userId = await resolveUserId(rawUserId);
+        if (!userId) return res.status(404).json({ error: 'User not found' });
         await supabase.from('followers').delete().eq('follower_id', req.user.id).eq('following_id', userId);
         const { count: tf } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId);
         const { count: mf } = await supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', req.user.id);
@@ -4535,13 +4537,16 @@ app.post('/api/unfollow/:userId', authenticateToken, async (req, res) => {
         }
         res.json({ success: true, isFollowing: false, targetFollowersCount: tf || 0, myFollowingCount: mf || 0 });
     } catch (error) {
+        console.error('Unfollow error:', error);
         res.status(500).json({ error: 'Failed to unfollow user' });
     }
 });
 
 app.get('/api/followers/:userId', authenticateToken, async (req, res) => {
     try {
-        const { userId } = req.params;
+        const rawUserId = req.params.userId;
+        const userId = await resolveUserId(rawUserId);
+        if (!userId) return res.status(404).json({ error: 'User not found' });
         const { data: followerRows, error } = await supabase.from('followers').select('follower_id,created_at').eq('following_id', userId).order('created_at', { ascending: false });
         if (error) throw error;
         if (!followerRows || followerRows.length === 0) return res.json({ success: true, users: [], count: 0 });
@@ -4554,13 +4559,16 @@ app.get('/api/followers/:userId', authenticateToken, async (req, res) => {
         const result = followerRows.filter(r => userMap[r.follower_id]).map(r => ({ ...userMap[r.follower_id], followedAt: r.created_at, isFollowedByMe: myFollowingSet.has(r.follower_id) }));
         res.json({ success: true, users: result, count: result.length });
     } catch (error) {
+        console.error('Followers error:', error);
         res.status(500).json({ error: 'Failed to fetch followers' });
     }
 });
 
 app.get('/api/following/:userId', authenticateToken, async (req, res) => {
     try {
-        const { userId } = req.params;
+        const rawUserId = req.params.userId;
+        const userId = await resolveUserId(rawUserId);
+        if (!userId) return res.status(404).json({ error: 'User not found' });
         const { data: followingRows, error } = await supabase.from('followers').select('following_id,created_at').eq('follower_id', userId).order('created_at', { ascending: false });
         if (error) throw error;
         if (!followingRows || followingRows.length === 0) return res.json({ success: true, users: [], count: 0 });
@@ -4573,6 +4581,7 @@ app.get('/api/following/:userId', authenticateToken, async (req, res) => {
         const result = followingRows.filter(r => userMap[r.following_id]).map(r => ({ ...userMap[r.following_id], followedAt: r.created_at, isFollowedByMe: myFollowingSet.has(r.following_id) }));
         res.json({ success: true, users: result, count: result.length });
     } catch (error) {
+        console.error('Following error:', error);
         res.status(500).json({ error: 'Failed to fetch following' });
     }
 });
@@ -4661,6 +4670,31 @@ app.get('/api/referral-count', authenticateToken, async (req, res) => {
     } catch (error) {
         console.error('Referral count error:', error);
         res.json({ success: true, referralCount: 0 });
+    }
+});
+
+app.get('/api/referrals', authenticateToken, async (req, res) => {
+    try {
+        const { data: userData } = await supabase
+            .from('users')
+            .select('referral_count')
+            .eq('id', req.user.id)
+            .maybeSingle();
+
+        const { data: referredUsers } = await supabase
+            .from('users')
+            .select('id,username,profile_pic,created_at')
+            .eq('referred_by', req.user.id)
+            .order('created_at', { ascending: false });
+
+        res.json({
+            success: true,
+            referralCount: userData?.referral_count || (referredUsers ? referredUsers.length : 0),
+            referredUsers: referredUsers || []
+        });
+    } catch (error) {
+        console.error('Referrals fetch error:', error);
+        res.status(500).json({ success: false, referralCount: 0, referredUsers: [], error: 'Failed to fetch referrals' });
     }
 });
 
