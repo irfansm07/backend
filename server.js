@@ -4249,8 +4249,6 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
             isBlockingMe = !!theyBlockedMe;
         } catch (_) { }
 
-        if (userResult.error || !user) return res.status(404).json({ error: 'User not found' });
-
         // Get post count from MongoDB — won't crash profile if Mongo is down
         let postCount = 0;
         try { postCount = await Post.countDocuments({ userId }); } catch (_) { }
