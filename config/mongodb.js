@@ -355,6 +355,22 @@ const fundDonationSchema = new mongoose.Schema({
 
 fundDonationSchema.index({ campaignId: 1, paymentStatus: 1, createdAt: -1 });
 
+// ── Shop Banners (Admin Promotions) ─────────────
+const shopBannerSchema = new mongoose.Schema({
+    title: { type: String, required: true },
+    subtitle: { type: String, default: '' },
+    imageUrl: { type: String, default: null }, // Optional Cloudinary banner image
+    imagePublicId: { type: String, default: null },
+    ctaText: { type: String, default: 'Learn More' },
+    ctaLink: { type: String, default: '' },
+    tagText: { type: String, default: 'PROMOTION' },
+    bgGradient: { type: [String], default: ['#141E30', '#243B55'] },
+    isActive: { type: Boolean, default: true, index: true },
+    createdBy: { type: String, required: true }
+}, { timestamps: true });
+
+shopBannerSchema.index({ isActive: 1, createdAt: -1 });
+
 // ── Models ────────────────────────────────────────────────────
 const Post = mongoose.models.Post || mongoose.model('Post', postSchema);
 const PostLike = mongoose.models.PostLike || mongoose.model('PostLike', postLikeSchema);
@@ -381,6 +397,7 @@ const FcmToken = mongoose.models.FcmToken || mongoose.model('FcmToken', fcmToken
 const Contest = mongoose.models.Contest || mongoose.model('Contest', contestSchema);
 const FundCampaign = mongoose.models.FundCampaign || mongoose.model('FundCampaign', fundCampaignSchema);
 const FundDonation = mongoose.models.FundDonation || mongoose.model('FundDonation', fundDonationSchema);
+const ShopBanner = mongoose.models.ShopBanner || mongoose.model('ShopBanner', shopBannerSchema);
 
 module.exports = {
     connectMongo,
@@ -408,5 +425,6 @@ module.exports = {
     FcmToken,
     Contest,
     FundCampaign,
-    FundDonation
+    FundDonation,
+    ShopBanner
 };

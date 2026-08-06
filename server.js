@@ -34,7 +34,7 @@ const {
     ClientRequest, ClientProduct, OrderMessage,
     Complaint, Coupon, ProductReview, CollegeRequest,
     Block, CombineRequest, PartnerLink, PinnedMessage,
-    FcmToken, Contest, FundCampaign, FundDonation
+    FcmToken, Contest, FundCampaign, FundDonation, ShopBanner
 } = require('./config/mongodb');
 const redis = require('./config/redis');
 
@@ -7239,6 +7239,94 @@ app.get('/api/realvibes/my-submissions', authenticateToken, async (req, res) => 
         const vibes = await RealVibe.find({ userId: req.user.id }).sort({ createdAt: -1 }).select('id caption mediaUrl mediaType status rejectionReason createdAt expiresAt');
         res.json({ success: true, vibes: vibes.map(v => ({ ...v.toObject(), id: v._id.toString() })) });
     } catch (err) { res.status(500).json({ error: 'Failed to load your submissions' }); }
+});
+
+// ══════════════════════════════════════════════════════════════
+// SHOP BANNERS / ADMIN PROMOTIONS ENDPOINTS
+// ══════════════════════════════════════════════════════════════
+
+// GET /api/shop/banners — get active promotional banners for shop carousel
+app.get('/api/shop/banners', async (req, res) => {
+    try {
+        const banners = await ShopBanner.find({ isActive: true }).sort({ createdAt: -1 });
+        res.json({
+            success: true,
+            banners: banners.map(b => ({
+                id: b._id.toString(),
+                title: b.title,
+                subtitle: b.subtitle,
+                imageUrl: b.imageUrl,
+                ctaText: b.ctaText,
+                ctaLink: b.ctaLink,
+                tagText: b.tagText,
+                bgGradient: b.bgGradient,
+                createdAt: b.createdAt
+            }))
+        });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch shop banners' });
+    }
+});
+
+// POST /api/admin/shop/banners — create banner (admin only, optional Cloudinary image upload)
+app.post('/api/admin/shop/banners', authenticateToken, upload.single('image'), async (req, res) => {
+    try {
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied. Admin only.' });
+
+        const { title, subtitle = '', ctaText = 'Learn More', ctaLink = '', tagText = 'PROMOTION', bgGradient } = req.body;
+        if (!title || !title.trim()) return res.status(400).json({ error: 'Banner title is required' });
+
+        let imageUrl = req.body.imageUrl || null;
+        let imagePublicId = null;
+
+        if (req.file) {
+            const uploadRes = await uploadToCloudinary(req.file.buffer, req.file.mimetype, 'vibexpert/shop_banners');
+            imageUrl = uploadRes.secure_url;
+            imagePublicId = uploadRes.public_id;
+        }
+
+        let parsedGradient = ['#141E30', '#243B55'];
+        if (bgGradient) {
+            try {
+                parsedGradient = typeof bgGradient === 'string' ? JSON.parse(bgGradient) : bgGradient;
+            } catch (e) {
+                if (typeof bgGradient === 'string' && bgGradient.includes(',')) {
+                    parsedGradient = bgGradient.split(',').map(s => s.trim());
+                }
+            }
+        }
+
+        const banner = await ShopBanner.create({
+            title: title.trim(),
+            subtitle: subtitle.trim(),
+            imageUrl,
+            imagePublicId,
+            ctaText: ctaText.trim() || 'Learn More',
+            ctaLink: ctaLink.trim(),
+            tagText: tagText.trim() || 'PROMOTION',
+            bgGradient: parsedGradient,
+            createdBy: req.user.id
+        });
+
+        res.json({ success: true, banner: { ...banner.toObject(), id: banner._id.toString() }, message: 'Banner created successfully!' });
+    } catch (error) {
+        console.error('❌ Error creating shop banner:', error);
+        res.status(500).json({ error: 'Failed to create shop banner: ' + error.message });
+    }
+});
+
+// DELETE /api/admin/shop/banners/:id — delete banner (admin only)
+app.delete('/api/admin/shop/banners/:id', authenticateToken, async (req, res) => {
+    try {
+        if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied. Admin only.' });
+        const banner = await ShopBanner.findById(req.params.id);
+        if (!banner) return res.status(404).json({ error: 'Banner not found' });
+
+        await ShopBanner.deleteOne({ _id: banner._id });
+        res.json({ success: true, message: 'Banner deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to delete banner' });
+    }
 });
 
 // ══════════════════════════════════════════════════════════════
