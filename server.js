@@ -4161,6 +4161,8 @@ app.post('/api/combine/disconnect', authenticateToken, async (req, res) => {
 async function resolveUserId(identifier) {
     if (!identifier) return null;
     let clean = identifier.trim();
+    try { clean = decodeURIComponent(clean); } catch (_) { }
+    clean = clean.trim();
     if (clean.startsWith('@')) clean = clean.substring(1).trim();
     if (!clean) return null;
 
@@ -4170,7 +4172,12 @@ async function resolveUserId(identifier) {
     }
 
     try {
-        const { data: u } = await supabase.from('users').select('id').ilike('username', clean).maybeSingle();
+        const { data: u } = await supabase.from('users').select('id').ilike('username', clean).limit(1).maybeSingle();
+        if (u && u.id) return u.id;
+    } catch (_) { }
+
+    try {
+        const { data: u } = await supabase.from('users').select('id').ilike('username', `@${clean}`).limit(1).maybeSingle();
         if (u && u.id) return u.id;
     } catch (_) { }
 
@@ -4179,13 +4186,26 @@ async function resolveUserId(identifier) {
 
 app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
     try {
-        const resolvedId = await resolveUserId(req.params.userId);
+        const rawUserId = req.params.userId;
+        const resolvedId = await resolveUserId(rawUserId);
         if (!resolvedId) return res.status(404).json({ error: 'User not found' });
-        const userId = resolvedId;
+
+        const isUuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(resolvedId);
+        let initialUser = null;
+
+        if (isUuid) {
+            const { data } = await supabase.from('users').select('id,username,email,registration_number,college,profile_pic,cover_photo,bio,badges,community_joined,created_at,note').eq('id', resolvedId).maybeSingle();
+            initialUser = data;
+        } else {
+            const { data } = await supabase.from('users').select('id,username,email,registration_number,college,profile_pic,cover_photo,bio,badges,community_joined,created_at,note').ilike('username', resolvedId).maybeSingle();
+            initialUser = data;
+        }
+
+        if (!initialUser) return res.status(404).json({ error: 'User not found' });
+        const userId = initialUser.id; // Use resolved UUID for all stats queries
 
         // Use allSettled so a missing/broken table (e.g. profile_likes) never crashes the whole endpoint
-        const [userRes, followersRes, followingRes, isFollowingRes, isFollowedByRes, likeCountRes, isLikedRes] = await Promise.allSettled([
-            supabase.from('users').select('id,username,email,registration_number,college,profile_pic,cover_photo,bio,badges,community_joined,created_at,note').eq('id', userId).single(),
+        const [followersRes, followingRes, isFollowingRes, isFollowedByRes, likeCountRes, isLikedRes] = await Promise.allSettled([
             supabase.from('followers').select('id', { count: 'exact', head: true }).eq('following_id', userId),
             supabase.from('followers').select('id', { count: 'exact', head: true }).eq('follower_id', userId),
             supabase.from('followers').select('id').eq('follower_id', req.user.id).eq('following_id', userId).maybeSingle(),
@@ -4194,8 +4214,6 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
             supabase.from('profile_likes').select('id').eq('user_id', userId).eq('liker_id', req.user.id).maybeSingle()
         ]);
 
-        // Safely extract each result (fulfilled → .value, rejected → null/0 fallback)
-        const userResult = userRes.status === 'fulfilled' ? userRes.value : { data: null, error: true };
         const followersCount = followersRes.status === 'fulfilled' ? (followersRes.value.count || 0) : 0;
         const followingCount = followingRes.status === 'fulfilled' ? (followingRes.value.count || 0) : 0;
         const isFollowingData = isFollowingRes.status === 'fulfilled' ? isFollowingRes.value.data : null;
@@ -4203,7 +4221,7 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
         const profileLikes = likeCountRes.status === 'fulfilled' ? (likeCountRes.value.count || 0) : 0;
         const isLikedData = isLikedRes.status === 'fulfilled' ? isLikedRes.value.data : null;
 
-        const user = userResult.data;
+        const user = initialUser;
 
         // Fetch partner details if linked
         let partner = null;
