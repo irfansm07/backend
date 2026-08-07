@@ -7245,14 +7245,14 @@ app.get('/api/realvibes/my-submissions', authenticateToken, async (req, res) => 
 // SHOP BANNERS / ADMIN PROMOTIONS ENDPOINTS
 // ══════════════════════════════════════════════════════════════
 
-// GET /api/shop/banners — get active promotional banners for shop carousel
-app.get('/api/shop/banners', async (req, res) => {
+const handleGetBanners = async (req, res) => {
     try {
         const banners = await ShopBanner.find({ isActive: true }).sort({ createdAt: -1 });
         res.json({
             success: true,
             banners: banners.map(b => ({
                 id: b._id.toString(),
+                _id: b._id.toString(),
                 title: b.title,
                 subtitle: b.subtitle,
                 imageUrl: b.imageUrl,
@@ -7266,10 +7266,13 @@ app.get('/api/shop/banners', async (req, res) => {
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch shop banners' });
     }
-});
+};
 
-// POST /api/admin/shop/banners — create banner (admin only, optional Cloudinary image upload)
-app.post('/api/admin/shop/banners', authenticateToken, upload.single('image'), async (req, res) => {
+app.get('/api/shop/banners', handleGetBanners);
+app.get('/api/banners', handleGetBanners);
+app.get('/api/admin/banners', handleGetBanners);
+
+const handleCreateBanner = async (req, res) => {
     try {
         if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied. Admin only.' });
 
@@ -7308,15 +7311,18 @@ app.post('/api/admin/shop/banners', authenticateToken, upload.single('image'), a
             createdBy: req.user.id
         });
 
-        res.json({ success: true, banner: { ...banner.toObject(), id: banner._id.toString() }, message: 'Banner created successfully!' });
+        const bannerObj = { ...banner.toObject(), id: banner._id.toString(), _id: banner._id.toString() };
+        res.json({ success: true, banner: bannerObj, message: 'Banner created successfully!' });
     } catch (error) {
         console.error('❌ Error creating shop banner:', error);
         res.status(500).json({ error: 'Failed to create shop banner: ' + error.message });
     }
-});
+};
 
-// DELETE /api/admin/shop/banners/:id — delete banner (admin only)
-app.delete('/api/admin/shop/banners/:id', authenticateToken, async (req, res) => {
+app.post('/api/admin/shop/banners', authenticateToken, upload.single('image'), handleCreateBanner);
+app.post('/api/admin/banners', authenticateToken, upload.single('image'), handleCreateBanner);
+
+const handleDeleteBanner = async (req, res) => {
     try {
         if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Access denied. Admin only.' });
         const banner = await ShopBanner.findById(req.params.id);
@@ -7327,7 +7333,10 @@ app.delete('/api/admin/shop/banners/:id', authenticateToken, async (req, res) =>
     } catch (error) {
         res.status(500).json({ error: 'Failed to delete banner' });
     }
-});
+};
+
+app.delete('/api/admin/shop/banners/:id', authenticateToken, handleDeleteBanner);
+app.delete('/api/admin/banners/:id', authenticateToken, handleDeleteBanner);
 
 // ══════════════════════════════════════════════════════════════
 // EXECUTIVE CHAT — Supabase + Cloudinary
