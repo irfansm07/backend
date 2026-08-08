@@ -453,14 +453,56 @@ const uploadToCloudinaryDirect = (fileBuffer, mimeType, folder = 'vibexpert/gene
     });
 };
 
-// Primary upload function: Tries Cloudinary first, falls back to Supabase Storage
+// ImgBB Fallback Upload Helper (Free Image Storage)
+const uploadToImgBB = async (fileBuffer, mimeType) => {
+    const apiKey = process.env.IMGBB_API_KEY;
+    if (!apiKey) {
+        throw new Error('IMGBB_API_KEY is not configured in environment variables');
+    }
+    const base64Data = fileBuffer.toString('base64');
+    const FormData = require('form-data');
+    const form = new FormData();
+    form.append('image', base64Data);
+
+    const response = await axios.post(`https://api.imgbb.com/1/upload?key=${apiKey}`, form, {
+        headers: form.getHeaders(),
+        timeout: 15000
+    });
+
+    if (response.data && response.data.data && response.data.data.url) {
+        return {
+            secure_url: response.data.data.url,
+            url: response.data.data.url,
+            public_id: response.data.data.id || `imgbb_${Date.now()}`
+        };
+    }
+    throw new Error('Invalid or unexpected response structure from ImgBB API');
+};
+
+// Multi-tier Media Upload Strategy:
+// 1. Primary Cloudinary Account
+// 2. Secondary ImgBB Account (for images if IMGBB_API_KEY is configured)
+// 3. Supabase Storage (Safety Net Fallback)
 const uploadToCloudinary = async (fileBuffer, mimeType, folder = 'vibexpert/general') => {
     try {
         const result = await uploadToCloudinaryDirect(fileBuffer, mimeType, folder);
-        console.log(`✅ Media successfully uploaded to Cloudinary [${folder}]: ${result.secure_url}`);
+        console.log(`✅ Media successfully uploaded to Primary Cloudinary [${folder}]: ${result.secure_url}`);
         return result;
     } catch (cloudErr) {
-        console.warn(`⚠️ Cloudinary Storage failed (${cloudErr.message}). Falling back to Supabase Storage...`);
+        console.warn(`⚠️ Primary Cloudinary failed (${cloudErr.message}). Checking secondary fallbacks...`);
+
+        // Tier 2: Try ImgBB if it's an image and IMGBB_API_KEY is configured
+        if (process.env.IMGBB_API_KEY && mimeType && mimeType.startsWith('image/')) {
+            try {
+                const imgbbResult = await uploadToImgBB(fileBuffer, mimeType);
+                console.log(`✅ Media successfully uploaded to ImgBB Fallback: ${imgbbResult.secure_url}`);
+                return imgbbResult;
+            } catch (imgbbErr) {
+                console.warn(`⚠️ ImgBB Fallback failed (${imgbbErr.message}). Falling back to Supabase...`);
+            }
+        }
+
+        // Tier 3: Final fallback to Supabase Storage
         return await uploadToSupabaseStorage(fileBuffer, mimeType, folder);
     }
 };
