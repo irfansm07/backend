@@ -453,15 +453,15 @@ const uploadToCloudinaryDirect = (fileBuffer, mimeType, folder = 'vibexpert/gene
     });
 };
 
-// Primary upload function: Tries Supabase Storage first, falls back to Cloudinary
+// Primary upload function: Tries Cloudinary first, falls back to Supabase Storage
 const uploadToCloudinary = async (fileBuffer, mimeType, folder = 'vibexpert/general') => {
     try {
-        const result = await uploadToSupabaseStorage(fileBuffer, mimeType, folder);
-        console.log(`✅ Media successfully uploaded to Supabase Storage [${folder}]: ${result.secure_url}`);
+        const result = await uploadToCloudinaryDirect(fileBuffer, mimeType, folder);
+        console.log(`✅ Media successfully uploaded to Cloudinary [${folder}]: ${result.secure_url}`);
         return result;
-    } catch (supaErr) {
-        console.warn(`⚠️ Supabase Storage failed (${supaErr.message}). Falling back to Cloudinary...`);
-        return await uploadToCloudinaryDirect(fileBuffer, mimeType, folder);
+    } catch (cloudErr) {
+        console.warn(`⚠️ Cloudinary Storage failed (${cloudErr.message}). Falling back to Supabase Storage...`);
+        return await uploadToSupabaseStorage(fileBuffer, mimeType, folder);
     }
 };
 
