@@ -312,6 +312,9 @@ const contestSchema = new mongoose.Schema({
     title: { type: String, required: true },
     description: { type: String, default: '' },  // optional for poster type
     coverImage: { type: String, default: null },           // Cloudinary URL
+    bannerUrl: { type: String, default: null },            // Dedicated horizontal banner URL
+    bannerFit: { type: String, default: 'cover' },         // 'cover', 'contain', 'fill'
+    bannerPosition: { type: String, default: 'center' },   // 'center', 'top', 'bottom', 'left', 'right'
     isLive: { type: Boolean, default: false, index: true },
     endsAt: { type: Date, default: null },
     // Poll options: [{ text: String, votes: [userId] }]

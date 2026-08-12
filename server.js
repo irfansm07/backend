@@ -2642,7 +2642,7 @@ app.get('/api/contests/:id', authenticateToken, async (req, res) => {
 app.post('/api/contests', authenticateToken, async (req, res) => {
     try {
         if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Admin only' });
-        const { type, title, description, coverImage, isLive, endsAt,
+        const { type, title, description, coverImage, bannerUrl, bannerFit, bannerPosition, isLive, endsAt,
             pollOptions, formFields, howToParticipate, prize } = req.body;
 
         if (!title || (!description && type !== 'poster')) return res.status(400).json({ error: 'Title and description required' });
@@ -2653,6 +2653,9 @@ app.post('/api/contests', authenticateToken, async (req, res) => {
             title,
             description,
             coverImage: coverImage || null,
+            bannerUrl: bannerUrl || null,
+            bannerFit: bannerFit || 'cover',
+            bannerPosition: bannerPosition || 'center',
             isLive: isLive || false,
             endsAt: endsAt ? new Date(endsAt) : null,
             pollOptions: pollOptions || [],
@@ -6088,21 +6091,51 @@ app.post('/api/posts/:postId/comments', authenticateToken, async (req, res) => {
     }
 });
 
-// DELETE post (owner or admin only)
+// DELETE post or realvibe (owner or admin only)
 app.delete('/api/posts/:postId', authenticateToken, async (req, res) => {
     try {
         const { postId } = req.params;
-        const post = await Post.findById(postId);
+        let post = await Post.findById(postId);
+        let isRealVibe = false;
+
+        if (!post) {
+            // Check if it's a RealVibe post
+            post = await RealVibe.findById(postId);
+            if (post) isRealVibe = true;
+        }
+
         if (!post) return res.status(404).json({ error: 'Post not found' });
 
         // Only the post owner or an admin can delete
-        const isOwner = post.userId === req.user.id;
+        const postUserId = (post.userId || post.user_id)?.toString();
+        const isOwner = postUserId === req.user.id.toString();
         const isAdmin = isAdminUser(req.user);
         if (!isOwner && !isAdmin) {
-            return res.status(403).json({ error: 'Not authorized to delete this post' });
+            return res.status(403).json({ error: 'Not authorized to delete this item' });
         }
 
-        // Clean up Cloudinary media if present
+        if (isRealVibe) {
+            // Clean up Cloudinary media if present
+            if (post.mediaPublicId) {
+                try {
+                    const resourceType = post.mediaType === 'video' ? 'video' : 'image';
+                    await cloudinaryLib.uploader.destroy(post.mediaPublicId, { resource_type: resourceType });
+                } catch (cloudErr) {
+                    console.error('⚠️ Cloudinary cleanup failed for RealVibe', post.mediaPublicId, cloudErr.message);
+                }
+            }
+
+            await Promise.all([
+                RealVibeLike.deleteMany({ vibeId: postId }),
+                RealVibeComment.deleteMany({ vibeId: postId }),
+                RealVibe.deleteOne({ _id: postId }),
+            ]);
+            io.emit('delete_realvibe', { id: postId });
+            console.log(`🗑️ RealVibe ${postId} deleted by user ${req.user.id}`);
+            return res.json({ success: true, message: 'RealVibe deleted successfully' });
+        }
+
+        // Clean up Cloudinary media if present for standard Post
         if (post.media && Array.isArray(post.media)) {
             for (const m of post.media) {
                 const publicId = m.public_id || m.publicId;
@@ -7031,11 +7064,22 @@ app.delete('/api/realvibes/:vibeId', authenticateToken, async (req, res) => {
         // Allow the vibe owner OR any admin to delete
         const isOwner = vibe.userId.toString() === req.user.id.toString();
         if (!isOwner && !isAdminUser(req.user)) return res.status(403).json({ error: 'Not authorized' });
+
+        // Clean up Cloudinary media if present
+        if (vibe.mediaPublicId) {
+            try {
+                const resourceType = vibe.mediaType === 'video' ? 'video' : 'image';
+                await cloudinaryLib.uploader.destroy(vibe.mediaPublicId, { resource_type: resourceType });
+            } catch (cloudErr) {
+                console.error('⚠️ Cloudinary cleanup failed for RealVibe', vibe.mediaPublicId, cloudErr.message);
+            }
+        }
+
         await RealVibe.deleteOne({ _id: vibe._id });
         await RealVibeLike.deleteMany({ vibeId: vibe._id });
         await RealVibeComment.deleteMany({ vibeId: vibe._id });
         io.emit('delete_realvibe', { id: req.params.vibeId });
-        res.json({ success: true });
+        res.json({ success: true, message: 'RealVibe deleted successfully' });
     } catch (error) {
         res.status(500).json({ error: 'Failed to delete RealVibe' });
     }
