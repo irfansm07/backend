@@ -299,6 +299,20 @@ app.get('/app-ads.txt', (req, res) => {
     }
 });
 
+// Health check endpoint for UptimeRobot / uptime monitoring (keeps Render server awake)
+app.get('/api/health', (req, res) => {
+    const response = {
+        status: 'online',
+        timestamp: new Date().toISOString()
+    };
+    if (typeof GROQ_MODELS !== 'undefined') {
+        response.provider = 'Groq';
+        response.models = GROQ_MODELS;
+    }
+    res.json(response);
+});
+
+
 // ══════════════════════════════════════════════════════════════
 // COLLEGES DATA — Serve colleges.json from /data/colleges.json
 // ══════════════════════════════════════════════════════════════
