@@ -6482,7 +6482,8 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
             media_url: mediaUrl, media_type: mediaType, anon_name: anonName,
             message_type: mediaUrl ? (mediaType === 'video' ? 'video' : mediaType === 'audio' ? 'audio' : mediaType === 'image' ? 'image' : 'document') : 'text',
             media_name: media ? media.originalname : null, media_size: media ? media.size : null,
-            reply_to_id: (req.body.reply_to_id && req.body.reply_to_id !== 'null') ? req.body.reply_to_id : null
+            reply_to_id: (req.body.reply_to_id && req.body.reply_to_id !== 'null') ? req.body.reply_to_id : null,
+            created_at: new Date().toISOString()
         }]).select('*').single();
 
         if (insertError) {
@@ -6588,7 +6589,7 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
             else if (req.file.mimetype === 'application/pdf') mediaType = 'pdf';
             else mediaType = 'image';
         }
-        const insertPayload = { id: crypto.randomUUID(), sender_id: senderId, receiver_id: receiverId, content: content?.trim() || '', media_url: mediaUrl, media_type: mediaType };
+        const insertPayload = { id: crypto.randomUUID(), sender_id: senderId, receiver_id: receiverId, content: content?.trim() || '', media_url: mediaUrl, media_type: mediaType, created_at: new Date().toISOString() };
         if (replyToId && replyToId !== 'null') insertPayload.reply_to_id = replyToId;
         const { data: dm, error: dmErr } = await supabase.from('direct_messages').insert([insertPayload]).select().single();
         if (dmErr) { if (dmErr.code === '42P01') return res.status(503).json({ error: 'DM tables not set up yet.' }); throw dmErr; }
@@ -7519,7 +7520,8 @@ app.post('/api/executive/messages', authenticateToken, (req, res, next) => {
             sender_id: req.user.id, college_name: resolvedRoom, content: content?.trim() || '',
             message_type: msgType, media_url: mediaUrl, media_type: mediaType,
             media_name: media ? media.originalname : null, media_size: media ? media.size : null,
-            reply_to_id: (reply_to_id && reply_to_id !== 'null') ? reply_to_id : null
+            reply_to_id: (reply_to_id && reply_to_id !== 'null') ? reply_to_id : null,
+            created_at: new Date().toISOString()
         }]).select('*').single();
         if (insertError) throw insertError;
         let pollData = null;
