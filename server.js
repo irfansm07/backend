@@ -6477,6 +6477,7 @@ app.post('/api/community/messages', authenticateToken, (req, res, next) => {
         if (!ghostCheckResult.success) return res.status(409).json({ error: ghostCheckResult.error, code: 'GHOST_NAME_TAKEN' });
 
         const { data: insertedMsg, error: insertError } = await supabase.from('community_messages').insert([{
+            id: crypto.randomUUID(),
             sender_id: req.user.id, college_name: resolvedRoom, content: content?.trim() || '',
             media_url: mediaUrl, media_type: mediaType, anon_name: anonName,
             message_type: mediaUrl ? (mediaType === 'video' ? 'video' : mediaType === 'audio' ? 'audio' : mediaType === 'image' ? 'image' : 'document') : 'text',
@@ -6587,7 +6588,7 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
             else if (req.file.mimetype === 'application/pdf') mediaType = 'pdf';
             else mediaType = 'image';
         }
-        const insertPayload = { sender_id: senderId, receiver_id: receiverId, content: content?.trim() || '', media_url: mediaUrl, media_type: mediaType };
+        const insertPayload = { id: crypto.randomUUID(), sender_id: senderId, receiver_id: receiverId, content: content?.trim() || '', media_url: mediaUrl, media_type: mediaType };
         if (replyToId && replyToId !== 'null') insertPayload.reply_to_id = replyToId;
         const { data: dm, error: dmErr } = await supabase.from('direct_messages').insert([insertPayload]).select().single();
         if (dmErr) { if (dmErr.code === '42P01') return res.status(503).json({ error: 'DM tables not set up yet.' }); throw dmErr; }
@@ -6604,7 +6605,7 @@ app.post('/api/dm/send', authenticateToken, upload.single('media'), async (req, 
                 else ud.unread_count_user1 = (existingConv.unread_count_user1 || 0) + 1;
                 await supabase.from('dm_conversations').update(ud).eq('id', existingConv.id);
             } else {
-                await supabase.from('dm_conversations').insert([{ user1_id: u1, user2_id: u2, last_message: lastMsg, last_message_at: new Date().toISOString(), unread_count_user1: isUser1Sender ? 0 : 1, unread_count_user2: isUser1Sender ? 1 : 0 }]);
+                await supabase.from('dm_conversations').insert([{ id: crypto.randomUUID(), user1_id: u1, user2_id: u2, last_message: lastMsg, last_message_at: new Date().toISOString(), unread_count_user1: isUser1Sender ? 0 : 1, unread_count_user2: isUser1Sender ? 1 : 0 }]);
             }
         } catch (convErr) { console.error('⚠️ Conversation update failed:', convErr.message); }
 
@@ -7514,6 +7515,7 @@ app.post('/api/executive/messages', authenticateToken, (req, res, next) => {
         if (poll_question) msgType = 'poll';
         const resolvedRoom = getCommunityRoom(req.user.college);
         const { data: inserted, error: insertError } = await supabase.from('executive_messages').insert([{
+            id: crypto.randomUUID(),
             sender_id: req.user.id, college_name: resolvedRoom, content: content?.trim() || '',
             message_type: msgType, media_url: mediaUrl, media_type: mediaType,
             media_name: media ? media.originalname : null, media_size: media ? media.size : null,
