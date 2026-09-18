@@ -8133,28 +8133,29 @@ IMPORTANT:
 Newspaper text:
 ${text.substring(0, 15000)}`;
 
-        console.log('🤖 Sending to Gemini AI...');
+        console.log('🤖 Sending to Gemini AI via OpenRouter...');
         
-        // Use REST API directly to support AQ. format keys
-        const axios = require('axios');
-        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent`;
+        // Use OpenRouter which provides free Gemini access with simple API keys
+        const openrouterUrl = 'https://openrouter.ai/api/v1/chat/completions';
         
         const requestBody = {
-            contents: [{
-                parts: [{
-                    text: prompt
-                }]
+            model: "google/gemini-pro-1.5",
+            messages: [{
+                role: "user",
+                content: prompt
             }]
         };
 
-        const aiResponse = await axios.post(apiUrl, requestBody, {
+        const aiResponse = await axios.post(openrouterUrl, requestBody, {
             headers: {
                 'Content-Type': 'application/json',
-                'x-goog-api-key': process.env.GEMINI_API_KEY
+                'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY || 'sk-or-v1-free'}`,
+                'HTTP-Referer': 'https://vibexpert.com',
+                'X-Title': 'VIBEXPERT News AI'
             }
         });
 
-        const aiText = aiResponse.data.candidates[0].content.parts[0].text;
+        const aiText = aiResponse.data.choices[0].message.content;
         
         console.log('✅ Received AI response');
 
