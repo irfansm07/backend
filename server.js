@@ -8208,12 +8208,6 @@ ${text.substring(0, 15000)}`;
                 sample: aiText.substring(0, 500)
             });
         }
-            return res.status(500).json({
-                success: false,
-                error: 'AI returned invalid format. Please try again.',
-                debug: aiText.substring(0, 200)
-            });
-        }
 
         // Validate topics
         topics = topics.filter(t => 
