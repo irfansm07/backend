@@ -8133,13 +8133,13 @@ IMPORTANT:
 Newspaper text:
 ${text.substring(0, 15000)}`;
 
-        console.log('🤖 Sending to Gemini AI via OpenRouter...');
+        console.log('🤖 Sending to AI via OpenRouter...');
         
-        // Use OpenRouter which provides free Gemini access with simple API keys
+        // Use OpenRouter with free Gemini Flash model
         const openrouterUrl = 'https://openrouter.ai/api/v1/chat/completions';
         
         const requestBody = {
-            model: "google/gemini-pro-1.5",
+            model: "google/gemini-flash-1.5",
             messages: [{
                 role: "user",
                 content: prompt
@@ -8149,7 +8149,7 @@ ${text.substring(0, 15000)}`;
         const aiResponse = await axios.post(openrouterUrl, requestBody, {
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY || 'sk-or-v1-free'}`,
+                'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
                 'HTTP-Referer': 'https://vibexpert.com',
                 'X-Title': 'VIBEXPERT News AI'
             }
