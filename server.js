@@ -8141,10 +8141,18 @@ ${text.substring(0, 15000)}`;
         
         const requestBody = {
             model: "nvidia/nemotron-3-ultra-550b-a55b:free",
-            messages: [{
-                role: "user",
-                content: prompt
-            }]
+            messages: [
+                {
+                    role: "system",
+                    content: "You are a JSON API. You ONLY respond with valid JSON arrays. Never include explanations, markdown, or extra text."
+                },
+                {
+                    role: "user",
+                    content: prompt
+                }
+            ],
+            temperature: 0.7,
+            max_tokens: 4000
         };
 
         console.log('Calling OpenRouter with model:', requestBody.model);
@@ -8169,6 +8177,7 @@ ${text.substring(0, 15000)}`;
         let aiText = aiResponse.data.choices[0].message.content;
         
         console.log('✅ Received AI response');
+        console.log('Raw AI response (first 1000 chars):', aiText.substring(0, 1000));
 
         // Clean up response (remove markdown code blocks if present)
         aiText = aiText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
@@ -8179,6 +8188,8 @@ ${text.substring(0, 15000)}`;
             aiText = jsonMatch[0];
         }
 
+        console.log('Cleaned AI response (first 500 chars):', aiText.substring(0, 500));
+
         // Parse topics
         let topics;
         try {
@@ -8186,9 +8197,17 @@ ${text.substring(0, 15000)}`;
             if (!Array.isArray(topics)) {
                 throw new Error('Response is not an array');
             }
+            console.log(`✅ Successfully parsed ${topics.length} topics`);
         } catch (parseError) {
-            console.error('❌ Failed to parse AI response:', aiText.substring(0, 500));
+            console.error('❌ Failed to parse AI response:', parseError.message);
+            console.error('Failed text (first 1000 chars):', aiText.substring(0, 1000));
             if (req.file.path) fs.unlinkSync(req.file.path);
+            return res.status(500).json({
+                error: 'AI returned invalid format',
+                details: parseError.message,
+                sample: aiText.substring(0, 500)
+            });
+        }
             return res.status(500).json({
                 success: false,
                 error: 'AI returned invalid format. Please try again.',
