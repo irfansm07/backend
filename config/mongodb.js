@@ -374,6 +374,27 @@ const shopBannerSchema = new mongoose.Schema({
 
 shopBannerSchema.index({ isActive: 1, createdAt: -1 });
 
+// ── Hot Topics (AI-Generated News Feed) ─────────────────────
+const hotTopicSchema = new mongoose.Schema({
+    title: { type: String, required: true },
+    summary: { type: String, required: true },
+    content: { type: String, required: true },
+    category: { 
+        type: String, 
+        enum: ['Funny', 'Student Related', 'Youth Related', 'Movies', 'Celebrity Life', 'Sports', 'Humanity'],
+        required: true,
+        index: true
+    },
+    source: { type: String, default: 'AI Generated' },
+    views: { type: Number, default: 0 },
+    bookmarks: [{ type: String }], // Array of userIds
+    viral_score: { type: Number, default: 0 },
+    is_hot_topic: { type: Boolean, default: true, index: true }
+}, { timestamps: true });
+
+hotTopicSchema.index({ is_hot_topic: 1, createdAt: -1 });
+hotTopicSchema.index({ category: 1, createdAt: -1 });
+
 // ── Models ────────────────────────────────────────────────────
 const Post = mongoose.models.Post || mongoose.model('Post', postSchema);
 const PostLike = mongoose.models.PostLike || mongoose.model('PostLike', postLikeSchema);
@@ -401,6 +422,7 @@ const Contest = mongoose.models.Contest || mongoose.model('Contest', contestSche
 const FundCampaign = mongoose.models.FundCampaign || mongoose.model('FundCampaign', fundCampaignSchema);
 const FundDonation = mongoose.models.FundDonation || mongoose.model('FundDonation', fundDonationSchema);
 const ShopBanner = mongoose.models.ShopBanner || mongoose.model('ShopBanner', shopBannerSchema);
+const HotTopic = mongoose.models.HotTopic || mongoose.model('HotTopic', hotTopicSchema);
 
 module.exports = {
     connectMongo,
@@ -429,5 +451,6 @@ module.exports = {
     Contest,
     FundCampaign,
     FundDonation,
-    ShopBanner
+    ShopBanner,
+    HotTopic
 };

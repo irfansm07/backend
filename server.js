@@ -23,6 +23,8 @@ const fs = require('fs');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
+const pdfParse = require('pdf-parse');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 // ── New: Polyglot imports ──────────────────────────────────────
 const cloudinaryLib = require('./config/cloudinary');
@@ -34,7 +36,8 @@ const {
     ClientRequest, ClientProduct, OrderMessage,
     Complaint, Coupon, ProductReview, CollegeRequest,
     Block, CombineRequest, PartnerLink, PinnedMessage,
-    FcmToken, Contest, FundCampaign, FundDonation, ShopBanner
+    FcmToken, Contest, FundCampaign, FundDonation, ShopBanner,
+    HotTopic
 } = require('./config/mongodb');
 const redis = require('./config/redis');
 
@@ -527,7 +530,7 @@ const uploadToCloudinary = async (fileBuffer, mimeType, folder = 'vibexpert/gene
 const pushNotification = async (userId, notification) => {
     try {
         if (!userId) return;
-        const targetUserId = userId.toString();
+        const targetUserId = userId.toString().trim();
         const notifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         const stored = { ...notification, id: notifId, timestamp: Date.now(), read: false };
         await redis.lpush(`notifications:${targetUserId}`, JSON.stringify(stored));
@@ -543,16 +546,20 @@ const pushNotification = async (userId, notification) => {
         if (firebaseAdmin) {
             try {
                 // Find all FCM tokens registered for this user.
-                // Always query by the stringified userId to avoid ObjectId vs String type-mismatch
-                // that would silently return 0 tokens and skip FCM delivery.
-                const registeredTokens = await FcmToken.find({ userId: targetUserId });
+                // Case-insensitive query to handle casing differences in user IDs
+                const registeredTokens = await FcmToken.find({
+                    $or: [
+                        { userId: targetUserId },
+                        { userId: targetUserId.toLowerCase() }
+                    ]
+                });
                 if (registeredTokens && registeredTokens.length > 0) {
                     const tokens = registeredTokens.map(t => t.token);
 
                     const payload = {
                         notification: {
-                            title: notification.fromUsername || 'VIBEXPERT',
-                            body: notification.message || 'New notification received',
+                            title: (notification.fromUsername || notification.title || 'VIBEXPERT').toString(),
+                            body: (notification.message || notification.body || 'New notification received').toString(),
                         },
                         data: {
                             type: (notification.type || 'general').toString(),
@@ -571,7 +578,7 @@ const pushNotification = async (userId, notification) => {
                     // Send with HIGH priority using fcmSend helper
                     const response = await fcmSend(tokens, payload.notification, payload.data);
 
-                    console.log(`📡 FCM Multicast: successfully sent ${response.successCount} notifications`);
+                    console.log(`📡 FCM Multicast (${targetUserId}): successfully sent ${response.successCount}/${tokens.length} notifications`);
 
                     // Cleanup invalid/expired tokens in background
                     if (response.failureCount > 0) {
@@ -7664,11 +7671,34 @@ cleanupOldExecutiveMessages();
 // ══════════════════════════════════════════════════════════════
 app.get('/api/notifications/unread-count', authenticateToken, async (req, res) => {
     try {
-        const notifications = await getNotifications(req.user.id, 50);
-        const count = notifications.filter(n => !n.read).length;
-        res.json({ success: true, count });
+        const userId = req.user.id.toString();
+        const userRegisterTime = req.user.created_at ? new Date(req.user.created_at).getTime() : 0;
+
+        const notifications = await getNotifications(userId, 50);
+        const filteredNotifications = notifications.filter(n => {
+            const notifTime = n.timestamp || (n.createdAt ? new Date(n.createdAt).getTime() : 0);
+            return notifTime >= userRegisterTime;
+        });
+
+        const redisUnread = filteredNotifications.filter(n => !n.read).length;
+
+        const readPlatformIds = await getPlatformReadIds(userId);
+        const globalNotifications = await PlatformNotification.find({
+            $or: [
+                { target: 'all' },
+                { target: 'specific', targetUserId: userId }
+            ]
+        }).sort({ createdAt: -1 }).limit(10).lean();
+
+        const platformUnread = globalNotifications.filter(n => {
+            const notifTime = new Date(n.createdAt).getTime();
+            return notifTime >= userRegisterTime && !readPlatformIds.has(n._id.toString());
+        }).length;
+
+        const count = redisUnread + platformUnread;
+        res.json({ success: true, count, unreadCount: count });
     } catch (err) {
-        res.json({ success: true, count: 0 });
+        res.json({ success: true, count: 0, unreadCount: 0 });
     }
 });
 
@@ -8023,6 +8053,312 @@ const renderProfilePage = async (req, res) => {
 
 app.get('/profile/:username', renderProfilePage);
 app.get('/invite/:username', renderProfilePage);
+
+// ══════════════════════════════════════════════════════════════
+// HOT TOPICS - AI NEWS FEATURE
+// ══════════════════════════════════════════════════════════════
+
+// Initialize Gemini AI
+const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
+
+// 1️⃣ POST /api/admin/news/process - Upload PDF → AI extraction
+app.post('/api/admin/news/process', upload.single('pdf'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ success: false, error: 'No PDF file uploaded' });
+        }
+
+        if (!genAI) {
+            return res.status(500).json({ 
+                success: false, 
+                error: 'Gemini API key not configured. Please set GEMINI_API_KEY environment variable.' 
+            });
+        }
+
+        console.log('📄 Processing PDF:', req.file.originalname);
+
+        // Extract text from PDF
+        const pdfBuffer = req.file.buffer || fs.readFileSync(req.file.path);
+        const pdfData = await pdfParse(pdfBuffer);
+        const text = pdfData.text;
+
+        console.log('📝 Extracted text length:', text.length);
+
+        if (!text || text.trim().length < 100) {
+            if (req.file.path) fs.unlinkSync(req.file.path);
+            return res.status(400).json({
+                success: false,
+                error: 'PDF contains too little text. Please upload a newspaper with readable text.'
+            });
+        }
+
+        // Send to Gemini AI
+        const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+        
+        const prompt = `You are a content curator for college students in India. Analyze this newspaper text and extract 5-10 hot topics that would go VIRAL on Instagram/Twitter.
+
+CATEGORIES (choose ONE for each topic):
+- Funny 😂 (memes, viral jokes, humor)
+- Student Related 📚 (exams, scholarships, education, UPI/money news)
+- Youth Related 🎯 (dating, fashion, lifestyle, trends)
+- Movies 🎬 (releases, reviews, box office)
+- Celebrity Life ⭐ (birthdays, gossip, controversies)
+- Sports ⚽ (cricket, football, Olympics, records)
+- Humanity ❤️ (emotional stories, social causes)
+
+SELECTION CRITERIA:
+✅ HIGH viral potential for Instagram/Twitter
+✅ Relevant to Indian college students (18-25 age)
+✅ Trending or newsworthy TODAY
+✅ Engaging, catchy headlines
+✅ Include celebrity birthdays, sports updates, UPI/tech news, scholarships
+
+For each topic, return this EXACT JSON structure:
+{
+  "title": "Catchy headline (max 80 characters)",
+  "summary": "Brief 2-3 sentence summary (150-200 characters)",
+  "content": "Full detailed content (500-800 words)",
+  "category": "Exact category name from list above",
+  "source": "Newspaper name or section",
+  "viral_score": 8.5
+}
+
+IMPORTANT:
+- Return ONLY a valid JSON array, nothing else
+- No markdown, no code blocks, no explanations
+- Just: [{"title":"...","summary":"...","content":"...","category":"...","source":"...","viral_score":8.5}]
+- Sort by viral_score DESC
+- Extract 5-10 topics
+
+Newspaper text:
+${text.substring(0, 15000)}`;
+
+        console.log('🤖 Sending to Gemini AI...');
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        let aiText = response.text();
+        
+        console.log('✅ Received AI response');
+
+        // Clean up response (remove markdown code blocks if present)
+        aiText = aiText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        
+        // Try to find JSON array in response
+        const jsonMatch = aiText.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+            aiText = jsonMatch[0];
+        }
+
+        // Parse topics
+        let topics;
+        try {
+            topics = JSON.parse(aiText);
+            if (!Array.isArray(topics)) {
+                throw new Error('Response is not an array');
+            }
+        } catch (parseError) {
+            console.error('❌ Failed to parse AI response:', aiText.substring(0, 500));
+            if (req.file.path) fs.unlinkSync(req.file.path);
+            return res.status(500).json({
+                success: false,
+                error: 'AI returned invalid format. Please try again.',
+                debug: aiText.substring(0, 200)
+            });
+        }
+
+        // Validate topics
+        topics = topics.filter(t => 
+            t.title && t.summary && t.content && t.category
+        ).slice(0, 10); // Max 10 topics
+
+        // Clean up uploaded file
+        if (req.file.path) fs.unlinkSync(req.file.path);
+
+        console.log(`🎉 Successfully extracted ${topics.length} topics`);
+
+        res.json({
+            success: true,
+            topics: topics,
+            count: topics.length
+        });
+
+    } catch (error) {
+        console.error('❌ AI Processing Error:', error);
+        
+        // Clean up file on error
+        if (req.file && req.file.path && fs.existsSync(req.file.path)) {
+            fs.unlinkSync(req.file.path);
+        }
+
+        res.status(500).json({ 
+            success: false, 
+            error: error.message,
+            details: 'Failed to process PDF with AI'
+        });
+    }
+});
+
+// 2️⃣ POST /api/admin/news/post - Save topics to database
+app.post('/api/admin/news/post', async (req, res) => {
+    try {
+        const { topics } = req.body;
+
+        if (!topics || !Array.isArray(topics) || topics.length === 0) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'No topics provided' 
+            });
+        }
+
+        console.log(`📰 Posting ${topics.length} topics to feed...`);
+
+        // Save all topics to database
+        const savedTopics = await HotTopic.insertMany(topics);
+
+        console.log(`✅ Posted ${savedTopics.length} hot topics`);
+
+        // TODO: Send push notifications to all users
+        // if (firebaseAdmin) {
+        //     const tokens = await FcmToken.find().distinct('token');
+        //     if (tokens.length > 0) {
+        //         await firebaseAdmin.messaging().sendMulticast({
+        //             tokens,
+        //             notification: {
+        //                 title: "🔥 Hot Topics Alert!",
+        //                 body: `${topics.length} new trending topics just dropped!`
+        //             },
+        //             data: { type: 'hot_topics', count: topics.length.toString() }
+        //         });
+        //     }
+        // }
+
+        res.json({
+            success: true,
+            posted_count: savedTopics.length,
+            message: `${savedTopics.length} hot topics posted successfully!`,
+            topics: savedTopics
+        });
+
+    } catch (error) {
+        console.error('❌ Post Topics Error:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
+
+// 3️⃣ GET /api/news/hot-topics - Fetch hot topics for users
+app.get('/api/news/hot-topics', async (req, res) => {
+    try {
+        const { page = 1, limit = 10, category } = req.query;
+
+        // Build filter
+        const filter = { is_hot_topic: true };
+        if (category && category !== 'all') {
+            filter.category = category;
+        }
+
+        // Fetch topics
+        const topics = await HotTopic.find(filter)
+            .sort({ createdAt: -1 }) // Latest first
+            .skip((page - 1) * limit)
+            .limit(parseInt(limit))
+            .lean();
+
+        // Get total count
+        const total = await HotTopic.countDocuments(filter);
+
+        res.json({
+            success: true,
+            topics,
+            pagination: {
+                total,
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total_pages: Math.ceil(total / limit)
+            }
+        });
+
+    } catch (error) {
+        console.error('❌ Fetch Hot Topics Error:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
+
+// 4️⃣ POST /api/news/hot-topics/:id/bookmark - Bookmark toggle
+app.post('/api/news/hot-topics/:id/bookmark', verifyToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+
+        const topic = await HotTopic.findById(id);
+        if (!topic) {
+            return res.status(404).json({ 
+                success: false, 
+                error: 'Topic not found' 
+            });
+        }
+
+        // Toggle bookmark
+        const isBookmarked = topic.bookmarks.includes(userId);
+        if (isBookmarked) {
+            topic.bookmarks = topic.bookmarks.filter(b => b !== userId);
+        } else {
+            topic.bookmarks.push(userId);
+        }
+
+        await topic.save();
+
+        res.json({
+            success: true,
+            bookmarked: !isBookmarked,
+            message: isBookmarked ? 'Bookmark removed' : 'Topic bookmarked'
+        });
+
+    } catch (error) {
+        console.error('❌ Bookmark Error:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
+
+// 5️⃣ POST /api/news/hot-topics/:id/view - Increment views
+app.post('/api/news/hot-topics/:id/view', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const topic = await HotTopic.findByIdAndUpdate(
+            id,
+            { $inc: { views: 1 } },
+            { new: true }
+        );
+
+        if (!topic) {
+            return res.status(404).json({ 
+                success: false, 
+                error: 'Topic not found' 
+            });
+        }
+
+        res.json({
+            success: true,
+            views: topic.views
+        });
+
+    } catch (error) {
+        console.error('❌ View Increment Error:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
 
 // ══════════════════════════════════════════════════════════════
 // ERROR HANDLING
