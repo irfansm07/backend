@@ -8290,10 +8290,32 @@ app.get('/api/news/hot-topics', async (req, res) => {
 });
 
 // 4️⃣ POST /api/news/hot-topics/:id/bookmark - Bookmark toggle
-app.post('/api/news/hot-topics/:id/bookmark', verifyToken, async (req, res) => {
+app.post('/api/news/hot-topics/:id/bookmark', async (req, res) => {
     try {
+        // Extract token from Authorization header
+        const authHeader = req.headers.authorization;
+        const token = authHeader && authHeader.split(' ')[1];
+        
+        if (!token) {
+            return res.status(401).json({ 
+                success: false, 
+                error: 'Authentication required' 
+            });
+        }
+
+        // Verify token and get user
+        let decoded;
+        try {
+            decoded = jwt.verify(token, process.env.JWT_SECRET);
+        } catch (err) {
+            return res.status(401).json({ 
+                success: false, 
+                error: 'Invalid token' 
+            });
+        }
+
+        const userId = decoded.userId;
         const { id } = req.params;
-        const userId = req.user.id;
 
         const topic = await HotTopic.findById(id);
         if (!topic) {
