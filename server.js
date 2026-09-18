@@ -8134,17 +8134,20 @@ Newspaper text:
 ${text.substring(0, 15000)}`;
 
         console.log('🤖 Sending to AI via OpenRouter...');
+        console.log('API Key present:', !!process.env.OPENROUTER_API_KEY);
         
         // Use OpenRouter with free Gemini Flash model
         const openrouterUrl = 'https://openrouter.ai/api/v1/chat/completions';
         
         const requestBody = {
-            model: "google/gemini-flash-1.5",
+            model: "google/gemini-flash-1.5-exp",
             messages: [{
                 role: "user",
                 content: prompt
             }]
         };
+
+        console.log('Calling OpenRouter with model:', requestBody.model);
 
         const aiResponse = await axios.post(openrouterUrl, requestBody, {
             headers: {
@@ -8153,6 +8156,14 @@ ${text.substring(0, 15000)}`;
                 'HTTP-Referer': 'https://vibexpert.com',
                 'X-Title': 'VIBEXPERT News AI'
             }
+        }).catch(err => {
+            console.error('OpenRouter API Error:', {
+                status: err.response?.status,
+                statusText: err.response?.statusText,
+                data: err.response?.data,
+                message: err.message
+            });
+            throw err;
         });
 
         const aiText = aiResponse.data.choices[0].message.content;
