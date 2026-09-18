@@ -8136,11 +8136,11 @@ ${text.substring(0, 15000)}`;
         console.log('🤖 Sending to AI via OpenRouter...');
         console.log('API Key present:', !!process.env.OPENROUTER_API_KEY);
         
-        // Use OpenRouter - try multiple free models as fallback
+        // Use OpenRouter's free tier - NVIDIA Nemotron 3 Ultra (largest free model)
         const openrouterUrl = 'https://openrouter.ai/api/v1/chat/completions';
         
         const requestBody = {
-            model: "google/gemini-2.0-flash-exp:free",
+            model: "nvidia/nemotron-3-ultra-550b-a55b:free",
             messages: [{
                 role: "user",
                 content: prompt
