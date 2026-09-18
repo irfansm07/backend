@@ -8134,9 +8134,27 @@ Newspaper text:
 ${text.substring(0, 15000)}`;
 
         console.log('🤖 Sending to Gemini AI...');
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        let aiText = response.text();
+        
+        // Use REST API directly to support AQ. format keys
+        const axios = require('axios');
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent`;
+        
+        const requestBody = {
+            contents: [{
+                parts: [{
+                    text: prompt
+                }]
+            }]
+        };
+
+        const aiResponse = await axios.post(apiUrl, requestBody, {
+            headers: {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': process.env.GEMINI_API_KEY
+            }
+        });
+
+        const aiText = aiResponse.data.candidates[0].content.parts[0].text;
         
         console.log('✅ Received AI response');
 
