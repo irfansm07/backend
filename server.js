@@ -8136,11 +8136,11 @@ ${text.substring(0, 15000)}`;
         console.log('🤖 Sending to AI via OpenRouter...');
         console.log('API Key present:', !!process.env.OPENROUTER_API_KEY);
         
-        // Use OpenRouter with free Gemini Flash model
+        // Use OpenRouter - try multiple free models as fallback
         const openrouterUrl = 'https://openrouter.ai/api/v1/chat/completions';
         
         const requestBody = {
-            model: "google/gemini-flash-1.5-exp",
+            model: "google/gemini-2.0-flash-exp:free",
             messages: [{
                 role: "user",
                 content: prompt
