@@ -8166,7 +8166,7 @@ ${text.substring(0, 15000)}`;
             throw err;
         });
 
-        const aiText = aiResponse.data.choices[0].message.content;
+        let aiText = aiResponse.data.choices[0].message.content;
         
         console.log('✅ Received AI response');
 
